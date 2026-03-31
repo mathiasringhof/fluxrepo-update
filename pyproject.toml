@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fluxrepo-update"
+dynamic = ["version"]
+description = "CLI tooling for discovering and updating FluxCD manifest versions"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Mathias" }]
+keywords = ["fluxcd", "helm", "kubernetes", "manifests", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
+dependencies = [
+    "httpx>=0.28.1",
+    "packaging>=25.0",
+    "rich>=14.3.3",
+    "ruamel.yaml>=0.18.16",
+    "typer>=0.19.2",
+]
+
+[project.scripts]
+fluxrepo-update = "fluxrepo_update.cli:app"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.408",
+    "pytest>=9.0.2",
+    "ruff>=0.15.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fluxrepo_update"]
+
+[tool.hatch.version]
+path = "src/fluxrepo_update/__init__.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["kubeflux", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["fluxrepo_update"]
