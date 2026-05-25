@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use serde_yaml::{Mapping, Value};
 
 use crate::models::{
     DeploymentImageTarget, HelmReleaseTarget, HelmRepository, ImageReference, Inventory, RepoType,
     ResourceId,
 };
+use yaml_serde::{Deserializer, Mapping, Value};
 
 const IGNORED_DIR_NAMES: &[&str] = &[
     ".git",
@@ -172,7 +172,7 @@ fn is_skipped_path(path: &Path) -> bool {
 fn load_yaml_documents(path: &Path) -> Result<Vec<Value>> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("failed to read YAML file {}", path.display()))?;
-    serde_yaml::Deserializer::from_str(&text)
+    Deserializer::from_str(&text)
         .map(Value::deserialize)
         .collect::<std::result::Result<Vec<_>, _>>()
         .with_context(|| format!("failed to parse YAML file {}", path.display()))

@@ -97,3 +97,44 @@ fn readme_uses_relative_docs_links() {
         );
     }
 }
+
+#[test]
+fn deprecated_serde_yaml_dependency_is_removed() {
+    let manifest =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+
+    assert!(
+        !manifest.contains("serde_yaml"),
+        "Cargo.toml should use a maintained YAML serde crate"
+    );
+}
+
+#[test]
+fn yaml_dependency_is_imported_directly_without_local_wrapper() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let wrapper_path = root.join("src/yaml.rs");
+    let source_files = [
+        "src/lib.rs",
+        "src/scanner.rs",
+        "src/resolvers.rs",
+        "src/updater.rs",
+    ];
+    let wrapper_imports = source_files
+        .into_iter()
+        .filter(|path| {
+            fs::read_to_string(root.join(path))
+                .expect("read source file")
+                .contains("crate::yaml")
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        !wrapper_path.exists(),
+        "YAML serde dependency should be imported directly"
+    );
+    assert!(
+        wrapper_imports.is_empty(),
+        "source files still import the local YAML wrapper: {}",
+        wrapper_imports.join(", ")
+    );
+}
