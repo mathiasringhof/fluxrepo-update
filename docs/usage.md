@@ -10,16 +10,13 @@ those bumps.
 `update-helm` always scans the repository first, then resolves the latest chart versions
 and Deployment image tags from remote sources.
 
-Remote checks are resolved concurrently, and human-readable runs show a live progress bar
-while those lookups complete.
-
 ## Safe First Run
 
 Start with read-only commands:
 
 ```bash
-uv run fluxrepo-update inventory /path/to/flux-repo --json
-uv run fluxrepo-update update-helm /path/to/flux-repo --json --non-interactive
+cargo run -- inventory /path/to/flux-repo --json
+cargo run -- update-helm /path/to/flux-repo --json --non-interactive
 ```
 
 That gives you:
@@ -35,8 +32,8 @@ That gives you:
 Summarizes what the scanner found in a repository.
 
 ```bash
-uv run fluxrepo-update inventory /path/to/flux-repo
-uv run fluxrepo-update inventory /path/to/flux-repo --json
+cargo run -- inventory /path/to/flux-repo
+cargo run -- inventory /path/to/flux-repo --json
 ```
 
 Human-readable output includes counts for:
@@ -57,11 +54,11 @@ Plans or applies updates for updateable `HelmRelease` resources and versioned
 `Deployment` image fields.
 
 ```bash
-uv run fluxrepo-update update-helm /path/to/flux-repo
-uv run fluxrepo-update update-helm /path/to/flux-repo --non-interactive
-uv run fluxrepo-update update-helm /path/to/flux-repo --json --non-interactive
-uv run fluxrepo-update update-helm /path/to/flux-repo --write
-uv run fluxrepo-update update-helm /path/to/flux-repo --write --non-interactive
+cargo run -- update-helm /path/to/flux-repo
+cargo run -- update-helm /path/to/flux-repo --non-interactive
+cargo run -- update-helm /path/to/flux-repo --json --non-interactive
+cargo run -- update-helm /path/to/flux-repo --write
+cargo run -- update-helm /path/to/flux-repo --write --non-interactive
 ```
 
 Options:
@@ -80,25 +77,24 @@ images, and bare image references without an explicit tag are reported as skippe
 
 Default behavior is for humans:
 
-- `uv run fluxrepo-update update-helm /path/to/flux-repo`
-  shows a live progress bar, then prompts for each planned update and applies the ones you approve
-- press `Ctrl-C` once during planning to cancel the run immediately
+- `cargo run -- update-helm /path/to/flux-repo`
+  prompts for each planned update and applies the ones you approve
 
 Agent mode is explicit:
 
-- `uv run fluxrepo-update update-helm /path/to/flux-repo --non-interactive`
+- `cargo run -- update-helm /path/to/flux-repo --non-interactive`
   prints the plan and never modifies files
-- `uv run fluxrepo-update update-helm /path/to/flux-repo --write --non-interactive`
+- `cargo run -- update-helm /path/to/flux-repo --write --non-interactive`
   applies all planned updates without prompts
 
 Recommended patterns:
 
 - Manual review with prompts:
-  - `uv run fluxrepo-update update-helm /path/to/flux-repo`
+  - `cargo run -- update-helm /path/to/flux-repo`
 - Automation preview:
-  - `uv run fluxrepo-update update-helm /path/to/flux-repo --json --non-interactive`
+  - `cargo run -- update-helm /path/to/flux-repo --json --non-interactive`
 - Automation apply-all:
-  - `uv run fluxrepo-update update-helm /path/to/flux-repo --write --non-interactive`
+  - `cargo run -- update-helm /path/to/flux-repo --write --non-interactive`
 
 ## Error Cases
 

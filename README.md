@@ -1,6 +1,6 @@
 # fluxrepo-update
 
-`fluxrepo-update` is a Python CLI for inspecting a FluxCD repository and updating
+`fluxrepo-update` is a Rust CLI for inspecting a FluxCD repository and updating
 Helm chart versions and Deployment image tags without depending on `helm` or `yq`.
 
 It currently updates two manifest types directly:
@@ -28,8 +28,9 @@ digest-pinned image references, or generated Flux bootstrap manifests.
 
 ## Requirements
 
-- Python `>=3.12`
-- `uv`
+- Rust `>=1.95`
+- Cargo
+- Python `>=3.12` and `uv` only when running the legacy parity tests
 - network access for `update-helm`, which fetches chart metadata from Helm repository `index.yaml`
   files, the TrueCharts GitHub-backed special case, and container registry tag APIs
 
@@ -38,37 +39,49 @@ digest-pinned image references, or generated Flux bootstrap manifests.
 Inspect a Flux repository:
 
 ```bash
-uv run fluxrepo-update inventory /path/to/flux-repo
-uv run fluxrepo-update inventory /path/to/flux-repo --json
+cargo run -- inventory /path/to/flux-repo
+cargo run -- inventory /path/to/flux-repo --json
 ```
 
 Preview available updates without changing files:
 
 ```bash
-uv run fluxrepo-update update-helm /path/to/flux-repo --non-interactive
-uv run fluxrepo-update update-helm /path/to/flux-repo --json --non-interactive
+cargo run -- update-helm /path/to/flux-repo --non-interactive
+cargo run -- update-helm /path/to/flux-repo --json --non-interactive
 ```
 
 Apply updates interactively:
 
 ```bash
-uv run fluxrepo-update update-helm /path/to/flux-repo
+cargo run -- update-helm /path/to/flux-repo
 ```
-
-Interactive mode shows a live progress bar while remote chart and image lookups run.
 
 Apply all planned updates non-interactively:
 
 ```bash
-uv run fluxrepo-update update-helm /path/to/flux-repo --write --non-interactive
+cargo run -- update-helm /path/to/flux-repo --write --non-interactive
 ```
 
 The tests include `tests/fixtures/kubeflux/`, a small fixture distilled from a real Flux
 repository. It is used for fixture-backed tests and local examples:
 
 ```bash
-uv run fluxrepo-update inventory tests/fixtures/kubeflux --json
-uv run fluxrepo-update update-helm tests/fixtures/kubeflux --json --non-interactive
+cargo run -- inventory tests/fixtures/kubeflux --json
+cargo run -- update-helm tests/fixtures/kubeflux --json --non-interactive
+```
+
+Run the Rust test suite:
+
+```bash
+cargo test
+cargo clippy --all-targets -- -D warnings
+```
+
+The original Python implementation and tests remain in the repository as a parity harness
+during the migration:
+
+```bash
+uv run pytest
 ```
 
 ## Safety And Modes
@@ -77,18 +90,17 @@ uv run fluxrepo-update update-helm tests/fixtures/kubeflux --json --non-interact
 
 - default human mode is interactive and writes the updates you approve
 - `--non-interactive` is agent mode and only prints the plan unless you also pass `--write`
-- remote chart and image lookups are resolved concurrently to reduce wait time on larger repos
 
 Mode summary:
 
 - Interactive apply:
-  - `uv run fluxrepo-update update-helm /path/to/repo`
+  - `cargo run -- update-helm /path/to/repo`
   - prompts once per planned update, default answer is `No`
 - Non-interactive plan:
-  - `uv run fluxrepo-update update-helm /path/to/repo --non-interactive`
+  - `cargo run -- update-helm /path/to/repo --non-interactive`
   - no prompts, no file changes
 - Non-interactive apply-all:
-  - `uv run fluxrepo-update update-helm /path/to/repo --write --non-interactive`
+  - `cargo run -- update-helm /path/to/repo --write --non-interactive`
   - applies all planned updates without prompts
 
 Invalid combinations:
