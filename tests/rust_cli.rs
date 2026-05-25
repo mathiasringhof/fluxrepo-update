@@ -96,7 +96,7 @@ fn inventory_help_lists_stable_contract() {
 fn update_helm_json_dry_run_returns_agent_friendly_payload() {
     let factory = paperless_update_factory();
 
-    let (code, stdout, _) = run_cli(
+    let (code, stdout, stderr) = run_cli(
         &[
             "fluxrepo-update",
             "update-helm",
@@ -109,6 +109,7 @@ fn update_helm_json_dry_run_returns_agent_friendly_payload() {
     );
 
     assert_eq!(code, 10);
+    assert_eq!(stderr, "");
     let payload: Value = serde_json::from_str(&stdout).expect("json output");
     assert_eq!(payload["mode"], "plan");
     assert_eq!(payload["strict"], false);
@@ -223,10 +224,11 @@ fn update_helm_interactive_prompt_includes_update_details() {
     );
 
     assert_eq!(code, 0);
-    assert!(stderr.contains("Update "));
-    assert!(stderr.contains("apps/base/paperless-ngx/release.yaml"));
-    assert!(stderr.contains("12.0.0 -> 12.1.0"));
-    assert!(stderr.contains("[y/N]"));
+    assert!(
+        stderr.contains(
+            "Update apps/base/paperless-ngx/release.yaml (chart 12.0.0 -> 12.1.0)? [y/N]"
+        )
+    );
 }
 
 #[test]
@@ -431,6 +433,30 @@ fn update_helm_non_json_plan_output_includes_skip_reasons_and_plan_hint() {
     assert!(stderr.contains("skip: "));
     assert!(stderr.contains("No static version configured for truecharts/audiobookshelf"));
     assert!(stderr.contains("Plan only. Re-run without --non-interactive"));
+}
+
+#[test]
+fn update_helm_non_json_plan_output_includes_target_context() {
+    let factory = paperless_update_factory();
+
+    let (code, _, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            fixture_root().to_str().expect("fixture path"),
+            "--non-interactive",
+        ],
+        "",
+        &factory,
+    );
+
+    assert_eq!(code, 10);
+    assert!(stderr.contains(
+        "apps/base/sonarr/deployment.yaml: Deployment sonarr-deployment spec.template.spec.containers[0].image version-4.0.16.2944 -> version-4.0.17.3000"
+    ));
+    assert!(stderr.contains(
+        "apps/production/paperless/release-patch.yaml: HelmRelease paperless-ngx paperless-ngx 11.29.10 -> 12.1.0 inherited-source"
+    ));
 }
 
 fn paperless_update_factory() -> StaticResolverFactory {

@@ -1,6 +1,8 @@
 use std::ffi::OsString;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Instant;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -9,7 +11,10 @@ use crate::resolvers::{
     ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
 };
 use crate::scanner::scan_repo;
-use crate::updater::{PlanOptions, UpdateReport, apply_updates, plan_updates_with_options};
+use crate::updater::{
+    PlanOptions, PlannedUpdate, UpdateReport, apply_updates, plan_updates_with_options,
+    plan_updates_with_progress,
+};
 
 pub const EXIT_OK: u8 = 0;
 pub const EXIT_STRICT_FAILURE: u8 = 2;
@@ -69,13 +74,18 @@ pub fn run() -> Result<u8> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
-    run_with_args(
+    let terminal_stderr = stderr.is_terminal();
+    run_with_args_and_output(
         std::env::args_os(),
         stdin.lock(),
         &mut stdout,
         &mut stderr,
         &DefaultResolverFactory,
         PlanOptions::default(),
+        HumanOutput {
+            color: terminal_stderr,
+            progress: terminal_stderr,
+        },
     )
 }
 
@@ -92,7 +102,35 @@ where
     T: Into<OsString> + Clone,
     R: BufRead,
     W: Write,
-    E: Write,
+    E: Write + Send,
+    F: ResolverFactory + ?Sized,
+{
+    run_with_args_and_output(
+        args,
+        input,
+        stdout,
+        stderr,
+        resolver_factory,
+        plan_options,
+        HumanOutput::plain(),
+    )
+}
+
+fn run_with_args_and_output<I, T, R, W, E, F>(
+    args: I,
+    input: R,
+    stdout: &mut W,
+    stderr: &mut E,
+    resolver_factory: &F,
+    plan_options: PlanOptions,
+    human_output: HumanOutput,
+) -> Result<u8>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+    R: BufRead,
+    W: Write,
+    E: Write + Send,
     F: ResolverFactory + ?Sized,
 {
     let cli = match Cli::try_parse_from(args) {
@@ -126,6 +164,7 @@ where
             stderr,
             resolver_factory,
             plan_options,
+            human_output,
         ),
     }
 }
@@ -186,11 +225,12 @@ fn update_helm_command<R, W, E, F>(
     stderr: &mut E,
     resolver_factory: &F,
     plan_options: PlanOptions,
+    human_output: HumanOutput,
 ) -> Result<u8>
 where
     R: BufRead,
     W: Write,
-    E: Write,
+    E: Write + Send,
     F: ResolverFactory + ?Sized,
 {
     let repo_root = repo_root.canonicalize()?;
@@ -206,26 +246,50 @@ where
         writeln!(stderr, "Scanning {}...", repo_root.display())?;
     }
     let inventory = scan_repo(&repo_root)?;
+    let target_count = inventory.chart_targets.len() + inventory.deployment_targets.len();
     if !json_output {
-        writeln!(
-            stderr,
-            "Resolving updates for {} targets...",
-            inventory.chart_targets.len() + inventory.deployment_targets.len()
-        )?;
+        writeln!(stderr, "Resolving updates for {} targets...", target_count)?;
     }
     let chart_resolver = resolver_factory.chart_resolver();
     let image_resolver = resolver_factory.image_resolver();
-    let report = plan_updates_with_options(
-        &inventory,
-        chart_resolver.as_ref(),
-        image_resolver.as_ref(),
-        plan_options,
-    );
+    let report = if !json_output && human_output.progress && target_count > 0 {
+        let progress = Mutex::new(ProgressRenderer::new(stderr, &repo_root, human_output));
+        let progress_callback = |completed: usize, total: usize, path: &Path| {
+            if let Ok(mut renderer) = progress.lock() {
+                renderer.render(completed, total, path);
+            }
+        };
+        let report = plan_updates_with_progress(
+            &inventory,
+            chart_resolver.as_ref(),
+            image_resolver.as_ref(),
+            plan_options,
+            &progress_callback,
+        );
+        if let Ok(mut renderer) = progress.lock() {
+            renderer.finish();
+        }
+        report
+    } else {
+        plan_updates_with_options(
+            &inventory,
+            chart_resolver.as_ref(),
+            image_resolver.as_ref(),
+            plan_options,
+        )
+    };
 
     if strict && !report.skipped.is_empty() {
         emit_update_output(
             &report,
-            OutputContext::new(&repo_root, json_output, "plan", strict, non_interactive),
+            OutputContext::new(
+                &repo_root,
+                json_output,
+                "plan",
+                strict,
+                non_interactive,
+                human_output,
+            ),
             0,
             0,
             stdout,
@@ -238,12 +302,19 @@ where
         let approved_report = if non_interactive {
             report
         } else {
-            select_updates_for_apply(report, input, stderr)?
+            select_updates_for_apply(report, &repo_root, human_output, input, stderr)?
         };
         if approved_report.planned.is_empty() {
             emit_update_output(
                 &approved_report,
-                OutputContext::new(&repo_root, json_output, "apply", strict, non_interactive),
+                OutputContext::new(
+                    &repo_root,
+                    json_output,
+                    "apply",
+                    strict,
+                    non_interactive,
+                    human_output,
+                ),
                 0,
                 0,
                 stdout,
@@ -254,7 +325,14 @@ where
         let changed_files = apply_updates(&approved_report)?;
         emit_update_output(
             &approved_report,
-            OutputContext::new(&repo_root, json_output, "apply", strict, non_interactive),
+            OutputContext::new(
+                &repo_root,
+                json_output,
+                "apply",
+                strict,
+                non_interactive,
+                human_output,
+            ),
             approved_report.planned.len(),
             changed_files,
             stdout,
@@ -265,7 +343,14 @@ where
 
     emit_update_output(
         &report,
-        OutputContext::new(&repo_root, json_output, "plan", strict, non_interactive),
+        OutputContext::new(
+            &repo_root,
+            json_output,
+            "plan",
+            strict,
+            non_interactive,
+            human_output,
+        ),
         0,
         0,
         stdout,
@@ -280,6 +365,8 @@ where
 
 fn select_updates_for_apply<R: BufRead, E: Write>(
     report: UpdateReport,
+    repo_root: &Path,
+    human_output: HumanOutput,
     mut input: R,
     stderr: &mut E,
 ) -> Result<UpdateReport> {
@@ -287,10 +374,8 @@ fn select_updates_for_apply<R: BufRead, E: Write>(
     for update in report.planned {
         write!(
             stderr,
-            "Update {} {} -> {}? [y/N] ",
-            update.path().display(),
-            update.current_version(),
-            update.latest_version()
+            "{}",
+            render_prompt(&update, repo_root, human_output)
         )?;
         let mut buffer = String::new();
         input.read_line(&mut buffer)?;
@@ -311,6 +396,7 @@ struct OutputContext<'a> {
     mode: &'a str,
     strict: bool,
     non_interactive: bool,
+    human_output: HumanOutput,
 }
 
 impl<'a> OutputContext<'a> {
@@ -320,6 +406,7 @@ impl<'a> OutputContext<'a> {
         mode: &'a str,
         strict: bool,
         non_interactive: bool,
+        human_output: HumanOutput,
     ) -> Self {
         Self {
             repo_root,
@@ -327,6 +414,7 @@ impl<'a> OutputContext<'a> {
             mode,
             strict,
             non_interactive,
+            human_output,
         }
     }
 }
@@ -369,15 +457,8 @@ fn emit_update_output<W: Write, E: Write>(
     for update in &report.planned {
         writeln!(
             stderr,
-            "{}: {} {} -> {}",
-            update
-                .path()
-                .strip_prefix(context.repo_root)
-                .unwrap_or(update.path())
-                .display(),
-            update.target_kind(),
-            update.current_version(),
-            update.latest_version()
+            "{}",
+            render_update_line(update, context.repo_root, context.human_output)
         )?;
     }
     if context.mode == "plan" {
@@ -392,4 +473,159 @@ fn emit_update_output<W: Write, E: Write>(
         )?;
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HumanOutput {
+    color: bool,
+    progress: bool,
+}
+
+impl HumanOutput {
+    fn plain() -> Self {
+        Self {
+            color: false,
+            progress: false,
+        }
+    }
+
+    fn styled(self, text: &str, style: AnsiStyle) -> String {
+        if !self.color {
+            return text.to_string();
+        }
+        format!("\x1b[{}m{text}\x1b[0m", style.code())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AnsiStyle {
+    Cyan,
+    Yellow,
+    Green,
+}
+
+impl AnsiStyle {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Cyan => "36",
+            Self::Yellow => "33",
+            Self::Green => "32",
+        }
+    }
+}
+
+fn render_update_line(
+    update: &PlannedUpdate,
+    repo_root: &Path,
+    human_output: HumanOutput,
+) -> String {
+    let path = human_output.styled(&relative_path(update.path(), repo_root), AnsiStyle::Cyan);
+    let current = human_output.styled(update.current_version(), AnsiStyle::Yellow);
+    let latest = human_output.styled(update.latest_version(), AnsiStyle::Green);
+
+    match update {
+        PlannedUpdate::Chart(chart_update) => {
+            let mut line = format!(
+                "{path}: HelmRelease {} {} {current} -> {latest}",
+                chart_update.target_name, chart_update.chart_name
+            );
+            if chart_update.inherited_source {
+                line.push_str(" inherited-source");
+            }
+            line
+        }
+        PlannedUpdate::Deployment(deployment_update) => format!(
+            "{path}: Deployment {} {} {current} -> {latest}",
+            deployment_update.target_name, deployment_update.yaml_path
+        ),
+    }
+}
+
+fn render_prompt(update: &PlannedUpdate, repo_root: &Path, human_output: HumanOutput) -> String {
+    let path = human_output.styled(&relative_path(update.path(), repo_root), AnsiStyle::Cyan);
+    let current = human_output.styled(update.current_version(), AnsiStyle::Yellow);
+    let latest = human_output.styled(update.latest_version(), AnsiStyle::Green);
+    let label = match update {
+        PlannedUpdate::Chart(_) => "chart",
+        PlannedUpdate::Deployment(_) => "image",
+    };
+    format!("Update {path} ({label} {current} -> {latest})? [y/N] ")
+}
+
+fn relative_path(path: &Path, repo_root: &Path) -> String {
+    path.strip_prefix(repo_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string()
+}
+
+struct ProgressRenderer<'a, E: Write> {
+    stderr: &'a mut E,
+    repo_root: &'a Path,
+    human_output: HumanOutput,
+    started_at: Instant,
+    last_width: usize,
+}
+
+impl<'a, E: Write> ProgressRenderer<'a, E> {
+    fn new(stderr: &'a mut E, repo_root: &'a Path, human_output: HumanOutput) -> Self {
+        Self {
+            stderr,
+            repo_root,
+            human_output,
+            started_at: Instant::now(),
+            last_width: 0,
+        }
+    }
+
+    fn render(&mut self, completed: usize, total: usize, path: &Path) {
+        let spinner = ["|", "/", "-", "\\"][completed % 4];
+        let bar = render_progress_bar(completed, total, 24);
+        let elapsed = self.started_at.elapsed().as_secs();
+        let path = ellipsize(&relative_path(path, self.repo_root), 48);
+        let path = self.human_output.styled(&path, AnsiStyle::Cyan);
+        let line = format!("{spinner} Resolving {completed}/{total} [{bar}] {elapsed}s {path}");
+        let padding = self.last_width.saturating_sub(line.len());
+        let _ = write!(self.stderr, "\r{line}{}", " ".repeat(padding));
+        let _ = self.stderr.flush();
+        self.last_width = line.len();
+    }
+
+    fn finish(&mut self) {
+        if self.last_width == 0 {
+            return;
+        }
+        let _ = write!(self.stderr, "\r{}\r", " ".repeat(self.last_width));
+        let _ = self.stderr.flush();
+        self.last_width = 0;
+    }
+}
+
+fn render_progress_bar(completed: usize, total: usize, width: usize) -> String {
+    if total == 0 {
+        return "-".repeat(width);
+    }
+    let filled = width
+        .saturating_mul(completed)
+        .checked_div(total)
+        .unwrap_or(0);
+    format!("{}{}", "=".repeat(filled), "-".repeat(width - filled))
+}
+
+fn ellipsize(text: &str, max_width: usize) -> String {
+    let chars = text.chars().collect::<Vec<_>>();
+    if chars.len() <= max_width {
+        return text.to_string();
+    }
+    if max_width <= 3 {
+        return ".".repeat(max_width);
+    }
+    let head_len = (max_width - 3) / 2;
+    let tail_len = max_width - 3 - head_len;
+    let head = chars.iter().take(head_len).collect::<String>();
+    let tail = chars
+        .iter()
+        .skip(chars.len() - tail_len)
+        .collect::<String>();
+    format!("{head}...{tail}")
 }

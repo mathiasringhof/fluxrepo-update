@@ -1,7 +1,24 @@
 # Output
 
 This page explains the main fields returned by `inventory --json` and
-`update-helm --json`.
+`update-helm --json`, plus the human output conventions for terminal use.
+
+## Human Output
+
+`inventory` prints plain summary count lines to stdout.
+
+`update-helm` prints human status, skipped targets, planned updates, prompts, and final
+summaries to stderr. Update lines include the relative file path, target kind, resource
+name, update field, and version change:
+
+```text
+apps/base/demo/release.yaml: HelmRelease demo demo-chart 1.0.0 -> 1.2.0
+apps/base/sonarr/deployment.yaml: Deployment sonarr spec.template.spec.containers[0].image 4.0.0 -> 4.1.0
+```
+
+When stderr is a terminal, `update-helm` colors paths cyan, current versions yellow, and
+latest versions green, and shows a compact resolving progress indicator. `--json` disables
+all human status, color, and progress output.
 
 ## `inventory --json`
 
