@@ -49,6 +49,10 @@ cargo run -- update-helm /path/to/flux-repo --non-interactive
 cargo run -- update-helm /path/to/flux-repo --json --non-interactive
 ```
 
+Human `update-helm` output goes to stderr, uses relative paths, includes target details
+for each planned update, and shows terminal color/progress when stderr is interactive.
+`--json` keeps stdout to indented JSON and disables human progress/color output.
+
 Apply updates interactively:
 
 ```bash
