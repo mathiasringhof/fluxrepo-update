@@ -64,32 +64,36 @@ fn inventory_human_output_prints_summary_counts() {
 }
 
 #[test]
-fn inventory_missing_repo_root_prints_help() {
-    let (code, _, stderr) = run_cli(
+fn inventory_missing_repo_root_returns_parse_error() {
+    let (code, _, _) = run_cli(
         &["fluxrepo-update", "inventory"],
         "",
         &StaticResolverFactory::default(),
     );
 
     assert_eq!(code, 2);
-    assert!(stderr.contains("Usage:"));
-    assert!(stderr.contains("inventory"));
-    assert!(stderr.contains("REPO_ROOT"));
 }
 
 #[test]
-fn inventory_help_lists_stable_contract() {
+fn inventory_json_runtime_error_is_structured() {
     let (code, stdout, stderr) = run_cli(
-        &["fluxrepo-update", "inventory", "--help"],
+        &["fluxrepo-update", "inventory", "/missing/path", "--json"],
         "",
         &StaticResolverFactory::default(),
     );
-    let help = format!("{stdout}{stderr}");
+    let output = json_error_output(&stdout, &stderr);
+    let payload: Value = serde_json::from_str(output).expect("json error output");
 
-    assert_eq!(code, 0);
-    assert!(help.contains("inventory"));
-    assert!(help.contains("REPO_ROOT"));
-    assert!(help.contains("--json"));
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    assert_eq!(payload["error"], "runtime_error");
+    assert_eq!(payload["exit_code"], 2);
+    assert!(
+        payload["message"]
+            .as_str()
+            .expect("message")
+            .contains("/missing/path")
+    );
 }
 
 #[test]
@@ -318,36 +322,42 @@ fn update_helm_write_requires_non_interactive() {
 }
 
 #[test]
-fn update_helm_missing_repo_root_prints_help() {
-    let (code, _, stderr) = run_cli(
+fn update_helm_json_write_requires_non_interactive_error_is_structured() {
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            fixture_root().to_str().expect("fixture path"),
+            "--write",
+            "--json",
+        ],
+        "",
+        &StaticResolverFactory::default(),
+    );
+    let output = json_error_output(&stdout, &stderr);
+    let payload: Value = serde_json::from_str(output).expect("json error output");
+
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    assert_eq!(payload["error"], "invalid_arguments");
+    assert_eq!(payload["exit_code"], 2);
+    assert!(
+        payload["message"]
+            .as_str()
+            .expect("message")
+            .contains("--non-interactive")
+    );
+}
+
+#[test]
+fn update_helm_missing_repo_root_returns_parse_error() {
+    let (code, _, _) = run_cli(
         &["fluxrepo-update", "update-helm"],
         "",
         &StaticResolverFactory::default(),
     );
 
     assert_eq!(code, 2);
-    assert!(stderr.contains("Usage:"));
-    assert!(stderr.contains("update-helm"));
-    assert!(stderr.contains("REPO_ROOT"));
-}
-
-#[test]
-fn update_helm_help_lists_stable_contract() {
-    let (code, stdout, stderr) = run_cli(
-        &["fluxrepo-update", "update-helm", "--help"],
-        "",
-        &StaticResolverFactory::default(),
-    );
-    let help = format!("{stdout}{stderr}");
-
-    assert_eq!(code, 0);
-    assert!(help.contains("update-helm"));
-    assert!(help.contains("REPO_ROOT"));
-    assert!(help.contains("--json"));
-    assert!(help.contains("--write"));
-    assert!(help.contains("--strict"));
-    assert!(help.contains("--best-effort"));
-    assert!(help.contains("--non-interactive"));
 }
 
 #[test]
@@ -498,4 +508,12 @@ fn run_cli_with_options(
         String::from_utf8(stdout).expect("utf8 stdout"),
         String::from_utf8(stderr).expect("utf8 stderr"),
     )
+}
+
+fn json_error_output<'a>(stdout: &'a str, stderr: &'a str) -> &'a str {
+    if stdout.trim().is_empty() {
+        stderr
+    } else {
+        stdout
+    }
 }

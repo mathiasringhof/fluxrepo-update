@@ -33,8 +33,7 @@ and what it deliberately skips.
 ## Skipped
 
 - generated Flux bootstrap manifests under `clusters/*/flux-system/gotk-*`
-- hidden and local tool cache directories such as `.git`, `.venv`, `.uv-cache`,
-  `.pytest_cache`, `.ruff_cache`, and `__pycache__`
+- hidden directories, `target`, and common local tool cache directories
 
 ## Unsupported
 
@@ -58,10 +57,10 @@ In practice this is what lets the tool update:
 
 even though the overlay files do not repeat the chart name and repository in full.
 
-## Gap Vs `kubeflux/updatehelm.sh`
+## Gap Vs Legacy Shell Script
 
-The legacy shell script only updates manifests that contain chart name, repository name,
-and chart version in the same file. In this repository that misses at least:
+The legacy shell updater only handled manifests that contain chart name, repository name,
+and chart version in the same file. That misses at least:
 
 - patch manifests that carry only the chart version
 - values-only `HelmRelease` overlays, which still matter for inventory

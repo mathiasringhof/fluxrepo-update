@@ -52,6 +52,7 @@ cargo run -- update-helm /path/to/flux-repo --json --non-interactive
 Human `update-helm` output goes to stderr, uses relative paths, includes target details
 for each planned update, and shows terminal color/progress when stderr is interactive.
 `--json` keeps stdout to indented JSON and disables human progress/color output.
+Runtime failures after parsing are JSON objects on stderr when `--json` is present.
 
 Apply updates interactively:
 
@@ -110,9 +111,11 @@ Invalid combinations:
 - `10`: planning mode found updates
 - `20`: updates were applied
 
+See [docs/output.md](docs/output.md) for the JSON success and error shapes.
+
 ## Current Coverage
 
-Updated today:
+Updated directly:
 
 - `HelmRelease.spec.chart.spec.version` in base manifests such as
   `apps/base/*/release.yaml`
@@ -125,7 +128,7 @@ Updated today:
 - the existing TrueCharts OCI special case
 - public registry tags resolved through the OCI registry HTTP API for comparable versioned tags
 
-Not updated today:
+Not updated directly:
 
 - values-only `HelmRelease` overlays
 - image references outside `Deployment` container and initContainer fields

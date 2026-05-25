@@ -102,6 +102,9 @@ The CLI rejects these combinations:
 
 - `--write` without `--non-interactive`
 
+With `--json`, failures after argument parsing are reported as JSON on stderr with
+`error`, `message`, and `exit_code` fields.
+
 `--strict` changes skipped resolutions from a warning into a failing exit code. A skip can
 happen because:
 

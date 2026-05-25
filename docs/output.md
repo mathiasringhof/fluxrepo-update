@@ -138,6 +138,22 @@ Typical reasons:
 - image reference missing an explicit tag or pinned by digest
 - registry failure while listing image tags
 
+## JSON Errors
+
+If a command includes `--json` and fails after argument parsing, the CLI writes a JSON
+error object to stderr and exits with the same code the text error would use:
+
+```json
+{
+  "error": "runtime_error",
+  "message": "failed to resolve /missing/path: No such file or directory (os error 2)",
+  "exit_code": 2
+}
+```
+
+Clap parse and help errors keep their normal text output.
+`error` is a stable machine label such as `runtime_error` or `invalid_arguments`.
+
 ## Exit Codes
 
 - `0`: no updates applied, no updates found, or no updates approved

@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use serde_json::json;
 
 use crate::resolvers::{
     ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
@@ -49,25 +50,43 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    #[command(about = "Scan a Flux repository and list update targets")]
     Inventory {
+        #[arg(value_name = "REPO_ROOT", help = "Flux repository root")]
         repo_root: PathBuf,
-        #[arg(long = "json")]
+        #[arg(long = "json", help = "Emit the full inventory as JSON")]
         json_output: bool,
     },
     #[command(name = "update-helm")]
+    #[command(about = "Plan or apply HelmRelease and Deployment image updates")]
     UpdateHelm {
+        #[arg(value_name = "REPO_ROOT", help = "Flux repository root")]
         repo_root: PathBuf,
-        #[arg(long = "json")]
+        #[arg(long = "json", help = "Emit the update report as JSON")]
         json_output: bool,
-        #[arg(long)]
+        #[arg(long, help = "Apply all planned updates; requires --non-interactive")]
         write: bool,
-        #[arg(long, conflicts_with = "best_effort")]
+        #[arg(
+            long,
+            conflicts_with = "best_effort",
+            help = "Exit with code 2 when any target is skipped"
+        )]
         strict: bool,
-        #[arg(long = "best-effort")]
+        #[arg(long = "best-effort", help = "Allow skipped targets while planning")]
         best_effort: bool,
-        #[arg(long = "non-interactive")]
+        #[arg(long = "non-interactive", help = "Disable prompts")]
         non_interactive: bool,
     },
+}
+
+impl Commands {
+    fn json_output(&self) -> bool {
+        match self {
+            Self::Inventory { json_output, .. } | Self::UpdateHelm { json_output, .. } => {
+                *json_output
+            }
+        }
+    }
 }
 
 pub fn run() -> Result<u8> {
@@ -141,7 +160,8 @@ where
         }
     };
 
-    match cli.command {
+    let json_output = cli.command.json_output();
+    let exit_code = match cli.command {
         Commands::Inventory {
             repo_root,
             json_output,
@@ -166,7 +186,38 @@ where
             plan_options,
             human_output,
         ),
+    };
+
+    match exit_code {
+        Ok(code) => Ok(code),
+        Err(error) if json_output => {
+            emit_json_error(stderr, &error, EXIT_STRICT_FAILURE)?;
+            Ok(EXIT_STRICT_FAILURE)
+        }
+        Err(error) => Err(error),
     }
+}
+
+fn emit_json_error<E: Write>(stderr: &mut E, error: &anyhow::Error, exit_code: u8) -> Result<()> {
+    emit_json_error_message(stderr, "runtime_error", &format!("{error:#}"), exit_code)
+}
+
+fn emit_json_error_message<E: Write>(
+    stderr: &mut E,
+    error: &str,
+    message: &str,
+    exit_code: u8,
+) -> Result<()> {
+    writeln!(
+        stderr,
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "error": error,
+            "message": message,
+            "exit_code": exit_code,
+        }))?
+    )?;
+    Ok(())
 }
 
 fn inventory_command<W: Write>(
@@ -235,10 +286,12 @@ where
 {
     let repo_root = repo_root.canonicalize()?;
     if write && !non_interactive {
-        writeln!(
-            stderr,
-            "Using --write requires --non-interactive. Interactive mode already writes approved changes."
-        )?;
+        let message = "Using --write requires --non-interactive. Interactive mode already writes approved changes.";
+        if json_output {
+            emit_json_error_message(stderr, "invalid_arguments", message, EXIT_STRICT_FAILURE)?;
+        } else {
+            writeln!(stderr, "{message}")?;
+        }
         return Ok(EXIT_STRICT_FAILURE);
     }
 
