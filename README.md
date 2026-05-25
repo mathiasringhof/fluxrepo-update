@@ -65,6 +65,9 @@ Apply all planned updates non-interactively:
 cargo run -- update-helm /path/to/flux-repo --write --non-interactive
 ```
 
+Apply mode updates the targeted YAML scalar values in place, preserving surrounding
+formatting, comments, quote style, and multi-document separators where possible.
+
 The tests include `tests/fixtures/kubeflux/`, a small fixture distilled from a real Flux
 repository. It is used for fixture-backed tests and local examples:
 

@@ -7,10 +7,10 @@ use std::sync::Mutex;
 use anyhow::{Result, anyhow};
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
-use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
-use yaml_serde::{Deserializer, Mapping, Value};
+use yaml_edit::path::YamlPath;
+use yaml_edit::{Document as EditDocument, Scalar as EditScalar, ScalarValue, YamlFile};
 
 use crate::models::{DeploymentImageTarget, HelmReleaseTarget, Inventory, TargetKind};
 use crate::resolvers::{
@@ -517,12 +517,11 @@ pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
     let mut changed_files = 0;
     for (path, updates) in updates_by_path {
         let text = fs::read_to_string(&path)?;
-        let mut documents = Deserializer::from_str(&text)
-            .map(Value::deserialize)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let yaml_file: YamlFile = text.parse()?;
+        let documents = yaml_file.documents().collect::<Vec<_>>();
 
         for update in updates {
-            let document = documents.get_mut(update.document_index()).ok_or_else(|| {
+            let document = documents.get(update.document_index()).ok_or_else(|| {
                 anyhow!(
                     "document index {} not found in {}",
                     update.document_index(),
@@ -531,156 +530,84 @@ pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
             })?;
             match update {
                 PlannedUpdate::Chart(chart_update) => {
-                    ensure_chart_spec(document)?;
-                    set_nested_string(
+                    ensure_editable_chart_spec(document)?;
+                    set_yaml_scalar_value(
                         document,
-                        &["spec", "chart", "spec", "version"],
+                        "spec.chart.spec.version",
                         &chart_update.latest_version,
+                        true,
                     )?;
                 }
                 PlannedUpdate::Deployment(deployment_update) => {
-                    set_yaml_path_value(
+                    set_yaml_scalar_value(
                         document,
                         &deployment_update.yaml_path,
                         &deployment_update.latest_image,
+                        false,
                     )?;
                 }
             }
         }
 
-        let rendered = documents
-            .iter()
-            .map(yaml_serde::to_string)
-            .collect::<std::result::Result<Vec<_>, _>>()?
-            .join("---\n");
-        fs::write(&path, rendered)?;
+        fs::write(&path, yaml_file.to_string())?;
         changed_files += 1;
     }
     Ok(changed_files)
 }
 
-fn ensure_chart_spec(document: &mut Value) -> Result<()> {
-    let mapping = document
-        .as_mapping_mut()
+fn ensure_editable_chart_spec(document: &EditDocument) -> Result<()> {
+    document
+        .as_mapping()
         .ok_or_else(|| anyhow!("HelmRelease document must be a YAML mapping"))?;
-    ensure_mapping_child(mapping, "spec")?;
-    let spec = mapping
-        .get_mut(Value::String("spec".to_string()))
-        .and_then(Value::as_mapping_mut)
-        .expect("spec mapping exists");
-    ensure_mapping_child(spec, "chart")?;
-    let chart = spec
-        .get_mut(Value::String("chart".to_string()))
-        .and_then(Value::as_mapping_mut)
-        .expect("chart mapping exists");
-    ensure_mapping_child(chart, "spec")?;
-    Ok(())
-}
 
-fn ensure_mapping_child(mapping: &mut Mapping, key: &str) -> Result<()> {
-    let key_value = Value::String(key.to_string());
-    if !mapping.contains_key(&key_value) {
-        mapping.insert(key_value.clone(), Value::Mapping(Mapping::new()));
-    }
-    if !mapping.get(&key_value).is_some_and(Value::is_mapping) {
-        return Err(anyhow!("HelmRelease {key} must be a YAML mapping"));
-    }
-    Ok(())
-}
-
-fn set_nested_string(document: &mut Value, path: &[&str], value: &str) -> Result<()> {
-    let mut current = document;
-    for key in &path[..path.len() - 1] {
-        current = current
-            .as_mapping_mut()
-            .and_then(|mapping| mapping.get_mut(Value::String((*key).to_string())))
-            .ok_or_else(|| anyhow!("missing YAML mapping key {key}"))?;
-    }
-    let last_key = path.last().expect("non-empty path");
-    current
-        .as_mapping_mut()
-        .ok_or_else(|| anyhow!("expected YAML mapping"))?
-        .insert(
-            Value::String((*last_key).to_string()),
-            Value::String(value.to_string()),
-        );
-    Ok(())
-}
-
-fn set_yaml_path_value(document: &mut Value, yaml_path: &str, value: &str) -> Result<()> {
-    let parts = parse_yaml_path(yaml_path);
-    let mut current = document;
-    for part in &parts[..parts.len() - 1] {
-        current = match part {
-            YamlPathPart::Key(key) => current
-                .as_mapping_mut()
-                .and_then(|mapping| mapping.get_mut(Value::String(key.clone())))
-                .ok_or_else(|| anyhow!("Expected YAML mapping while traversing {yaml_path}"))?,
-            YamlPathPart::Index(index) => current
-                .as_sequence_mut()
-                .and_then(|sequence| sequence.get_mut(*index))
-                .ok_or_else(|| anyhow!("Expected YAML sequence while traversing {yaml_path}"))?,
+    for path in ["spec", "spec.chart", "spec.chart.spec"] {
+        let Some(node) = document.get_path(path) else {
+            continue;
         };
+        if node.as_mapping().is_none() {
+            let key = path.rsplit('.').next().expect("non-empty path");
+            return Err(anyhow!("HelmRelease {key} must be a YAML mapping"));
+        }
     }
 
-    match parts.last().expect("non-empty YAML path") {
-        YamlPathPart::Key(key) => {
-            current
-                .as_mapping_mut()
-                .ok_or_else(|| anyhow!("Expected YAML mapping at {yaml_path}"))?
-                .insert(Value::String(key.clone()), Value::String(value.to_string()));
-        }
-        YamlPathPart::Index(index) => {
-            let sequence = current
-                .as_sequence_mut()
-                .ok_or_else(|| anyhow!("Expected YAML sequence at {yaml_path}"))?;
-            sequence[*index] = Value::String(value.to_string());
-        }
+    Ok(())
+}
+
+fn set_yaml_scalar_value(
+    document: &EditDocument,
+    yaml_path: &str,
+    value: &str,
+    create_missing: bool,
+) -> Result<()> {
+    if let Some(node) = document.get_path(yaml_path) {
+        let scalar = node
+            .as_scalar()
+            .ok_or_else(|| anyhow!("Expected YAML scalar at {yaml_path}"))?;
+        set_scalar_preserving_style(scalar, value);
+    } else if create_missing {
+        document.set_path(yaml_path, ScalarValue::string(value));
+    } else {
+        return Err(anyhow!("missing YAML path {yaml_path}"));
     }
     Ok(())
 }
 
-fn parse_yaml_path(yaml_path: &str) -> Vec<YamlPathPart> {
-    let mut parts = Vec::new();
-    for segment in yaml_path.split('.').filter(|segment| !segment.is_empty()) {
-        let key = segment.split('[').next().unwrap_or_default();
-        if !key.is_empty() {
-            parts.push(YamlPathPart::Key(key.to_string()));
+fn set_scalar_preserving_style(scalar: &EditScalar, value: &str) {
+    let rendered = match scalar.value().as_str() {
+        text if text.starts_with('"') && text.ends_with('"') => {
+            ScalarValue::double_quoted(value).to_string()
         }
-        for index_text in segment.split('[').skip(1) {
-            if let Some((index, _)) = index_text.split_once(']')
-                && let Ok(index) = index.parse()
-            {
-                parts.push(YamlPathPart::Index(index));
-            }
+        text if text.starts_with('\'') && text.ends_with('\'') => {
+            ScalarValue::single_quoted(value).to_string()
         }
-    }
-    parts
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum YamlPathPart {
-    Key(String),
-    Index(usize),
+        _ => value.to_string(),
+    };
+    scalar.set_value(&rendered);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_yaml_paths_with_terminal_indexes() {
-        assert_eq!(
-            parse_yaml_path("spec.template.spec.containers[0]"),
-            vec![
-                YamlPathPart::Key("spec".to_string()),
-                YamlPathPart::Key("template".to_string()),
-                YamlPathPart::Key("spec".to_string()),
-                YamlPathPart::Key("containers".to_string()),
-                YamlPathPart::Index(0),
-            ]
-        );
-    }
 
     #[test]
     fn serializes_structured_skips_without_reparsing_display_text() {

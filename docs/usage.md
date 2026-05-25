@@ -72,6 +72,8 @@ Options:
 `Deployment` updates are limited to direct `containers[*].image` and
 `initContainers[*].image` fields. Mutable tags such as `latest` and `main`, digest-pinned
 images, and bare image references without an explicit tag are reported as skipped.
+Apply mode edits the targeted YAML scalar in place so unrelated formatting, comments,
+quote style, and multi-document separators stay intact where possible.
 
 ## Interactive Vs Automation Behavior
 
