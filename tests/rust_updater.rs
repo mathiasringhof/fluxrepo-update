@@ -192,10 +192,8 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
             },
             chart_name: Some("demo".to_string()),
             repo_name: Some("missing-repo".to_string()),
-            repo_kind: Some("HelmRepository".to_string()),
             current_version: Some("1.0.0".to_string()),
             source_path: Some(PathBuf::from("/repo/release.yaml")),
-            source_document_index: Some(0),
             source_is_inherited: false,
         });
     inventory.repositories.insert(
@@ -296,10 +294,8 @@ fn update_report_serializes_retryable_chart_request_skip_with_source_url() {
             },
             chart_name: Some("demo".to_string()),
             repo_name: Some("demo-repo".to_string()),
-            repo_kind: Some("HelmRepository".to_string()),
             current_version: Some("1.0.0".to_string()),
             source_path: Some(PathBuf::from("/repo/release.yaml")),
-            source_document_index: Some(0),
             source_is_inherited: false,
         });
 

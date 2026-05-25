@@ -90,9 +90,7 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
         {
             target.chart_name.clone_from(&source.chart_name);
             target.repo_name.clone_from(&source.repo_name);
-            target.repo_kind.clone_from(&source.repo_kind);
             target.source_path = Some(source.path.clone());
-            target.source_document_index = Some(source.document_index);
             target.source_is_inherited =
                 source.path != target.path || source.document_index != target.document_index;
         }
@@ -220,9 +218,7 @@ fn parse_helmrelease(
         chart_name: nested_string(document, &["spec", "chart", "spec", "chart"]),
         current_version: nested_string(document, &["spec", "chart", "spec", "version"]),
         repo_name: nested_string(document, &["spec", "chart", "spec", "sourceRef", "name"]),
-        repo_kind: nested_string(document, &["spec", "chart", "spec", "sourceRef", "kind"]),
         source_path: Some(path.to_path_buf()),
-        source_document_index: Some(document_index),
         source_is_inherited: false,
     })
 }

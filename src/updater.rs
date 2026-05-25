@@ -7,7 +7,6 @@ use std::sync::Mutex;
 use anyhow::{Result, anyhow};
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
-use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 use yaml_edit::path::YamlPath;
 use yaml_edit::{Document as EditDocument, Scalar as EditScalar, ScalarValue, YamlFile};
@@ -18,7 +17,7 @@ use crate::resolvers::{
     parse_image_reference,
 };
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct PlannedChartUpdate {
     pub path: PathBuf,
     pub document_index: usize,
@@ -30,7 +29,7 @@ pub struct PlannedChartUpdate {
     pub inherited_source: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct PlannedDeploymentUpdate {
     pub path: PathBuf,
     pub document_index: usize,
@@ -42,12 +41,9 @@ pub struct PlannedDeploymentUpdate {
     pub latest_version: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "target_kind")]
+#[derive(Debug, Clone)]
 pub enum PlannedUpdate {
-    #[serde(rename = "HelmRelease")]
     Chart(PlannedChartUpdate),
-    #[serde(rename = "Deployment")]
     Deployment(PlannedDeploymentUpdate),
 }
 

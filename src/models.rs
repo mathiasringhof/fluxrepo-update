@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -9,16 +8,6 @@ pub enum RepoType {
     Default,
     Oci,
     Other(String),
-}
-
-impl RepoType {
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Default => "default",
-            Self::Oci => "oci",
-            Self::Other(value) => value.as_str(),
-        }
-    }
 }
 
 impl From<&str> for RepoType {
@@ -37,16 +26,7 @@ impl From<String> for RepoType {
     }
 }
 
-impl Serialize for RepoType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetKind {
     HelmRelease,
     Deployment,
@@ -61,14 +41,14 @@ impl TargetKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResourceId {
     pub kind: String,
     pub name: String,
     pub namespace: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct HelmRepository {
     pub name: String,
     pub url: String,
@@ -77,7 +57,7 @@ pub struct HelmRepository {
     pub document_index: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ImageReference {
     pub path: PathBuf,
     pub document_index: usize,
@@ -87,7 +67,7 @@ pub struct ImageReference {
     pub image: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct DeploymentImageTarget {
     pub path: PathBuf,
     pub document_index: usize,
@@ -96,17 +76,15 @@ pub struct DeploymentImageTarget {
     pub image: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct HelmReleaseTarget {
     pub path: PathBuf,
     pub document_index: usize,
     pub resource_id: ResourceId,
     pub chart_name: Option<String>,
     pub repo_name: Option<String>,
-    pub repo_kind: Option<String>,
     pub current_version: Option<String>,
     pub source_path: Option<PathBuf>,
-    pub source_document_index: Option<usize>,
     pub source_is_inherited: bool,
 }
 

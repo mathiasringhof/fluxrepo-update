@@ -206,6 +206,31 @@ fn update_helm_json_plan_includes_stable_apply_ids() {
 }
 
 #[test]
+fn update_helm_json_plan_apply_ids_are_unique() {
+    let factory = paperless_update_factory();
+
+    let (code, stdout, _) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            fixture_root().to_str().expect("fixture path"),
+            "--json",
+            "--non-interactive",
+        ],
+        "",
+        &factory,
+    );
+
+    assert_eq!(code, 10);
+    let payload: Value = serde_json::from_str(&stdout).expect("json output");
+    let mut ids = std::collections::BTreeSet::new();
+    for item in payload["planned"].as_array().expect("planned array") {
+        let id = item["id"].as_str().expect("planned item id");
+        assert!(ids.insert(id.to_string()), "duplicate apply id: {id}");
+    }
+}
+
+#[test]
 fn update_helm_non_interactive_write_applies_selected_apply_id_only() {
     let (_temp, repo_root) = copy_fixture();
     let factory = paperless_update_factory();
@@ -241,6 +266,53 @@ fn update_helm_non_interactive_write_applies_selected_apply_id_only() {
         fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
             .expect("read base")
             .contains("12.0.0")
+    );
+    assert!(
+        fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
+            .expect("read patch")
+            .contains("11.29.10")
+    );
+}
+
+#[test]
+fn update_helm_non_interactive_write_applies_multiple_apply_ids() {
+    let (_temp, repo_root) = copy_fixture();
+    let factory = paperless_update_factory();
+    let plan = json_plan(&repo_root, &factory);
+    let sonarr_id = planned_id_for_path(&plan, "apps/base/sonarr/deployment.yaml");
+    let paperless_id = planned_id_for_path(&plan, "apps/base/paperless-ngx/release.yaml");
+    let args = vec![
+        "fluxrepo-update".to_string(),
+        "update-helm".to_string(),
+        repo_root.to_str().expect("repo path").to_string(),
+        "--json".to_string(),
+        "--write".to_string(),
+        "--non-interactive".to_string(),
+        "--apply-id".to_string(),
+        sonarr_id,
+        "--apply-id".to_string(),
+        paperless_id,
+    ];
+
+    let (code, stdout, _) = run_cli_owned(args, "", &factory);
+
+    assert_eq!(code, 20);
+    let payload: Value = serde_json::from_str(&stdout).expect("json output");
+    assert_eq!(payload["mode"], "apply");
+    assert_eq!(payload["summary"]["applied_count"], 2);
+    assert_eq!(
+        payload["planned"].as_array().expect("planned array").len(),
+        2
+    );
+    assert!(
+        fs::read_to_string(repo_root.join("apps/base/sonarr/deployment.yaml"))
+            .expect("read sonarr")
+            .contains("linuxserver/sonarr:version-4.0.17.3000")
+    );
+    assert!(
+        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
+            .expect("read base")
+            .contains("12.1.0")
     );
     assert!(
         fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
@@ -291,6 +363,51 @@ fn update_helm_non_interactive_write_rejects_unknown_apply_id_without_writing() 
 }
 
 #[test]
+fn update_helm_non_interactive_write_rejects_mixed_apply_ids_without_writing() {
+    let (_temp, repo_root) = copy_fixture();
+    let factory = paperless_update_factory();
+    let plan = json_plan(&repo_root, &factory);
+    let sonarr_id = planned_id_for_path(&plan, "apps/base/sonarr/deployment.yaml");
+    let args = vec![
+        "fluxrepo-update".to_string(),
+        "update-helm".to_string(),
+        repo_root.to_str().expect("repo path").to_string(),
+        "--json".to_string(),
+        "--write".to_string(),
+        "--non-interactive".to_string(),
+        "--apply-id".to_string(),
+        sonarr_id,
+        "--apply-id".to_string(),
+        "v1:missing".to_string(),
+    ];
+
+    let (code, stdout, stderr) = run_cli_owned(args, "", &factory);
+    let output = json_error_output(&stdout, &stderr);
+    let payload: Value = serde_json::from_str(output).expect("json error output");
+
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    assert_eq!(payload["error"], "invalid_arguments");
+    assert_eq!(payload["exit_code"], 2);
+    assert!(
+        payload["message"]
+            .as_str()
+            .expect("message")
+            .contains("Unknown apply id: v1:missing")
+    );
+    assert!(
+        fs::read_to_string(repo_root.join("apps/base/sonarr/deployment.yaml"))
+            .expect("read sonarr")
+            .contains("linuxserver/sonarr:version-4.0.16.2944")
+    );
+    assert!(
+        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
+            .expect("read base")
+            .contains("12.0.0")
+    );
+}
+
+#[test]
 fn update_helm_non_interactive_write_rejects_stale_apply_id_when_no_updates_are_planned() {
     let (_temp, repo_root) = copy_fixture();
     let factory = StaticResolverFactory::new(
@@ -325,6 +442,23 @@ fn update_helm_non_interactive_write_rejects_stale_apply_id_when_no_updates_are_
             .expect("message")
             .contains("Unknown apply id: v1:stale")
     );
+}
+
+#[test]
+fn update_helm_best_effort_flag_is_not_supported() {
+    let (code, _, _) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            fixture_root().to_str().expect("fixture path"),
+            "--best-effort",
+            "--non-interactive",
+        ],
+        "",
+        &StaticResolverFactory::default(),
+    );
+
+    assert_eq!(code, 2);
 }
 
 #[test]
@@ -562,7 +696,6 @@ fn update_helm_help_lists_stable_contract() {
     assert!(help.contains("--json"));
     assert!(help.contains("--write"));
     assert!(help.contains("--strict"));
-    assert!(help.contains("--best-effort"));
     assert!(help.contains("--non-interactive"));
     assert!(help.contains("--apply-id"));
 }

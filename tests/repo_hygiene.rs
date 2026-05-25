@@ -110,6 +110,19 @@ fn deprecated_serde_yaml_dependency_is_removed() {
 }
 
 #[test]
+fn unused_cli_test_harness_dependencies_are_not_declared() {
+    let manifest =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+
+    for dependency in ["assert_cmd", "predicates"] {
+        assert!(
+            !manifest.contains(dependency),
+            "Cargo.toml should not declare unused CLI test dependency: {dependency}"
+        );
+    }
+}
+
+#[test]
 fn yaml_dependency_is_imported_directly_without_local_wrapper() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let wrapper_path = root.join("src/yaml.rs");

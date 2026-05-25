@@ -67,14 +67,8 @@ enum Commands {
         json_output: bool,
         #[arg(long, help = "Apply all planned updates; requires --non-interactive")]
         write: bool,
-        #[arg(
-            long,
-            conflicts_with = "best_effort",
-            help = "Exit with code 2 when any target is skipped"
-        )]
+        #[arg(long, help = "Exit with code 2 when any target is skipped")]
         strict: bool,
-        #[arg(long = "best-effort", help = "Allow skipped targets while planning")]
-        best_effort: bool,
         #[arg(long = "non-interactive", help = "Disable prompts")]
         non_interactive: bool,
         #[arg(long = "apply-id", value_name = "ID")]
@@ -174,7 +168,6 @@ where
             json_output,
             write,
             strict,
-            best_effort: _,
             non_interactive,
             apply_ids,
         } => update_helm_command(

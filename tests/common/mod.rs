@@ -183,69 +183,6 @@ impl ResolverFactory for StaticResolverFactory {
     }
 }
 
-pub fn write_update_fixture(repo_root: &Path, repository_url: &str) {
-    write_file(
-        &repo_root.join("sources/demo.yaml"),
-        &format!(
-            r#"apiVersion: source.toolkit.fluxcd.io/v1
-kind: HelmRepository
-metadata:
-  name: demo-repo
-  namespace: flux-system
-spec:
-  url: "{repository_url}"
-"#
-        ),
-    );
-    write_file(
-        &repo_root.join("apps/base/demo/release.yaml"),
-        r#"apiVersion: helm.toolkit.fluxcd.io/v2
-kind: HelmRelease
-metadata:
-  name: demo
-  namespace: default
-spec:
-  chart:
-    spec:
-      chart: demo
-      version: "1.0.0"
-      sourceRef:
-        kind: HelmRepository
-        name: demo-repo
-"#,
-    );
-    write_file(
-        &repo_root.join("apps/production/demo/release-patch.yaml"),
-        r#"apiVersion: helm.toolkit.fluxcd.io/v2
-kind: HelmRelease
-metadata:
-  name: demo
-  namespace: default
-spec:
-  chart:
-    spec:
-      version: "0.9.0"
-"#,
-    );
-    write_file(
-        &repo_root.join("apps/base/missing/release.yaml"),
-        r#"apiVersion: helm.toolkit.fluxcd.io/v2
-kind: HelmRelease
-metadata:
-  name: missing
-  namespace: default
-spec:
-  chart:
-    spec:
-      chart: missing
-      version: "1.0.0"
-      sourceRef:
-        kind: HelmRepository
-        name: missing-repo
-"#,
-    );
-}
-
 fn accept_until(
     listener: &TcpListener,
     deadline: Instant,

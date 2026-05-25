@@ -68,7 +68,6 @@ Options:
 - `--write`: apply all planned updates without prompts; requires `--non-interactive`
 - `--apply-id <ID>`: apply one planned item by JSON plan ID; repeat for multiple items
 - `--strict`: fail if any target is skipped during version resolution
-- `--best-effort`: keep planning even if some targets are skipped
 - `--non-interactive`: disable prompts
 
 `Deployment` updates are limited to direct `containers[*].image` and
