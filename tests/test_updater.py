@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -29,14 +28,8 @@ from fluxrepo_update.updater import (
 )
 
 
-def test_updater_changes_base_and_patch_chart_versions(tmp_path, fixture_repo_root) -> None:
-    repo_root = tmp_path / "kubeflux"
-    shutil.copytree(
-        fixture_repo_root,
-        repo_root,
-        ignore=shutil.ignore_patterns(".uv-cache", ".venv", ".pytest_cache", ".ruff_cache", "__pycache__"),
-    )
-
+def test_updater_changes_base_and_patch_chart_versions(copied_fixture_repo: Path) -> None:
+    repo_root = copied_fixture_repo
     inventory = scan_repo(repo_root)
     resolver = StaticVersionResolver(
         {
@@ -91,14 +84,8 @@ def test_progress_callback_returns_none_when_disabled() -> None:
     assert build_progress_callback(repo_root=Path("/repo"), enabled=False) is None
 
 
-def test_plan_updates_and_apply_updates_include_deployment_images(tmp_path, fixture_repo_root) -> None:
-    repo_root = tmp_path / "kubeflux"
-    shutil.copytree(
-        fixture_repo_root,
-        repo_root,
-        ignore=shutil.ignore_patterns(".uv-cache", ".venv", ".pytest_cache", ".ruff_cache", "__pycache__"),
-    )
-
+def test_plan_updates_and_apply_updates_include_deployment_images(copied_fixture_repo: Path) -> None:
+    repo_root = copied_fixture_repo
     inventory = scan_repo(repo_root)
     chart_resolver = StaticVersionResolver({("truecharts", "paperless-ngx"): "12.1.0"})
     image_resolver = StaticImageVersionResolver(

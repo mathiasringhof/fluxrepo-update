@@ -63,12 +63,12 @@ Apply all planned updates non-interactively:
 uv run fluxrepo-update update-helm /path/to/flux-repo --write --non-interactive
 ```
 
-The workspace includes `kubeflux/`, a read-mostly fixture copied from a real Flux repository.
-It is used for tests and local examples:
+The tests include `tests/fixtures/kubeflux/`, a small fixture distilled from a real Flux
+repository. It is used for fixture-backed tests and local examples:
 
 ```bash
-uv run fluxrepo-update inventory kubeflux --json
-uv run fluxrepo-update update-helm kubeflux --json --non-interactive
+uv run fluxrepo-update inventory tests/fixtures/kubeflux --json
+uv run fluxrepo-update update-helm tests/fixtures/kubeflux --json --non-interactive
 ```
 
 ## Safety And Modes

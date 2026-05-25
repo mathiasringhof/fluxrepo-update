@@ -118,12 +118,11 @@ def test_update_helm_json_dry_run_returns_agent_friendly_payload(
 
 
 def test_update_helm_json_write_returns_applied_exit_code(
-    tmp_path: Path,
-    fixture_repo_root: Path,
+    copied_fixture_repo: Path,
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo_root = copy_fixture_repo(tmp_path, fixture_repo_root)
+    repo_root = copied_fixture_repo
     monkeypatch.setattr(
         cli,
         "build_chart_resolver",
@@ -154,12 +153,11 @@ def test_update_helm_json_write_returns_applied_exit_code(
 
 
 def test_update_helm_interactive_mode_prompts_per_release_and_applies_selected_only(
-    tmp_path: Path,
-    fixture_repo_root: Path,
+    copied_fixture_repo: Path,
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo_root = copy_fixture_repo(tmp_path, fixture_repo_root)
+    repo_root = copied_fixture_repo
     monkeypatch.setattr(
         cli,
         "build_chart_resolver",
@@ -181,12 +179,11 @@ def test_update_helm_interactive_mode_prompts_per_release_and_applies_selected_o
 
 
 def test_update_helm_interactive_mode_defaults_empty_answer_to_no(
-    tmp_path: Path,
-    fixture_repo_root: Path,
+    copied_fixture_repo: Path,
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo_root = copy_fixture_repo(tmp_path, fixture_repo_root)
+    repo_root = copied_fixture_repo
     monkeypatch.setattr(
         cli,
         "build_chart_resolver",
@@ -208,12 +205,11 @@ def test_update_helm_interactive_mode_defaults_empty_answer_to_no(
 
 
 def test_update_helm_standard_interactive_mode_prompts_without_write_flag(
-    tmp_path: Path,
-    fixture_repo_root: Path,
+    copied_fixture_repo: Path,
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo_root = copy_fixture_repo(tmp_path, fixture_repo_root)
+    repo_root = copied_fixture_repo
     monkeypatch.setattr(
         cli,
         "build_chart_resolver",
@@ -235,12 +231,11 @@ def test_update_helm_standard_interactive_mode_prompts_without_write_flag(
 
 
 def test_update_helm_non_interactive_plans_without_writing(
-    tmp_path: Path,
-    fixture_repo_root: Path,
+    copied_fixture_repo: Path,
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo_root = copy_fixture_repo(tmp_path, fixture_repo_root)
+    repo_root = copied_fixture_repo
     monkeypatch.setattr(
         cli,
         "build_chart_resolver",
@@ -516,14 +511,3 @@ def test_update_helm_single_interrupt_stops_progress_and_exits_cleanly(
     assert finished == [True]
     assert "Cancelled." in result.stderr
 
-
-def copy_fixture_repo(tmp_path: Path, fixture_repo_root: Path) -> Path:
-    import shutil
-
-    repo_root = tmp_path / "kubeflux"
-    shutil.copytree(
-        fixture_repo_root,
-        repo_root,
-        ignore=shutil.ignore_patterns(".uv-cache", ".venv", ".pytest_cache", ".ruff_cache", "__pycache__"),
-    )
-    return repo_root

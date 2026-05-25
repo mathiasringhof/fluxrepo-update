@@ -1,0 +1,21 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: audiobookshelf
+  namespace: flux-system
+spec:
+  releaseName: audiobookshelf
+  targetNamespace: audiobookshelf
+  chart:
+    spec:
+      chart: audiobookshelf
+      sourceRef:
+        kind: HelmRepository
+        name: truecharts
+        namespace: flux-system
+      version: "13.0.0"
+  interval: 10m
+  values:
+    portal:
+      open:
+        enabled: false

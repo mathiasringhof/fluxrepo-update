@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openssh-deployment
+  labels:
+    app: openssh
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: openssh
+  template:
+    metadata:
+      labels:
+        app: openssh
+    spec:
+      initContainers:
+        - name: network-config
+          image: alpine:3.22
+      containers:
+        - name: openssh-container
+          image: lscr.io/linuxserver/openssh-server:version-10.2_p1-r0

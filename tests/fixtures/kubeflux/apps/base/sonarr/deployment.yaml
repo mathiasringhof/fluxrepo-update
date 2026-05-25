@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sonarr-deployment
+  namespace: default
+  labels:
+    app: sonarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sonarr
+  template:
+    metadata:
+      labels:
+        app: sonarr
+    spec:
+      containers:
+        - name: sonarr-container
+          image: linuxserver/sonarr:version-4.0.16.2944
+          ports:
+            - containerPort: 8989
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sonarr-service
+  namespace: default
+spec:
+  ports:
+    - name: http
+      targetPort: 8989
+      port: 80
+  selector:
+    app: sonarr
