@@ -7,12 +7,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use common::{copy_fixture, write_file};
+use common::{ResponseSpec, TestHttpServer, copy_fixture, write_file};
 use fluxrepo_update::models::{
     DeploymentImageTarget, HelmRepository, Inventory, RepoType, ResourceId,
 };
 use fluxrepo_update::resolvers::{
-    ImageVersionResolver, StaticImageVersionResolver, StaticVersionResolver,
+    ImageVersionResolver, RepositoryChartResolver, StaticImageVersionResolver,
+    StaticVersionResolver,
 };
 use fluxrepo_update::scanner::scan_repo;
 use fluxrepo_update::updater::{
@@ -250,10 +251,123 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
     assert!(report.planned.is_empty());
     assert_eq!(
         report.skipped,
-        vec![SkippedUpdate::new(
+        vec![SkippedUpdate::missing_helm_repository(
             Some(PathBuf::from("/repo/release.yaml")),
-            "missing HelmRepository missing-repo"
+            "missing-repo"
         )]
+    );
+
+    let payload = report.to_json_value(Path::new("/repo"), "plan", false, true, 0, 0);
+    assert_eq!(
+        payload["skipped"][0]["reason"],
+        "missing HelmRepository missing-repo"
+    );
+    assert_eq!(
+        payload["skipped"][0]["reason_code"],
+        "missing_helm_repository"
+    );
+    assert_eq!(payload["skipped"][0]["retryable"], false);
+    assert_eq!(payload["skipped"][0]["source_url"], serde_json::Value::Null);
+}
+
+#[test]
+fn update_report_serializes_retryable_chart_request_skip_with_source_url() {
+    let server = TestHttpServer::new(vec![ResponseSpec::new(500, "temporary failure")]);
+    let mut inventory = Inventory::new(PathBuf::from("/repo"));
+    inventory.repositories.insert(
+        "demo-repo".to_string(),
+        HelmRepository {
+            name: "demo-repo".to_string(),
+            url: server.base_url.clone(),
+            repo_type: RepoType::Default,
+            path: PathBuf::from("/repo/repository.yaml"),
+            document_index: 0,
+        },
+    );
+    inventory
+        .chart_targets
+        .push(fluxrepo_update::models::HelmReleaseTarget {
+            path: PathBuf::from("/repo/release.yaml"),
+            document_index: 0,
+            resource_id: ResourceId {
+                kind: "HelmRelease".to_string(),
+                name: "demo".to_string(),
+                namespace: Some("default".to_string()),
+            },
+            chart_name: Some("demo".to_string()),
+            repo_name: Some("demo-repo".to_string()),
+            repo_kind: Some("HelmRepository".to_string()),
+            current_version: Some("1.0.0".to_string()),
+            source_path: Some(PathBuf::from("/repo/release.yaml")),
+            source_document_index: Some(0),
+            source_is_inherited: false,
+        });
+
+    let report = plan_updates(
+        &inventory,
+        &RepositoryChartResolver::default(),
+        &StaticImageVersionResolver::new(HashMap::new()),
+    );
+    let payload = report.to_json_value(Path::new("/repo"), "plan", false, true, 0, 0);
+
+    assert_eq!(payload["skipped"][0]["path"], "release.yaml");
+    assert_eq!(payload["skipped"][0]["reason_code"], "chart_request_failed");
+    assert_eq!(payload["skipped"][0]["retryable"], true);
+    assert_eq!(
+        payload["skipped"][0]["source_url"],
+        format!("{}/index.yaml", server.base_url)
+    );
+    let reason = payload["skipped"][0]["reason"].as_str().expect("reason");
+    assert!(reason.contains("500"));
+    assert!(reason.contains(&format!("{}/index.yaml", server.base_url)));
+    server.finish();
+}
+
+#[test]
+fn update_report_serializes_permanent_image_skip_codes() {
+    let mut inventory = Inventory::new(PathBuf::from("/repo"));
+    inventory.deployment_targets.extend([
+        deployment_target("/repo/latest.yaml", "latest", "example/app:latest"),
+        deployment_target("/repo/missing-tag.yaml", "missing-tag", "example/app"),
+        deployment_target("/repo/digest.yaml", "digest", "example/app@sha256:deadbeef"),
+    ]);
+
+    let report = plan_updates(
+        &inventory,
+        &StaticVersionResolver::new(HashMap::new()),
+        &fluxrepo_update::resolvers::RegistryImageResolver::default(),
+    );
+    let payload = report.to_json_value(Path::new("/repo"), "plan", false, true, 0, 0);
+    let skipped = payload["skipped"].as_array().expect("skipped array");
+
+    let compact = skipped
+        .iter()
+        .map(|item| {
+            (
+                item["path"].as_str().expect("path"),
+                item["reason_code"].as_str().expect("reason code"),
+                item["retryable"].as_bool().expect("retryable"),
+                item["source_url"].is_null(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        compact,
+        vec![
+            ("latest.yaml", "mutable_image_tag", false, true),
+            (
+                "missing-tag.yaml",
+                "image_reference_missing_tag",
+                false,
+                true,
+            ),
+            (
+                "digest.yaml",
+                "image_reference_pinned_by_digest",
+                false,
+                true,
+            ),
+        ]
     );
 }
 
@@ -445,7 +559,13 @@ fn update_report_serializes_non_repo_path_skip_reason() {
 
     assert_eq!(
         payload["skipped"],
-        serde_json::json!([{"path": "", "reason": "network timeout"}])
+        serde_json::json!([{
+            "path": "",
+            "reason": "network timeout",
+            "reason_code": "unclassified",
+            "retryable": false,
+            "source_url": null
+        }])
     );
 }
 

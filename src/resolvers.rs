@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::sync::{LazyLock, Mutex};
 
 use anyhow::{Result, anyhow};
@@ -35,6 +37,86 @@ pub trait ChartVersionResolver {
 pub trait ImageVersionResolver {
     fn resolve(&self, image: &str) -> Result<String>;
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolverErrorCode {
+    UnsupportedRepositoryType,
+    ChartNotFound,
+    IncompatibleVersionScheme,
+    ChartRequestFailed,
+    RegistryRequestFailed,
+    MutableImageTag,
+    ImageReferenceMissingTag,
+    ImageReferencePinnedByDigest,
+    UnparseableImageReference,
+    Unclassified,
+}
+
+#[derive(Debug)]
+pub struct ResolverError {
+    code: ResolverErrorCode,
+    message: String,
+    retryable: bool,
+    source_url: Option<String>,
+}
+
+impl ResolverError {
+    fn permanent(code: ResolverErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            retryable: false,
+            source_url: None,
+        }
+    }
+
+    fn request_failed(
+        code: ResolverErrorCode,
+        source_url: impl Into<String>,
+        error: impl fmt::Display,
+    ) -> Self {
+        Self {
+            code,
+            message: error.to_string(),
+            retryable: true,
+            source_url: Some(source_url.into()),
+        }
+    }
+
+    fn with_source_url(
+        code: ResolverErrorCode,
+        message: impl Into<String>,
+        retryable: bool,
+        source_url: impl Into<String>,
+    ) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            retryable,
+            source_url: Some(source_url.into()),
+        }
+    }
+
+    pub fn code(&self) -> ResolverErrorCode {
+        self.code
+    }
+
+    pub fn retryable(&self) -> bool {
+        self.retryable
+    }
+
+    pub fn source_url(&self) -> Option<&str> {
+        self.source_url.as_deref()
+    }
+}
+
+impl fmt::Display for ResolverError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl Error for ResolverError {}
 
 pub struct StaticVersionResolver {
     versions: HashMap<(String, String), String>,
@@ -125,10 +207,14 @@ impl ChartVersionResolver for RepositoryChartResolver {
             if repository.name == "truecharts" {
                 self.resolve_truecharts(chart_name)?
             } else {
-                return Err(anyhow!(
-                    "OCI repository support is not implemented for {}",
-                    repository.name
-                ));
+                return Err(ResolverError::permanent(
+                    ResolverErrorCode::UnsupportedRepositoryType,
+                    format!(
+                        "OCI repository support is not implemented for {}",
+                        repository.name
+                    ),
+                )
+                .into());
             }
         } else {
             self.resolve_index(repository, chart_name, current_version)?
@@ -156,13 +242,19 @@ impl RepositoryChartResolver {
 
     fn resolve_truecharts(&self, chart_name: &str) -> Result<String> {
         let url = format!("{}/{chart_name}/Chart.yaml", self.truecharts_base_url);
-        let text = self.client.get(url).send()?.error_for_status()?.text()?;
+        let text = self.fetch_chart_metadata(&url)?;
         let document: Value = yaml_serde::from_str(&text)?;
         document
             .get("version")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| anyhow!("Unable to resolve TrueCharts version for {chart_name}"))
+            .ok_or_else(|| {
+                ResolverError::permanent(
+                    ResolverErrorCode::ChartNotFound,
+                    format!("Unable to resolve TrueCharts version for {chart_name}"),
+                )
+                .into()
+            })
     }
 
     fn resolve_index(
@@ -185,9 +277,12 @@ impl RepositoryChartResolver {
             .get(Value::String(chart_name.to_string()))
             .and_then(Value::as_sequence)
             .ok_or_else(|| {
-                anyhow!(
-                    "Chart {chart_name} was not found in repository {}",
-                    repository.name
+                ResolverError::permanent(
+                    ResolverErrorCode::ChartNotFound,
+                    format!(
+                        "Chart {chart_name} was not found in repository {}",
+                        repository.name
+                    ),
                 )
             })?;
         let versions = chart_entries
@@ -200,18 +295,26 @@ impl RepositoryChartResolver {
             })
             .collect::<Vec<_>>();
         if versions.is_empty() {
-            return Err(anyhow!(
-                "Chart {chart_name} in repository {} has no versions",
-                repository.name
-            ));
+            return Err(ResolverError::permanent(
+                ResolverErrorCode::ChartNotFound,
+                format!(
+                    "Chart {chart_name} in repository {} has no versions",
+                    repository.name
+                ),
+            )
+            .into());
         }
 
         let candidates = if let Some(current_version) = current_version {
             let comparable = select_comparable_versions(current_version, &versions);
             if comparable.is_empty() {
-                return Err(anyhow!(
-                    "no comparable chart versions found for current version {current_version}"
-                ));
+                return Err(ResolverError::permanent(
+                    ResolverErrorCode::IncompatibleVersionScheme,
+                    format!(
+                        "no comparable chart versions found for current version {current_version}"
+                    ),
+                )
+                .into());
             }
             comparable
         } else {
@@ -221,7 +324,13 @@ impl RepositoryChartResolver {
         candidates
             .into_iter()
             .max_by(|left, right| compare_versions(left, right))
-            .ok_or_else(|| anyhow!("no chart versions available for {chart_name}"))
+            .ok_or_else(|| {
+                ResolverError::permanent(
+                    ResolverErrorCode::ChartNotFound,
+                    format!("no chart versions available for {chart_name}"),
+                )
+                .into()
+            })
     }
 
     fn load_repository_index(&self, repository: &HelmRepository) -> Result<Value> {
@@ -235,13 +344,25 @@ impl RepositoryChartResolver {
         }
 
         let url = format!("{}/index.yaml", repository.url.trim_end_matches('/'));
-        let text = self.client.get(url).send()?.error_for_status()?.text()?;
+        let text = self.fetch_chart_metadata(&url)?;
         let document: Value = yaml_serde::from_str(&text)?;
         self.index_cache
             .lock()
             .expect("cache lock")
             .insert(cache_key, document.clone());
         Ok(document)
+    }
+
+    fn fetch_chart_metadata(&self, url: &str) -> Result<String> {
+        let response = self.client.get(url).send().map_err(|error| {
+            ResolverError::request_failed(ResolverErrorCode::ChartRequestFailed, url, error)
+        })?;
+        let response = response.error_for_status().map_err(|error| {
+            ResolverError::request_failed(ResolverErrorCode::ChartRequestFailed, url, error)
+        })?;
+        response.text().map_err(|error| {
+            ResolverError::request_failed(ResolverErrorCode::ChartRequestFailed, url, error).into()
+        })
     }
 }
 
@@ -386,26 +507,49 @@ impl ImageVersionResolver for RegistryImageResolver {
             return Ok(cached);
         }
 
-        let reference = parse_image_reference(image)?;
+        let reference = parse_image_reference(image).map_err(|error| {
+            ResolverError::permanent(
+                ResolverErrorCode::UnparseableImageReference,
+                error.to_string(),
+            )
+        })?;
         if reference.digest.is_some() {
-            return Err(anyhow!("image digests are not supported for {image}"));
+            return Err(ResolverError::permanent(
+                ResolverErrorCode::ImageReferencePinnedByDigest,
+                format!("image digests are not supported for {image}"),
+            )
+            .into());
         }
-        let tag = reference
-            .tag
-            .as_deref()
-            .ok_or_else(|| anyhow!("image tag is missing for {image}"))?;
+        let tag = reference.tag.as_deref().ok_or_else(|| {
+            ResolverError::permanent(
+                ResolverErrorCode::ImageReferenceMissingTag,
+                format!("image tag is missing for {image}"),
+            )
+        })?;
         if is_mutable_image_tag(tag) {
-            return Err(anyhow!("image tag {tag} is mutable"));
+            return Err(ResolverError::permanent(
+                ResolverErrorCode::MutableImageTag,
+                format!("image tag {tag} is mutable"),
+            )
+            .into());
         }
         if looks_like_commit_tag(tag) {
-            return Err(anyhow!("image tag {tag} does not look versioned"));
+            return Err(ResolverError::permanent(
+                ResolverErrorCode::IncompatibleVersionScheme,
+                format!("image tag {tag} does not look versioned"),
+            )
+            .into());
         }
 
         let tags = self.list_tags(&reference)?;
         let comparable_tags =
             select_comparable_tags(tag, &tags.iter().map(String::as_str).collect::<Vec<_>>());
         if comparable_tags.is_empty() {
-            return Err(anyhow!("no comparable tags found for {image}"));
+            return Err(ResolverError::permanent(
+                ResolverErrorCode::IncompatibleVersionScheme,
+                format!("no comparable tags found for {image}"),
+            )
+            .into());
         }
         let latest_tag = comparable_tags
             .into_iter()
@@ -450,7 +594,23 @@ impl RegistryImageResolver {
                     .and_then(|value| value.to_str().ok()),
                 response.url().as_str(),
             );
-            let payload: serde_json::Value = response.error_for_status()?.json()?;
+            let payload: serde_json::Value = response
+                .error_for_status()
+                .map_err(|error| {
+                    ResolverError::request_failed(
+                        ResolverErrorCode::RegistryRequestFailed,
+                        current_url.clone(),
+                        error,
+                    )
+                })?
+                .json()
+                .map_err(|error| {
+                    ResolverError::request_failed(
+                        ResolverErrorCode::RegistryRequestFailed,
+                        current_url.clone(),
+                        error,
+                    )
+                })?;
             if let Some(page_tags) = payload.get("tags").and_then(serde_json::Value::as_array) {
                 tags.extend(
                     page_tags
@@ -469,7 +629,9 @@ impl RegistryImageResolver {
     }
 
     fn get_registry(&self, url: &str) -> Result<reqwest::blocking::Response> {
-        let response = self.client.get(url).send()?;
+        let response = self.client.get(url).send().map_err(|error| {
+            ResolverError::request_failed(ResolverErrorCode::RegistryRequestFailed, url, error)
+        })?;
         if response.status() != reqwest::StatusCode::UNAUTHORIZED {
             return Ok(response);
         }
@@ -482,7 +644,14 @@ impl RegistryImageResolver {
             return Ok(response);
         };
         let token = self.get_bearer_token(&challenge)?;
-        Ok(self.client.get(url).bearer_auth(token).send()?)
+        self.client
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .map_err(|error| {
+                ResolverError::request_failed(ResolverErrorCode::RegistryRequestFailed, url, error)
+                    .into()
+            })
     }
 
     fn get_bearer_token(&self, challenge: &WwwAuthenticateChallenge) -> Result<String> {
@@ -502,15 +671,44 @@ impl RegistryImageResolver {
         if let Some(scope) = &challenge.scope {
             request = request.query(&[("scope", scope)]);
         }
-        let payload: serde_json::Value = request.send()?.error_for_status()?.json()?;
+        let payload: serde_json::Value = request
+            .send()
+            .map_err(|error| {
+                ResolverError::request_failed(
+                    ResolverErrorCode::RegistryRequestFailed,
+                    challenge.realm.clone(),
+                    error,
+                )
+            })?
+            .error_for_status()
+            .map_err(|error| {
+                ResolverError::request_failed(
+                    ResolverErrorCode::RegistryRequestFailed,
+                    challenge.realm.clone(),
+                    error,
+                )
+            })?
+            .json()
+            .map_err(|error| {
+                ResolverError::request_failed(
+                    ResolverErrorCode::RegistryRequestFailed,
+                    challenge.realm.clone(),
+                    error,
+                )
+            })?;
         let token = payload
             .get("token")
             .or_else(|| payload.get("access_token"))
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| {
-                anyhow!(
-                    "token response from {} did not include a bearer token",
-                    challenge.realm
+                ResolverError::with_source_url(
+                    ResolverErrorCode::Unclassified,
+                    format!(
+                        "token response from {} did not include a bearer token",
+                        challenge.realm
+                    ),
+                    false,
+                    challenge.realm.clone(),
                 )
             })?
             .to_string();

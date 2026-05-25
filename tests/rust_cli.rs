@@ -121,8 +121,13 @@ fn update_helm_json_dry_run_returns_agent_friendly_payload() {
     assert_eq!(payload["summary"]["applied_count"], 0);
     assert!(payload["summary"]["planned_count"].as_u64().unwrap() >= 1);
     assert!(payload["summary"]["skipped_count"].as_u64().unwrap() >= 1);
-    assert!(payload["skipped"][0].get("path").is_some());
-    assert!(payload["skipped"][0].get("reason").is_some());
+    for skipped in payload["skipped"].as_array().expect("skipped array") {
+        assert!(skipped.get("path").is_some());
+        assert!(skipped.get("reason").is_some());
+        assert!(skipped.get("reason_code").is_some());
+        assert!(skipped.get("retryable").and_then(Value::as_bool).is_some());
+        assert!(skipped.get("source_url").is_some());
+    }
     assert!(payload["planned"].as_array().unwrap().iter().any(|item| {
         item["path"] == "apps/production/paperless/release-patch.yaml"
             && item["inherited_source"] == true

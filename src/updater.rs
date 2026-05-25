@@ -14,7 +14,8 @@ use yaml_edit::{Document as EditDocument, Scalar as EditScalar, ScalarValue, Yam
 
 use crate::models::{DeploymentImageTarget, HelmReleaseTarget, Inventory, TargetKind};
 use crate::resolvers::{
-    ChartVersionResolver, ImageVersionResolver, is_newer_version, parse_image_reference,
+    ChartVersionResolver, ImageVersionResolver, ResolverError, ResolverErrorCode, is_newer_version,
+    parse_image_reference,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -239,13 +240,42 @@ impl UpdateReport {
 pub struct SkippedUpdate {
     pub path: Option<PathBuf>,
     pub reason: String,
+    pub reason_code: SkipReasonCode,
+    pub retryable: bool,
+    pub source_url: Option<String>,
 }
 
 impl SkippedUpdate {
     pub fn new(path: Option<PathBuf>, reason: impl Into<String>) -> Self {
+        Self::with_reason(path, SkipReason::unclassified(reason))
+    }
+
+    pub fn missing_helm_repository(path: Option<PathBuf>, repo_name: &str) -> Self {
+        Self::with_reason(
+            path,
+            SkipReason::new(
+                format!("missing HelmRepository {repo_name}"),
+                SkipReasonCode::MissingHelmRepository,
+                false,
+                None,
+            ),
+        )
+    }
+
+    pub fn from_resolution_error(path: Option<PathBuf>, error: anyhow::Error) -> Self {
+        if let Some(error) = error.downcast_ref::<ResolverError>() {
+            return Self::with_reason(path, SkipReason::from_resolver_error(error));
+        }
+        Self::new(path, error.to_string())
+    }
+
+    fn with_reason(path: Option<PathBuf>, reason: SkipReason) -> Self {
         Self {
             path,
-            reason: reason.into(),
+            reason: reason.message,
+            reason_code: reason.code,
+            retryable: reason.retryable,
+            source_url: reason.source_url,
         }
     }
 
@@ -260,7 +290,100 @@ impl SkippedUpdate {
                     .to_string()
             })
             .unwrap_or_default();
-        json!({"path": path, "reason": self.reason})
+        json!({
+            "path": path,
+            "reason": self.reason,
+            "reason_code": self.reason_code.as_str(),
+            "retryable": self.retryable,
+            "source_url": self.source_url,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkipReason {
+    message: String,
+    code: SkipReasonCode,
+    retryable: bool,
+    source_url: Option<String>,
+}
+
+impl SkipReason {
+    fn new(
+        message: impl Into<String>,
+        code: SkipReasonCode,
+        retryable: bool,
+        source_url: Option<String>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            code,
+            retryable,
+            source_url,
+        }
+    }
+
+    fn unclassified(message: impl Into<String>) -> Self {
+        Self::new(message, SkipReasonCode::Unclassified, false, None)
+    }
+
+    fn from_resolver_error(error: &ResolverError) -> Self {
+        Self::new(
+            error.to_string(),
+            SkipReasonCode::from(error.code()),
+            error.retryable(),
+            error.source_url().map(str::to_string),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReasonCode {
+    MissingHelmRepository,
+    UnsupportedRepositoryType,
+    ChartNotFound,
+    IncompatibleVersionScheme,
+    ChartRequestFailed,
+    RegistryRequestFailed,
+    MutableImageTag,
+    ImageReferenceMissingTag,
+    ImageReferencePinnedByDigest,
+    UnparseableImageReference,
+    Unclassified,
+}
+
+impl SkipReasonCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingHelmRepository => "missing_helm_repository",
+            Self::UnsupportedRepositoryType => "unsupported_repository_type",
+            Self::ChartNotFound => "chart_not_found",
+            Self::IncompatibleVersionScheme => "incompatible_version_scheme",
+            Self::ChartRequestFailed => "chart_request_failed",
+            Self::RegistryRequestFailed => "registry_request_failed",
+            Self::MutableImageTag => "mutable_image_tag",
+            Self::ImageReferenceMissingTag => "image_reference_missing_tag",
+            Self::ImageReferencePinnedByDigest => "image_reference_pinned_by_digest",
+            Self::UnparseableImageReference => "unparseable_image_reference",
+            Self::Unclassified => "unclassified",
+        }
+    }
+}
+
+impl From<ResolverErrorCode> for SkipReasonCode {
+    fn from(code: ResolverErrorCode) -> Self {
+        match code {
+            ResolverErrorCode::UnsupportedRepositoryType => Self::UnsupportedRepositoryType,
+            ResolverErrorCode::ChartNotFound => Self::ChartNotFound,
+            ResolverErrorCode::IncompatibleVersionScheme => Self::IncompatibleVersionScheme,
+            ResolverErrorCode::ChartRequestFailed => Self::ChartRequestFailed,
+            ResolverErrorCode::RegistryRequestFailed => Self::RegistryRequestFailed,
+            ResolverErrorCode::MutableImageTag => Self::MutableImageTag,
+            ResolverErrorCode::ImageReferenceMissingTag => Self::ImageReferenceMissingTag,
+            ResolverErrorCode::ImageReferencePinnedByDigest => Self::ImageReferencePinnedByDigest,
+            ResolverErrorCode::UnparseableImageReference => Self::UnparseableImageReference,
+            ResolverErrorCode::Unclassified => Self::Unclassified,
+        }
     }
 }
 
@@ -477,9 +600,9 @@ fn resolve_chart_target(
 ) -> ResolutionOutcome {
     let repo_name = target.repo_name.as_deref().unwrap_or_default();
     let Some(repository) = inventory.repositories.get(repo_name) else {
-        return ResolutionOutcome::Skipped(SkippedUpdate::new(
+        return ResolutionOutcome::Skipped(SkippedUpdate::missing_helm_repository(
             Some(target.path.clone()),
-            format!("missing HelmRepository {repo_name}"),
+            repo_name,
         ));
     };
 
@@ -490,9 +613,9 @@ fn resolve_chart_target(
     ) {
         Ok(version) => version,
         Err(error) => {
-            return ResolutionOutcome::Skipped(SkippedUpdate::new(
+            return ResolutionOutcome::Skipped(SkippedUpdate::from_resolution_error(
                 Some(target.path.clone()),
-                error.to_string(),
+                error,
             ));
         }
     };
@@ -520,9 +643,9 @@ fn resolve_deployment_target(
     let latest_image = match resolver.resolve(&target.image) {
         Ok(image) => image,
         Err(error) => {
-            return ResolutionOutcome::Skipped(SkippedUpdate::new(
+            return ResolutionOutcome::Skipped(SkippedUpdate::from_resolution_error(
                 Some(target.path.clone()),
-                error.to_string(),
+                error,
             ));
         }
     };
@@ -688,7 +811,13 @@ mod tests {
 
         assert_eq!(
             skipped.to_json_value(Path::new("/repo")),
-            json!({"path": "apps/demo.yaml", "reason": "network: timeout: still structured"})
+            json!({
+                "path": "apps/demo.yaml",
+                "reason": "network: timeout: still structured",
+                "reason_code": "unclassified",
+                "retryable": false,
+                "source_url": null
+            })
         );
     }
 }

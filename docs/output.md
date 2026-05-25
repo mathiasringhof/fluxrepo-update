@@ -130,18 +130,27 @@ so stale IDs are rejected instead of silently applying a different plan item.
 Each item includes:
 
 - `path`
-- `reason`
+- `reason`: human-readable explanation, intended for display
+- `reason_code`: stable snake_case code for automation
+- `retryable`: `true` when retrying later may succeed, such as request/network failures
+- `source_url`: failing metadata URL when known, otherwise `null`
 
-Typical reasons:
+`reason_code` and `retryable` are intended for agents and scripts; use `reason` for
+human-facing logs.
 
-- missing `HelmRepository`
-- unsupported repository type
-- chart missing from repository index
-- incompatible version scheme change with no comparable upgrade path
-- network failure while fetching remote metadata
-- mutable image tag such as `latest` or `main`
-- image reference missing an explicit tag or pinned by digest
-- registry failure while listing image tags
+Current reason codes include:
+
+- `missing_helm_repository`
+- `unsupported_repository_type`
+- `chart_not_found`
+- `incompatible_version_scheme`
+- `chart_request_failed`
+- `registry_request_failed`
+- `mutable_image_tag`
+- `image_reference_missing_tag`
+- `image_reference_pinned_by_digest`
+- `unparseable_image_reference`
+- `unclassified`
 
 ## JSON Errors
 
