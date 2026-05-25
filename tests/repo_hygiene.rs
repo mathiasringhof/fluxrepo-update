@@ -44,3 +44,56 @@ fn readme_no_longer_points_to_legacy_python_parity_tests() {
         );
     }
 }
+
+#[test]
+fn rust_tooling_is_pinned_and_lints_are_enforced() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let toolchain = fs::read_to_string(root.join("rust-toolchain.toml")).unwrap();
+    let cargo_toml = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+
+    assert!(toolchain.contains(r#"channel = "1.95""#));
+    assert!(toolchain.contains(r#"components = ["rustfmt", "clippy"]"#));
+    assert!(cargo_toml.contains("[lints.rust]"));
+    assert!(cargo_toml.contains(r#"unsafe_code = "forbid""#));
+    assert!(cargo_toml.contains("[lints.clippy]"));
+    assert!(cargo_toml.contains(r#"all = { level = "warn", priority = -1 }"#));
+    assert!(cargo_toml.contains(r#"dbg_macro = "deny""#));
+    assert!(cargo_toml.contains(r#"todo = "deny""#));
+    assert!(cargo_toml.contains(r#"unimplemented = "deny""#));
+}
+
+#[test]
+fn ci_runs_the_required_rust_quality_gates() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
+
+    for expected in [
+        "cargo fmt --all --check",
+        "cargo clippy --all-targets --locked -- -D warnings",
+        "cargo test --locked",
+    ] {
+        assert!(
+            workflow.contains(expected),
+            "CI workflow is missing required command: {expected}"
+        );
+    }
+}
+
+#[test]
+fn readme_uses_relative_docs_links() {
+    let readme =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+
+    assert!(!readme.contains("/Users/"));
+    for expected in [
+        "[Usage](docs/usage.md)",
+        "[Output](docs/output.md)",
+        "[Coverage](docs/coverage.md)",
+        "[Docs Index](docs/README.md)",
+    ] {
+        assert!(
+            readme.contains(expected),
+            "README is missing relative docs link: {expected}"
+        );
+    }
+}

@@ -133,7 +133,7 @@ Not updated today:
 
 ## Docs
 
-- [Usage](/Users/mathias/Developer/fluxrepo-update/docs/usage.md)
-- [Output](/Users/mathias/Developer/fluxrepo-update/docs/output.md)
-- [Coverage](/Users/mathias/Developer/fluxrepo-update/docs/coverage.md)
-- [Docs Index](/Users/mathias/Developer/fluxrepo-update/docs/README.md)
+- [Usage](docs/usage.md)
+- [Output](docs/output.md)
+- [Coverage](docs/coverage.md)
+- [Docs Index](docs/README.md)
