@@ -59,12 +59,14 @@ cargo run -- update-helm /path/to/flux-repo --non-interactive
 cargo run -- update-helm /path/to/flux-repo --json --non-interactive
 cargo run -- update-helm /path/to/flux-repo --write
 cargo run -- update-helm /path/to/flux-repo --write --non-interactive
+cargo run -- update-helm /path/to/flux-repo --write --non-interactive --apply-id '<id-from-plan>'
 ```
 
 Options:
 
 - `--json`: emit machine-readable output
 - `--write`: apply all planned updates without prompts; requires `--non-interactive`
+- `--apply-id <ID>`: apply one planned item by JSON plan ID; repeat for multiple items
 - `--strict`: fail if any target is skipped during version resolution
 - `--best-effort`: keep planning even if some targets are skipped
 - `--non-interactive`: disable prompts
@@ -86,6 +88,8 @@ Agent mode is explicit:
   prints the plan and never modifies files
 - `cargo run -- update-helm /path/to/flux-repo --write --non-interactive`
   applies all planned updates without prompts
+- `cargo run -- update-helm /path/to/flux-repo --write --non-interactive --apply-id '<id-from-plan>'`
+  applies only selected planned updates without prompts
 
 Recommended patterns:
 
@@ -95,12 +99,17 @@ Recommended patterns:
   - `cargo run -- update-helm /path/to/flux-repo --json --non-interactive`
 - Automation apply-all:
   - `cargo run -- update-helm /path/to/flux-repo --write --non-interactive`
+- Automation apply-selected:
+  - inspect `planned[].id` from `--json --non-interactive`
+  - pass each chosen ID as `--apply-id` with `--write --non-interactive`
 
 ## Error Cases
 
 The CLI rejects these combinations:
 
 - `--write` without `--non-interactive`
+- `--apply-id` without `--write`
+- unknown or stale `--apply-id` values
 
 `--strict` changes skipped resolutions from a warning into a failing exit code. A skip can
 happen because:

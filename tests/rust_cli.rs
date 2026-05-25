@@ -169,6 +169,161 @@ fn update_helm_json_write_returns_applied_exit_code() {
 }
 
 #[test]
+fn update_helm_json_plan_includes_stable_apply_ids() {
+    let factory = paperless_update_factory();
+
+    let (code, stdout, _) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            fixture_root().to_str().expect("fixture path"),
+            "--json",
+            "--non-interactive",
+        ],
+        "",
+        &factory,
+    );
+
+    assert_eq!(code, 10);
+    let payload: Value = serde_json::from_str(&stdout).expect("json output");
+    let planned = payload["planned"].as_array().expect("planned array");
+    assert!(!planned.is_empty());
+    for item in planned {
+        assert!(
+            item["id"].as_str().is_some_and(|id| id.starts_with("v1:")),
+            "planned item should include a stable v1 apply id: {item}"
+        );
+    }
+}
+
+#[test]
+fn update_helm_non_interactive_write_applies_selected_apply_id_only() {
+    let (_temp, repo_root) = copy_fixture();
+    let factory = paperless_update_factory();
+    let plan = json_plan(&repo_root, &factory);
+    let sonarr_id = planned_id_for_path(&plan, "apps/base/sonarr/deployment.yaml");
+    let args = vec![
+        "fluxrepo-update".to_string(),
+        "update-helm".to_string(),
+        repo_root.to_str().expect("repo path").to_string(),
+        "--json".to_string(),
+        "--write".to_string(),
+        "--non-interactive".to_string(),
+        "--apply-id".to_string(),
+        sonarr_id,
+    ];
+
+    let (code, stdout, _) = run_cli_owned(args, "", &factory);
+
+    assert_eq!(code, 20);
+    let payload: Value = serde_json::from_str(&stdout).expect("json output");
+    assert_eq!(payload["mode"], "apply");
+    assert_eq!(payload["summary"]["applied_count"], 1);
+    assert_eq!(
+        payload["planned"].as_array().expect("planned array").len(),
+        1
+    );
+    assert!(
+        fs::read_to_string(repo_root.join("apps/base/sonarr/deployment.yaml"))
+            .expect("read sonarr")
+            .contains("linuxserver/sonarr:version-4.0.17.3000")
+    );
+    assert!(
+        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
+            .expect("read base")
+            .contains("12.0.0")
+    );
+    assert!(
+        fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
+            .expect("read patch")
+            .contains("11.29.10")
+    );
+}
+
+#[test]
+fn update_helm_non_interactive_write_rejects_unknown_apply_id_without_writing() {
+    let (_temp, repo_root) = copy_fixture();
+    let factory = paperless_update_factory();
+    let args = vec![
+        "fluxrepo-update".to_string(),
+        "update-helm".to_string(),
+        repo_root.to_str().expect("repo path").to_string(),
+        "--json".to_string(),
+        "--write".to_string(),
+        "--non-interactive".to_string(),
+        "--apply-id".to_string(),
+        "v1:missing".to_string(),
+    ];
+
+    let (code, stdout, stderr) = run_cli_owned(args, "", &factory);
+
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("Unknown apply id: v1:missing"));
+    assert!(
+        fs::read_to_string(repo_root.join("apps/base/sonarr/deployment.yaml"))
+            .expect("read sonarr")
+            .contains("linuxserver/sonarr:version-4.0.16.2944")
+    );
+    assert!(
+        fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
+            .expect("read patch")
+            .contains("11.29.10")
+    );
+}
+
+#[test]
+fn update_helm_non_interactive_write_rejects_stale_apply_id_when_no_updates_are_planned() {
+    let (_temp, repo_root) = copy_fixture();
+    let factory = StaticResolverFactory::new(
+        HashMap::from([(
+            ("truecharts".to_string(), "paperless-ngx".to_string()),
+            "11.29.10".to_string(),
+        )]),
+        HashMap::new(),
+    );
+    let args = vec![
+        "fluxrepo-update".to_string(),
+        "update-helm".to_string(),
+        repo_root.to_str().expect("repo path").to_string(),
+        "--json".to_string(),
+        "--write".to_string(),
+        "--non-interactive".to_string(),
+        "--apply-id".to_string(),
+        "v1:stale".to_string(),
+    ];
+
+    let (code, stdout, stderr) = run_cli_owned(args, "", &factory);
+
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("Unknown apply id: v1:stale"));
+}
+
+#[test]
+fn update_helm_apply_id_requires_write() {
+    let (_temp, repo_root) = copy_fixture();
+    let factory = paperless_update_factory();
+    let plan = json_plan(&repo_root, &factory);
+    let sonarr_id = planned_id_for_path(&plan, "apps/base/sonarr/deployment.yaml");
+    let args = vec![
+        "fluxrepo-update".to_string(),
+        "update-helm".to_string(),
+        repo_root.to_str().expect("repo path").to_string(),
+        "--json".to_string(),
+        "--non-interactive".to_string(),
+        "--apply-id".to_string(),
+        sonarr_id,
+    ];
+
+    let (code, stdout, stderr) = run_cli_owned(args, "", &factory);
+
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("--apply-id requires --write"));
+}
+
+#[test]
 fn update_helm_interactive_mode_applies_selected_updates_only() {
     let (_temp, repo_root) = copy_fixture();
     let factory = StaticResolverFactory::new(
@@ -348,6 +503,7 @@ fn update_helm_help_lists_stable_contract() {
     assert!(help.contains("--strict"));
     assert!(help.contains("--best-effort"));
     assert!(help.contains("--non-interactive"));
+    assert!(help.contains("--apply-id"));
 }
 
 #[test]
@@ -476,6 +632,29 @@ fn run_cli(args: &[&str], input: &str, factory: &StaticResolverFactory) -> (u8, 
     run_cli_with_options(args, input, factory, PlanOptions { max_workers: 1 })
 }
 
+fn run_cli_owned(
+    args: Vec<String>,
+    input: &str,
+    factory: &StaticResolverFactory,
+) -> (u8, String, String) {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let code = run_with_args(
+        args,
+        Cursor::new(input.as_bytes()),
+        &mut stdout,
+        &mut stderr,
+        factory,
+        PlanOptions { max_workers: 1 },
+    )
+    .expect("run cli");
+    (
+        code,
+        String::from_utf8(stdout).expect("utf8 stdout"),
+        String::from_utf8(stderr).expect("utf8 stderr"),
+    )
+}
+
 fn run_cli_with_options(
     args: &[&str],
     input: &str,
@@ -498,4 +677,28 @@ fn run_cli_with_options(
         String::from_utf8(stdout).expect("utf8 stdout"),
         String::from_utf8(stderr).expect("utf8 stderr"),
     )
+}
+
+fn json_plan(repo_root: &std::path::Path, factory: &StaticResolverFactory) -> Value {
+    let args = vec![
+        "fluxrepo-update".to_string(),
+        "update-helm".to_string(),
+        repo_root.to_str().expect("repo path").to_string(),
+        "--json".to_string(),
+        "--non-interactive".to_string(),
+    ];
+    let (code, stdout, _) = run_cli_owned(args, "", factory);
+    assert_eq!(code, 10);
+    serde_json::from_str(&stdout).expect("json output")
+}
+
+fn planned_id_for_path(payload: &Value, path: &str) -> String {
+    payload["planned"]
+        .as_array()
+        .expect("planned array")
+        .iter()
+        .find(|item| item["path"] == path)
+        .and_then(|item| item["id"].as_str())
+        .expect("planned item id")
+        .to_string()
 }

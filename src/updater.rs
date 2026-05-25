@@ -97,6 +97,49 @@ impl PlannedUpdate {
         }
     }
 
+    pub fn selection_id(&self, repo_root: &Path) -> String {
+        let path = self
+            .path()
+            .strip_prefix(repo_root)
+            .unwrap_or(self.path())
+            .to_string_lossy()
+            .to_string();
+        let mut parts = vec![
+            self.target_kind().to_string(),
+            path,
+            self.document_index().to_string(),
+            self.target_name().to_string(),
+        ];
+        match self {
+            Self::Chart(update) => {
+                parts.extend([
+                    "spec.chart.spec.version".to_string(),
+                    update.repo_name.clone(),
+                    update.chart_name.clone(),
+                    update.current_version.clone(),
+                    update.latest_version.clone(),
+                ]);
+            }
+            Self::Deployment(update) => {
+                parts.extend([
+                    update.yaml_path.clone(),
+                    update.current_image.clone(),
+                    update.latest_image.clone(),
+                    update.current_version.clone(),
+                    update.latest_version.clone(),
+                ]);
+            }
+        }
+        format!(
+            "v1:{}",
+            parts
+                .iter()
+                .map(|part| encode_selection_id_part(part))
+                .collect::<Vec<_>>()
+                .join(":")
+        )
+    }
+
     fn to_json_value(&self, repo_root: &Path) -> JsonValue {
         let path = self
             .path()
@@ -106,6 +149,7 @@ impl PlannedUpdate {
             .to_string();
         match self {
             Self::Chart(update) => json!({
+                "id": self.selection_id(repo_root),
                 "path": path,
                 "document_index": update.document_index,
                 "target_kind": "HelmRelease",
@@ -118,6 +162,7 @@ impl PlannedUpdate {
                 "inherited_source": update.inherited_source,
             }),
             Self::Deployment(update) => json!({
+                "id": self.selection_id(repo_root),
                 "path": path,
                 "document_index": update.document_index,
                 "target_kind": "Deployment",
@@ -130,6 +175,31 @@ impl PlannedUpdate {
                 "inherited_source": false,
             }),
         }
+    }
+}
+
+fn encode_selection_id_part(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push(nibble_to_hex(byte >> 4));
+                encoded.push(nibble_to_hex(byte & 0x0f));
+            }
+        }
+    }
+    encoded
+}
+
+fn nibble_to_hex(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'A' + value - 10) as char,
+        _ => unreachable!("nibble values are always below 16"),
     }
 }
 
