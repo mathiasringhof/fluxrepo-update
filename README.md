@@ -69,6 +69,13 @@ cargo run -- update-helm /path/to/flux-repo --write --non-interactive
 Apply mode updates the targeted YAML scalar values in place, preserving surrounding
 formatting, comments, quote style, and multi-document separators where possible.
 
+Apply selected planned updates non-interactively:
+
+```bash
+cargo run -- update-helm /path/to/flux-repo --json --non-interactive
+cargo run -- update-helm /path/to/flux-repo --write --non-interactive --apply-id '<id-from-plan>'
+```
+
 The tests include `tests/fixtures/kubeflux/`, a small fixture distilled from a real Flux
 repository. It is used for fixture-backed tests and local examples:
 
@@ -102,10 +109,14 @@ Mode summary:
 - Non-interactive apply-all:
   - `cargo run -- update-helm /path/to/repo --write --non-interactive`
   - applies all planned updates without prompts
+- Non-interactive apply-selected:
+  - inspect `--json --non-interactive`, then pass one or more `--apply-id` values with `--write --non-interactive`
+  - applies only the selected planned updates without prompts
 
 Invalid combinations:
 
 - `--write` requires `--non-interactive`
+- `--apply-id` requires `--write`
 
 ## Exit Codes
 

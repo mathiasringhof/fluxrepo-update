@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -76,6 +77,8 @@ enum Commands {
         best_effort: bool,
         #[arg(long = "non-interactive", help = "Disable prompts")]
         non_interactive: bool,
+        #[arg(long = "apply-id", value_name = "ID")]
+        apply_ids: Vec<String>,
     },
 }
 
@@ -173,12 +176,14 @@ where
             strict,
             best_effort: _,
             non_interactive,
+            apply_ids,
         } => update_helm_command(
             repo_root,
             json_output,
             write,
             strict,
             non_interactive,
+            apply_ids,
             input,
             stdout,
             stderr,
@@ -271,6 +276,7 @@ fn update_helm_command<R, W, E, F>(
     write: bool,
     strict: bool,
     non_interactive: bool,
+    apply_ids: Vec<String>,
     input: R,
     stdout: &mut W,
     stderr: &mut E,
@@ -287,6 +293,15 @@ where
     let repo_root = repo_root.canonicalize()?;
     if write && !non_interactive {
         let message = "Using --write requires --non-interactive. Interactive mode already writes approved changes.";
+        if json_output {
+            emit_json_error_message(stderr, "invalid_arguments", message, EXIT_STRICT_FAILURE)?;
+        } else {
+            writeln!(stderr, "{message}")?;
+        }
+        return Ok(EXIT_STRICT_FAILURE);
+    }
+    if !apply_ids.is_empty() && !write {
+        let message = "--apply-id requires --write.";
         if json_output {
             emit_json_error_message(stderr, "invalid_arguments", message, EXIT_STRICT_FAILURE)?;
         } else {
@@ -350,6 +365,28 @@ where
         )?;
         return Ok(EXIT_STRICT_FAILURE);
     }
+
+    let report = if write && non_interactive && !apply_ids.is_empty() {
+        match select_updates_by_apply_id(report, &repo_root, &apply_ids) {
+            Ok(report) => report,
+            Err(missing_ids) => {
+                let message = format_unknown_apply_ids(&missing_ids);
+                if json_output {
+                    emit_json_error_message(
+                        stderr,
+                        "invalid_arguments",
+                        &message,
+                        EXIT_STRICT_FAILURE,
+                    )?;
+                } else {
+                    writeln!(stderr, "{message}")?;
+                }
+                return Ok(EXIT_STRICT_FAILURE);
+            }
+        }
+    } else {
+        report
+    };
 
     if !report.planned.is_empty() && (write || !non_interactive) {
         let approved_report = if non_interactive {
@@ -443,6 +480,41 @@ fn select_updates_for_apply<R: BufRead, E: Write>(
     })
 }
 
+fn format_unknown_apply_ids(ids: &[String]) -> String {
+    if ids.len() == 1 {
+        format!("Unknown apply id: {}", ids[0])
+    } else {
+        format!("Unknown apply ids: {}", ids.join(", "))
+    }
+}
+
+fn select_updates_by_apply_id(
+    report: UpdateReport,
+    repo_root: &Path,
+    apply_ids: &[String],
+) -> std::result::Result<UpdateReport, Vec<String>> {
+    if apply_ids.is_empty() {
+        return Ok(report);
+    }
+
+    let mut requested = apply_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let mut approved = Vec::new();
+    for update in report.planned {
+        let id = update.selection_id(repo_root);
+        if requested.remove(&id) {
+            approved.push(update);
+        }
+    }
+    if !requested.is_empty() {
+        return Err(requested.into_iter().collect());
+    }
+
+    Ok(UpdateReport {
+        planned: approved,
+        skipped: report.skipped,
+    })
+}
+
 struct OutputContext<'a> {
     repo_root: &'a Path,
     json_output: bool,
@@ -517,7 +589,7 @@ fn emit_update_output<W: Write, E: Write>(
     if context.mode == "plan" {
         writeln!(
             stderr,
-            "Plan only. Re-run without --non-interactive for prompts, or add --non-interactive --write to apply all changes."
+            "Plan only. Re-run without --non-interactive for prompts, add --non-interactive --write to apply all changes, or pass --apply-id with --write to apply selected updates."
         )?;
     } else {
         writeln!(

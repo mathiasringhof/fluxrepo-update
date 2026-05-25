@@ -104,6 +104,7 @@ Top-level fields:
 
 Each item includes:
 
+- `id`
 - `path`
 - `document_index`
 - `target_kind`
@@ -119,6 +120,10 @@ Each item includes:
 
 `inherited_source` means the update target inherited chart metadata from another manifest,
 typically a base `HelmRelease`. For `Deployment` items it is always `false`.
+
+Use `planned[].id` with repeated `--apply-id` flags to apply selected updates in
+`--write --non-interactive` mode. IDs include the planned target and current/latest versions,
+so stale IDs are rejected instead of silently applying a different plan item.
 
 ### `skipped`
 
