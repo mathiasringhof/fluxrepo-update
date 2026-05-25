@@ -517,6 +517,95 @@ spec:
     );
 }
 
+#[test]
+fn apply_updates_preserves_yaml_formatting_around_chart_scalar_changes() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("release.yaml");
+    let original = r#"apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: demo
+spec:
+  chart:
+    spec:
+      chart: demo
+      version: "1.0.0" # keep the quote style and comment
+  values:
+    env:
+      - name: DEMO
+        value: "unchanged"
+"#;
+    write_file(&path, original);
+    let report = UpdateReport {
+        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
+            path: path.clone(),
+            document_index: 0,
+            target_name: "demo".to_string(),
+            chart_name: "demo".to_string(),
+            repo_name: "demo".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: "1.0.1".to_string(),
+            inherited_source: false,
+        })],
+        skipped: Vec::new(),
+    };
+
+    apply_updates(&report).expect("apply chart update");
+
+    assert_eq!(
+        fs::read_to_string(path).expect("read updated release"),
+        original.replace(r#"version: "1.0.0""#, r#"version: "1.0.1""#)
+    );
+}
+
+#[test]
+fn apply_updates_preserves_yaml_formatting_around_deployment_image_changes() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("deployment.yaml");
+    let original = r#"apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+spec:
+  template:
+    spec:
+      containers:
+      - name: demo
+        image: "example/demo:1.0.0" # keep this comment
+      - name: sidecar
+        image: "example/sidecar:1.0.0"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo
+"#;
+    write_file(&path, original);
+    let report = UpdateReport {
+        planned: vec![PlannedUpdate::Deployment(PlannedDeploymentUpdate {
+            path: path.clone(),
+            document_index: 0,
+            target_name: "demo".to_string(),
+            yaml_path: "spec.template.spec.containers[0].image".to_string(),
+            current_image: "example/demo:1.0.0".to_string(),
+            latest_image: "example/demo:1.0.1".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: "1.0.1".to_string(),
+        })],
+        skipped: Vec::new(),
+    };
+
+    apply_updates(&report).expect("apply deployment update");
+
+    assert_eq!(
+        fs::read_to_string(path).expect("read updated deployment"),
+        original.replace(
+            r#"image: "example/demo:1.0.0""#,
+            r#"image: "example/demo:1.0.1""#
+        )
+    );
+}
+
 fn deployment_target(path: &str, name: &str, image: &str) -> DeploymentImageTarget {
     DeploymentImageTarget {
         path: PathBuf::from(path),
