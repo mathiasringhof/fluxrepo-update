@@ -3,10 +3,10 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 
 use anyhow::{Result, anyhow};
+use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
@@ -358,28 +358,29 @@ fn resolve_targets(
             .collect();
     }
 
-    let next_task = AtomicUsize::new(0);
-    let completed_tasks = AtomicUsize::new(0);
-    let outcomes = Mutex::new(Vec::with_capacity(tasks.len()));
-    thread::scope(|scope| {
-        for _ in 0..worker_count {
-            scope.spawn(|| {
-                loop {
-                    let task_index = next_task.fetch_add(1, Ordering::Relaxed);
-                    let Some(task) = tasks.get(task_index) else {
-                        break;
+    let completed_tasks = Mutex::new(0usize);
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .build()
+        .expect("rayon thread pool");
+
+    pool.install(|| {
+        tasks
+            .par_iter()
+            .map(|task| {
+                let outcome = resolve_task(inventory, task, chart_resolver, image_resolver);
+                if let Some(callback) = progress_callback {
+                    let completed = {
+                        let mut count = completed_tasks.lock().expect("progress lock");
+                        *count += 1;
+                        *count
                     };
-                    let outcome = resolve_task(inventory, task, chart_resolver, image_resolver);
-                    outcomes.lock().expect("outcome lock").push(outcome);
-                    let completed = completed_tasks.fetch_add(1, Ordering::Relaxed) + 1;
-                    if let Some(callback) = progress_callback {
-                        callback(completed, tasks.len(), task.path());
-                    }
+                    callback(completed, tasks.len(), task.path());
                 }
-            });
-        }
-    });
-    outcomes.into_inner().expect("outcome lock")
+                outcome
+            })
+            .collect()
+    })
 }
 
 fn resolve_task(

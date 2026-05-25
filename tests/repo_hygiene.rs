@@ -44,3 +44,25 @@ fn readme_no_longer_points_to_legacy_python_parity_tests() {
         );
     }
 }
+
+#[test]
+fn parallel_update_planning_uses_rayon_instead_of_hand_rolled_scheduler() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cargo_toml = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let updater = fs::read_to_string(root.join("src/updater.rs")).unwrap();
+
+    assert!(
+        cargo_toml.contains("\nrayon = "),
+        "Cargo.toml should declare rayon for parallel update planning"
+    );
+    assert!(
+        updater.contains("rayon::ThreadPoolBuilder"),
+        "update planning should build a bounded Rayon thread pool"
+    );
+    for stale_scheduler_detail in ["AtomicUsize", "thread::scope"] {
+        assert!(
+            !updater.contains(stale_scheduler_detail),
+            "update planning should not keep hand-rolled scheduler detail: {stale_scheduler_detail}"
+        );
+    }
+}
