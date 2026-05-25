@@ -30,7 +30,6 @@ digest-pinned image references, or generated Flux bootstrap manifests.
 
 - Rust `>=1.95`
 - Cargo
-- Python `>=3.12` and `uv` only when running the legacy parity tests
 - network access for `update-helm`, which fetches chart metadata from Helm repository `index.yaml`
   files, the TrueCharts GitHub-backed special case, and container registry tag APIs
 
@@ -75,13 +74,6 @@ Run the Rust test suite:
 ```bash
 cargo test
 cargo clippy --all-targets -- -D warnings
-```
-
-The original Python implementation and tests remain in the repository as a parity harness
-during the migration:
-
-```bash
-uv run pytest
 ```
 
 ## Safety And Modes
