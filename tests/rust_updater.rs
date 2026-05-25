@@ -606,6 +606,70 @@ metadata:
     );
 }
 
+#[test]
+fn apply_updates_preserves_crlf_line_endings_around_scalar_changes() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("release.yaml");
+    let original = "apiVersion: helm.toolkit.fluxcd.io/v2\r\nkind: HelmRelease\r\nmetadata:\r\n  name: demo\r\nspec:\r\n  chart:\r\n    spec:\r\n      chart: demo\r\n      version: \"1.0.0\"\r\n";
+    write_file(&path, original);
+    let report = UpdateReport {
+        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
+            path: path.clone(),
+            document_index: 0,
+            target_name: "demo".to_string(),
+            chart_name: "demo".to_string(),
+            repo_name: "demo".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: "1.0.1".to_string(),
+            inherited_source: false,
+        })],
+        skipped: Vec::new(),
+    };
+
+    apply_updates(&report).expect("apply chart update");
+
+    assert_eq!(
+        fs::read_to_string(path).expect("read updated release"),
+        original.replace("1.0.0", "1.0.1")
+    );
+}
+
+#[test]
+fn apply_updates_preserves_missing_final_newline_around_scalar_changes() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("release.yaml");
+    let original = r#"apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: demo
+spec:
+  chart:
+    spec:
+      chart: demo
+      version: "1.0.0""#;
+    write_file(&path, original);
+    let report = UpdateReport {
+        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
+            path: path.clone(),
+            document_index: 0,
+            target_name: "demo".to_string(),
+            chart_name: "demo".to_string(),
+            repo_name: "demo".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: "1.0.1".to_string(),
+            inherited_source: false,
+        })],
+        skipped: Vec::new(),
+    };
+
+    apply_updates(&report).expect("apply chart update");
+
+    assert_eq!(
+        fs::read_to_string(path).expect("read updated release"),
+        original.replace("1.0.0", "1.0.1")
+    );
+}
+
 fn deployment_target(path: &str, name: &str, image: &str) -> DeploymentImageTarget {
     DeploymentImageTarget {
         path: PathBuf::from(path),
