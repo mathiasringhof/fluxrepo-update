@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
-use serde_yaml::{Mapping, Value};
+use yaml_serde::{Deserializer, Mapping, Value};
 
 use crate::models::{DeploymentImageTarget, HelmReleaseTarget, Inventory, TargetKind};
 use crate::resolvers::{
@@ -516,7 +516,7 @@ pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
     let mut changed_files = 0;
     for (path, updates) in updates_by_path {
         let text = fs::read_to_string(&path)?;
-        let mut documents = serde_yaml::Deserializer::from_str(&text)
+        let mut documents = Deserializer::from_str(&text)
             .map(Value::deserialize)
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
@@ -549,7 +549,7 @@ pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
 
         let rendered = documents
             .iter()
-            .map(serde_yaml::to_string)
+            .map(yaml_serde::to_string)
             .collect::<std::result::Result<Vec<_>, _>>()?
             .join("---\n");
         fs::write(&path, rendered)?;

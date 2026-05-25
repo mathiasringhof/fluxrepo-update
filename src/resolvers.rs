@@ -5,8 +5,8 @@ use std::sync::{LazyLock, Mutex};
 use anyhow::{Result, anyhow};
 use regex::Regex;
 use reqwest::blocking::Client;
-use serde_yaml::Value;
 use url::Url;
+use yaml_serde::Value;
 
 use crate::models::{HelmRepository, RepoType};
 
@@ -157,7 +157,7 @@ impl RepositoryChartResolver {
     fn resolve_truecharts(&self, chart_name: &str) -> Result<String> {
         let url = format!("{}/{chart_name}/Chart.yaml", self.truecharts_base_url);
         let text = self.client.get(url).send()?.error_for_status()?.text()?;
-        let document: Value = serde_yaml::from_str(&text)?;
+        let document: Value = yaml_serde::from_str(&text)?;
         document
             .get("version")
             .and_then(Value::as_str)
@@ -236,7 +236,7 @@ impl RepositoryChartResolver {
 
         let url = format!("{}/index.yaml", repository.url.trim_end_matches('/'));
         let text = self.client.get(url).send()?.error_for_status()?.text()?;
-        let document: Value = serde_yaml::from_str(&text)?;
+        let document: Value = yaml_serde::from_str(&text)?;
         self.index_cache
             .lock()
             .expect("cache lock")
