@@ -35,6 +35,16 @@ Top-level summary fields:
 - `image_reference_count`: number of discovered image references
 - `skipped_paths`: YAML files intentionally skipped, such as generated `gotk-*` manifests
 
+### `repositories`
+
+Each item describes a `HelmRepository` source:
+
+- `path`: relative file path
+- `document_index`: document position inside a multi-document YAML file
+- `name`: `metadata.name`
+- `url`: `spec.url`
+- `repo_type`: `spec.type`, or `default` when omitted
+
 ### `chart_targets`
 
 Each item describes a `HelmRelease` that can be updated:

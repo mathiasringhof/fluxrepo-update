@@ -31,6 +31,53 @@ fn newer_version_rejects_incompatible_chart_scheme_changes() {
 }
 
 #[test]
+fn version_comparison_stays_within_comparable_families() {
+    let cases = [
+        ("20250101", "20250102", true),
+        ("20250101", "20241231", false),
+        ("3.22", "3.22.3", true),
+        ("3.22", "3.23.0", false),
+        ("v1.2.3", "v1.2.4", true),
+        ("1.2.3-alpha.1", "1.2.3-alpha.2", true),
+        ("1.2.3-alpha.1", "1.2.3-beta.1", false),
+        ("version-10.0_p1-r10", "version-10.2_p1-r0", true),
+    ];
+
+    for (current, candidate, expected) in cases {
+        assert_eq!(
+            is_newer_version(current, candidate),
+            expected,
+            "{candidate} newer than {current}"
+        );
+    }
+}
+
+#[test]
+fn comparable_tag_selection_filters_mutable_commits_and_other_tracks() {
+    let cases = [
+        (
+            "20250101",
+            vec!["20250101", "20250102", "1.2.3", "latest"],
+            vec!["20250101", "20250102"],
+        ),
+        (
+            "1.2.3-alpha.1",
+            vec![
+                "1.2.3-alpha.1",
+                "1.2.3-alpha.2",
+                "1.2.3-beta.1",
+                "commit-deadbee",
+            ],
+            vec!["1.2.3-alpha.1", "1.2.3-alpha.2"],
+        ),
+    ];
+
+    for (current, tags, expected) in cases {
+        assert_eq!(select_comparable_tags(current, &tags), expected);
+    }
+}
+
+#[test]
 fn repository_chart_resolver_caches_repository_index_between_resolves() {
     let server = TestHttpServer::new(vec![ResponseSpec::new(
         200,
@@ -151,20 +198,66 @@ fn repository_chart_resolver_rejects_unsupported_oci_repository() {
 
 #[test]
 fn image_reference_parsing_matches_registry_defaults() {
-    let alpine = parse_image_reference("alpine:3.22").expect("parse alpine");
-    assert_eq!(alpine.registry, "docker.io");
-    assert_eq!(alpine.repository, "library/alpine");
-    assert_eq!(alpine.tag.as_deref(), Some("3.22"));
-    assert_eq!(alpine.with_tag("3.22.1"), "alpine:3.22.1");
+    let cases = [
+        (
+            "alpine:3.22",
+            "docker.io",
+            "library/alpine",
+            Some("3.22"),
+            None,
+            false,
+            "alpine:3.0.0",
+        ),
+        (
+            "docker.io/library/alpine:3.22",
+            "docker.io",
+            "library/alpine",
+            Some("3.22"),
+            None,
+            true,
+            "docker.io/library/alpine:3.0.0",
+        ),
+        (
+            "registry.example.com/demo/app:1.2.3",
+            "registry.example.com",
+            "demo/app",
+            Some("1.2.3"),
+            None,
+            true,
+            "registry.example.com/demo/app:3.0.0",
+        ),
+        (
+            "localhost:5000/demo/app:1.2.3",
+            "localhost:5000",
+            "demo/app",
+            Some("1.2.3"),
+            None,
+            true,
+            "localhost:5000/demo/app:3.0.0",
+        ),
+        (
+            "example/app:1.2.3@sha256:deadbeef",
+            "docker.io",
+            "example/app",
+            Some("1.2.3"),
+            Some("sha256:deadbeef"),
+            false,
+            "example/app:3.0.0",
+        ),
+    ];
 
-    let explicit =
-        parse_image_reference("registry.example.com/demo/app:1.2.3").expect("parse explicit");
-    assert_eq!(explicit.registry, "registry.example.com");
-    assert_eq!(explicit.repository, "demo/app");
-    assert_eq!(
-        explicit.with_tag("1.2.4"),
-        "registry.example.com/demo/app:1.2.4"
-    );
+    for (image, registry, repository, tag, digest, explicit_registry, retagged) in cases {
+        let reference = parse_image_reference(image).expect("parse image");
+        assert_eq!(reference.registry, registry, "{image} registry");
+        assert_eq!(reference.repository, repository, "{image} repository");
+        assert_eq!(reference.tag.as_deref(), tag, "{image} tag");
+        assert_eq!(reference.digest.as_deref(), digest, "{image} digest");
+        assert_eq!(
+            reference.explicit_registry, explicit_registry,
+            "{image} explicit registry"
+        );
+        assert_eq!(reference.with_tag("3.0.0"), retagged, "{image} retag");
+    }
 }
 
 #[test]

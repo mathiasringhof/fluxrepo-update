@@ -42,6 +42,9 @@ cargo run -- inventory /path/to/flux-repo
 cargo run -- inventory /path/to/flux-repo --json
 ```
 
+JSON inventory includes discovered `HelmRepository` sources, update targets, image
+references, unresolved targets, and skipped generated manifests.
+
 Preview available updates without changing files:
 
 ```bash

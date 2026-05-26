@@ -121,6 +121,15 @@ impl Inventory {
     }
 
     pub fn to_json_value(&self) -> Value {
+        let mut repositories = self.repositories.values().collect::<Vec<_>>();
+        repositories.sort_by_key(|repository| {
+            (
+                repository.path.clone(),
+                repository.document_index,
+                repository.name.clone(),
+            )
+        });
+
         json!({
             "repo_root": self.repo_root,
             "repository_count": self.repositories.len(),
@@ -130,6 +139,13 @@ impl Inventory {
             "unresolved_chart_target_count": self.unresolved_chart_targets.len(),
             "image_reference_count": self.image_references.len(),
             "skipped_paths": self.skipped_paths.iter().map(|path| self.relative(path)).collect::<Vec<_>>(),
+            "repositories": repositories.iter().map(|repository| json!({
+                "path": self.relative(&repository.path),
+                "document_index": repository.document_index,
+                "name": repository.name,
+                "url": repository.url,
+                "repo_type": repo_type_json_value(&repository.repo_type),
+            })).collect::<Vec<_>>(),
             "chart_targets": self.chart_targets.iter().map(|target| json!({
                 "path": self.relative(&target.path),
                 "document_index": target.document_index,
@@ -178,5 +194,13 @@ impl Inventory {
             .unwrap_or(path)
             .to_string_lossy()
             .to_string()
+    }
+}
+
+fn repo_type_json_value(repo_type: &RepoType) -> String {
+    match repo_type {
+        RepoType::Default => "default".to_string(),
+        RepoType::Oci => "oci".to_string(),
+        RepoType::Other(value) => value.clone(),
     }
 }

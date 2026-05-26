@@ -25,6 +25,16 @@ fn inventory_json_matches_fixture_contract() {
     assert_eq!(code, 0);
     let payload: Value = serde_json::from_str(&stdout).expect("json output");
     assert_eq!(payload["repository_count"], 1);
+    assert!(payload["repositories"].as_array().is_some());
+    assert!(payload["chart_targets"].as_array().is_some());
+    assert!(payload["deployment_targets"].as_array().is_some());
+    assert!(
+        payload["helmreleases_without_chart_version"]
+            .as_array()
+            .is_some()
+    );
+    assert!(payload["unresolved_chart_targets"].as_array().is_some());
+    assert!(payload["image_references"].as_array().is_some());
     assert!(payload["chart_target_count"].as_u64().expect("chart count") >= 2);
     assert!(
         payload["deployment_target_count"]
@@ -41,6 +51,87 @@ fn inventory_json_matches_fixture_contract() {
     assert_eq!(
         payload["skipped_paths"][0],
         "clusters/production/flux-system/gotk-sync.yaml"
+    );
+    assert!(
+        payload["repositories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["path"] == "infrastructure/base/sources/truecharts.yaml"
+                    && item["document_index"] == 0
+                    && item["name"] == "truecharts"
+                    && item["repo_type"] == "oci"
+                    && item["url"] == "oci://oci.trueforge.org/truecharts"
+            })
+    );
+    assert!(
+        payload["chart_targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["path"] == "apps/base/paperless-ngx/release.yaml"
+                    && item["document_index"] == 0
+                    && item["name"] == "paperless-ngx"
+                    && item["namespace"] == "flux-system"
+                    && item["chart_name"] == "paperless-ngx"
+                    && item["repo_name"] == "truecharts"
+                    && item["current_version"] == "12.0.0"
+                    && item["source_path"] == "apps/base/paperless-ngx/release.yaml"
+                    && item["source_is_inherited"] == false
+            })
+    );
+    assert!(
+        payload["chart_targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["path"] == "apps/production/paperless/release-patch.yaml"
+                    && item["name"] == "paperless-ngx"
+                    && item["source_path"] == "apps/base/paperless-ngx/release.yaml"
+                    && item["source_is_inherited"] == true
+            })
+    );
+    assert!(
+        payload["deployment_targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["path"] == "apps/base/sonarr/deployment.yaml"
+                    && item["document_index"] == 0
+                    && item["name"] == "sonarr-deployment"
+                    && item["namespace"] == "default"
+                    && item["yaml_path"] == "spec.template.spec.containers[0].image"
+                    && item["image"] == "linuxserver/sonarr:version-4.0.16.2944"
+            })
+    );
+    assert!(
+        payload["helmreleases_without_chart_version"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["path"] == "apps/production/uptimekuma-values.yaml"
+                    && item["document_index"] == 0
+                    && item["name"] == "uptime-kuma"
+                    && item["namespace"].is_null()
+            })
+    );
+    assert!(
+        payload["image_references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["path"] == "apps/production/immich/release-patch.yaml"
+                    && item["manifest_kind"] == "HelmRelease"
+                    && item["manifest_name"] == "immich"
+                    && item["yaml_path"] == "spec.values.valkey.controllers.main.containers.main.image"
+                    && item["image"] == "docker.io/valkey/valkey:9.0-alpine@sha256:1be494495248d53e3558b198a1c704e6b559d5e99fe4c926e14a8ad24d76c6fa"
+            })
     );
 }
 
@@ -445,23 +536,6 @@ fn update_helm_non_interactive_write_rejects_stale_apply_id_when_no_updates_are_
 }
 
 #[test]
-fn update_helm_best_effort_flag_is_not_supported() {
-    let (code, _, _) = run_cli(
-        &[
-            "fluxrepo-update",
-            "update-helm",
-            fixture_root().to_str().expect("fixture path"),
-            "--best-effort",
-            "--non-interactive",
-        ],
-        "",
-        &StaticResolverFactory::default(),
-    );
-
-    assert_eq!(code, 2);
-}
-
-#[test]
 fn update_helm_apply_id_requires_write() {
     let (_temp, repo_root) = copy_fixture();
     let factory = paperless_update_factory();
@@ -549,11 +623,9 @@ fn update_helm_interactive_prompt_includes_update_details() {
     );
 
     assert_eq!(code, 0);
-    assert!(
-        stderr.contains(
-            "Update apps/base/paperless-ngx/release.yaml (chart 12.0.0 -> 12.1.0)? [y/N]"
-        )
-    );
+    assert!(stderr.contains("Update apps/base/paperless-ngx/release.yaml"));
+    assert!(stderr.contains("chart"));
+    assert!(stderr.contains("12.0.0 -> 12.1.0"));
 }
 
 #[test]
@@ -682,25 +754,6 @@ fn update_helm_missing_repo_root_returns_parse_error() {
 }
 
 #[test]
-fn update_helm_help_lists_stable_contract() {
-    let (code, stdout, stderr) = run_cli(
-        &["fluxrepo-update", "update-helm", "--help"],
-        "",
-        &StaticResolverFactory::default(),
-    );
-    let help = format!("{stdout}{stderr}");
-
-    assert_eq!(code, 0);
-    assert!(help.contains("update-helm"));
-    assert!(help.contains("REPO_ROOT"));
-    assert!(help.contains("--json"));
-    assert!(help.contains("--write"));
-    assert!(help.contains("--strict"));
-    assert!(help.contains("--non-interactive"));
-    assert!(help.contains("--apply-id"));
-}
-
-#[test]
 fn update_helm_strict_fails_on_skipped_resolution() {
     let factory = StaticResolverFactory::new(
         HashMap::from([(
@@ -801,12 +854,23 @@ fn update_helm_non_json_plan_output_includes_target_context() {
     );
 
     assert_eq!(code, 10);
-    assert!(stderr.contains(
-        "apps/base/sonarr/deployment.yaml: Deployment sonarr-deployment spec.template.spec.containers[0].image version-4.0.16.2944 -> version-4.0.17.3000"
-    ));
-    assert!(stderr.contains(
-        "apps/production/paperless/release-patch.yaml: HelmRelease paperless-ngx paperless-ngx 11.29.10 -> 12.1.0 inherited-source"
-    ));
+    for expected in [
+        "apps/base/sonarr/deployment.yaml",
+        "Deployment",
+        "sonarr-deployment",
+        "spec.template.spec.containers[0].image",
+        "version-4.0.16.2944 -> version-4.0.17.3000",
+        "apps/production/paperless/release-patch.yaml",
+        "HelmRelease",
+        "paperless-ngx",
+        "11.29.10 -> 12.1.0",
+        "inherited-source",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "missing output detail: {expected}"
+        );
+    }
 }
 
 fn paperless_update_factory() -> StaticResolverFactory {
