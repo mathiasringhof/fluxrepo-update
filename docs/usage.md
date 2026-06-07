@@ -81,7 +81,7 @@ quote style, and multi-document separators stay intact where possible.
 Default behavior is for humans:
 
 - `cargo run -- update-helm /path/to/flux-repo`
-  prompts for each planned update and applies the ones you approve
+  prompts for each planned update; press `y` or `n` to approve or skip
 
 Agent mode is explicit:
 

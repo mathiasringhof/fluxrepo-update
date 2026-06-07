@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use rustix::termios::{OptionalActions, tcgetattr, tcsetattr};
 use serde_json::json;
 
 use crate::resolvers::{
@@ -90,10 +91,12 @@ pub fn run() -> Result<u8> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
+    let terminal_stdin = stdin.is_terminal();
     let terminal_stderr = stderr.is_terminal();
     run_with_args_and_output(
         std::env::args_os(),
         stdin.lock(),
+        terminal_stdin,
         &mut stdout,
         &mut stderr,
         &DefaultResolverFactory,
@@ -116,7 +119,7 @@ pub fn run_with_args<I, T, R, W, E, F>(
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
-    R: BufRead,
+    R: Read,
     W: Write,
     E: Write + Send,
     F: ResolverFactory + ?Sized,
@@ -124,6 +127,7 @@ where
     run_with_args_and_output(
         args,
         input,
+        false,
         stdout,
         stderr,
         resolver_factory,
@@ -132,9 +136,11 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_with_args_and_output<I, T, R, W, E, F>(
     args: I,
     input: R,
+    terminal_stdin: bool,
     stdout: &mut W,
     stderr: &mut E,
     resolver_factory: &F,
@@ -144,7 +150,7 @@ fn run_with_args_and_output<I, T, R, W, E, F>(
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
-    R: BufRead,
+    R: Read,
     W: Write,
     E: Write + Send,
     F: ResolverFactory + ?Sized,
@@ -178,6 +184,7 @@ where
             non_interactive,
             apply_ids,
             input,
+            terminal_stdin,
             stdout,
             stderr,
             resolver_factory,
@@ -271,6 +278,7 @@ fn update_helm_command<R, W, E, F>(
     non_interactive: bool,
     apply_ids: Vec<String>,
     input: R,
+    terminal_stdin: bool,
     stdout: &mut W,
     stderr: &mut E,
     resolver_factory: &F,
@@ -278,7 +286,7 @@ fn update_helm_command<R, W, E, F>(
     human_output: HumanOutput,
 ) -> Result<u8>
 where
-    R: BufRead,
+    R: Read,
     W: Write,
     E: Write + Send,
     F: ResolverFactory + ?Sized,
@@ -385,7 +393,14 @@ where
         let approved_report = if non_interactive {
             report
         } else {
-            select_updates_for_apply(report, &repo_root, human_output, input, stderr)?
+            select_updates_for_apply(
+                report,
+                &repo_root,
+                human_output,
+                input,
+                terminal_stdin,
+                stderr,
+            )?
         };
         if approved_report.planned.is_empty() {
             emit_update_output(
@@ -446,13 +461,19 @@ where
     }
 }
 
-fn select_updates_for_apply<R: BufRead, E: Write>(
+fn select_updates_for_apply<R: Read, E: Write>(
     report: UpdateReport,
     repo_root: &Path,
     human_output: HumanOutput,
     mut input: R,
+    terminal_stdin: bool,
     stderr: &mut E,
 ) -> Result<UpdateReport> {
+    let _raw_mode = if terminal_stdin {
+        Some(RawTerminalMode::enable()?)
+    } else {
+        None
+    };
     let mut approved = Vec::new();
     for update in report.planned {
         write!(
@@ -460,9 +481,7 @@ fn select_updates_for_apply<R: BufRead, E: Write>(
             "{}",
             render_prompt(&update, repo_root, human_output)
         )?;
-        let mut buffer = String::new();
-        input.read_line(&mut buffer)?;
-        let choice = buffer.chars().next().unwrap_or('\n');
+        let choice = read_prompt_choice(&mut input)?;
         if matches!(choice, 'y' | 'Y') {
             approved.push(update);
         }
@@ -471,6 +490,38 @@ fn select_updates_for_apply<R: BufRead, E: Write>(
         planned: approved,
         skipped: report.skipped,
     })
+}
+
+fn read_prompt_choice<R: Read>(input: &mut R) -> Result<char> {
+    let mut buffer = [0; 1];
+    let count = input.read(&mut buffer)?;
+    if count == 0 {
+        Ok('\n')
+    } else {
+        Ok(char::from(buffer[0]))
+    }
+}
+
+struct RawTerminalMode {
+    original: rustix::termios::Termios,
+}
+
+impl RawTerminalMode {
+    fn enable() -> Result<Self> {
+        let stdin = io::stdin();
+        let original = tcgetattr(&stdin)?;
+        let mut raw = original.clone();
+        raw.make_raw();
+        tcsetattr(&stdin, OptionalActions::Now, &raw)?;
+        Ok(Self { original })
+    }
+}
+
+impl Drop for RawTerminalMode {
+    fn drop(&mut self) {
+        let stdin = io::stdin();
+        let _ = tcsetattr(&stdin, OptionalActions::Now, &self.original);
+    }
 }
 
 fn format_unknown_apply_ids(ids: &[String]) -> String {

@@ -105,7 +105,7 @@ Mode summary:
 
 - Interactive apply:
   - `cargo run -- update-helm /path/to/repo`
-  - prompts once per planned update, default answer is `No`
+  - prompts once per planned update; press `y` or `n` to answer, default is `No`
 - Non-interactive plan:
   - `cargo run -- update-helm /path/to/repo --non-interactive`
   - no prompts, no file changes

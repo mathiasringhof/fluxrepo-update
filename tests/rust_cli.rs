@@ -690,6 +690,40 @@ fn update_helm_interactive_mode_applies_selected_updates_only() {
 }
 
 #[test]
+fn update_helm_interactive_mode_accepts_yes_no_without_return() {
+    let (_temp, repo_root) = copy_fixture();
+    let factory = StaticResolverFactory::new(
+        HashMap::from([(
+            ("truecharts".to_string(), "paperless-ngx".to_string()),
+            "12.1.0".to_string(),
+        )]),
+        HashMap::new(),
+    );
+
+    let (code, _, _) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            repo_root.to_str().expect("repo path"),
+        ],
+        "yn",
+        &factory,
+    );
+
+    assert_eq!(code, 20);
+    assert!(
+        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
+            .expect("read base")
+            .contains("12.1.0")
+    );
+    assert!(
+        fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
+            .expect("read patch")
+            .contains("11.29.10")
+    );
+}
+
+#[test]
 fn update_helm_interactive_prompt_includes_update_details() {
     let (_temp, repo_root) = copy_fixture();
     let factory = StaticResolverFactory::new(
