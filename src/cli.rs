@@ -481,7 +481,9 @@ fn select_updates_for_apply<R: Read, E: Write>(
             "{}",
             render_prompt(&update, repo_root, human_output)
         )?;
+        stderr.flush()?;
         let choice = read_prompt_choice(&mut input)?;
+        echo_prompt_choice(stderr, choice, terminal_stdin)?;
         if matches!(choice, 'y' | 'Y') {
             approved.push(update);
         }
@@ -500,6 +502,23 @@ fn read_prompt_choice<R: Read>(input: &mut R) -> Result<char> {
     } else {
         Ok(char::from(buffer[0]))
     }
+}
+
+fn display_prompt_choice(choice: char) -> char {
+    if matches!(choice, 'y' | 'Y') { 'y' } else { 'n' }
+}
+
+fn echo_prompt_choice<E: Write>(
+    output: &mut E,
+    choice: char,
+    terminal_stdin: bool,
+) -> Result<()> {
+    if terminal_stdin {
+        write!(output, "{}\r\n", display_prompt_choice(choice))?;
+    } else {
+        writeln!(output, "{}", display_prompt_choice(choice))?;
+    }
+    Ok(())
 }
 
 struct RawTerminalMode {
@@ -767,6 +786,29 @@ impl<'a, E: Write> ProgressRenderer<'a, E> {
         let _ = write!(self.stderr, "\r{}\r", " ".repeat(self.last_width));
         let _ = self.stderr.flush();
         self.last_width = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::echo_prompt_choice;
+
+    #[test]
+    fn prompt_choice_echo_uses_crlf_in_raw_terminal_mode() {
+        let mut output = Vec::new();
+
+        echo_prompt_choice(&mut output, 'n', true).expect("echo choice");
+
+        assert_eq!(output, b"n\r\n");
+    }
+
+    #[test]
+    fn prompt_choice_echo_uses_lf_for_non_terminal_input() {
+        let mut output = Vec::new();
+
+        echo_prompt_choice(&mut output, 'Y', false).expect("echo choice");
+
+        assert_eq!(output, b"y\n");
     }
 }
 

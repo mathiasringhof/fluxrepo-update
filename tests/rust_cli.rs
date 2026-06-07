@@ -666,7 +666,7 @@ fn update_helm_interactive_mode_applies_selected_updates_only() {
         HashMap::new(),
     );
 
-    let (code, _, _) = run_cli(
+    let (code, _, stderr) = run_cli(
         &[
             "fluxrepo-update",
             "update-helm",
@@ -677,6 +677,8 @@ fn update_helm_interactive_mode_applies_selected_updates_only() {
     );
 
     assert_eq!(code, 20);
+    assert!(stderr.contains("[y/N] y\nUpdate"));
+    assert!(stderr.contains("[y/N] n\n"));
     assert!(
         fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
             .expect("read base")
@@ -748,6 +750,7 @@ fn update_helm_interactive_prompt_includes_update_details() {
     assert!(stderr.contains("Update apps/base/paperless-ngx/release.yaml"));
     assert!(stderr.contains("chart"));
     assert!(stderr.contains("12.0.0 -> 12.1.0"));
+    assert!(stderr.contains("[y/N] n\nUpdate"));
 }
 
 #[test]
@@ -772,6 +775,7 @@ fn update_helm_interactive_mode_defaults_empty_answer_to_no() {
     );
 
     assert_eq!(code, 0);
+    assert!(stderr.contains("[y/N] n\nUpdate"));
     assert!(stderr.contains("No updates were approved."));
     assert!(
         fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
