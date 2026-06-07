@@ -4,8 +4,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
 
-use common::{StaticResolverFactory, copy_fixture, fixture_root};
-use fluxrepo_update::cli::run_with_args;
+use common::{
+    ResponseSpec, StaticResolverFactory, TestHttpServer, copy_fixture, fixture_root, write_file,
+};
+use fluxrepo_update::cli::{ResolverFactory, run_with_args};
+use fluxrepo_update::resolvers::{
+    ChartVersionResolver, ImageVersionResolver, RepositoryChartResolver, StaticImageVersionResolver,
+};
 use fluxrepo_update::updater::PlanOptions;
 use serde_json::Value;
 
@@ -294,6 +299,87 @@ fn update_helm_json_plan_includes_stable_apply_ids() {
             "planned item should include a stable v1 apply id: {item}"
         );
     }
+}
+
+#[test]
+fn update_helm_json_plan_resolves_truecharts_with_repository_resolver() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let repo_root = temp.path().join("repo");
+    write_file(
+        &repo_root.join("source.yaml"),
+        r#"apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: truecharts
+  namespace: flux-system
+spec:
+  type: oci
+  url: oci://oci.trueforge.org/truecharts
+"#,
+    );
+    write_file(
+        &repo_root.join("release.yaml"),
+        r#"apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: jellyseerr
+  namespace: flux-system
+spec:
+  chart:
+    spec:
+      chart: jellyseerr
+      version: "14.1.3"
+      sourceRef:
+        kind: HelmRepository
+        name: truecharts
+        namespace: flux-system
+"#,
+    );
+    let server = TestHttpServer::new(vec![ResponseSpec::new(
+        200,
+        r#"annotations:
+  artifacthub.io/links: |-
+    - name: support
+    url: https://discord.com/invite/tVsPTHWTtr
+badProviderField: [
+dependencies:
+  - name: common
+    version: 29.3.4
+    repository: oci://oci.trueforge.org/truecharts
+name: jellyseerr
+version: 14.3.0
+"#,
+    )]);
+    let factory = RepositoryResolverFactory {
+        truecharts_base_url: server.base_url.clone(),
+    };
+
+    let (code, stdout, stderr) = run_cli_with_any_factory(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            repo_root.to_str().expect("repo path"),
+            "--json",
+            "--non-interactive",
+        ],
+        "",
+        &factory,
+    );
+
+    assert_eq!(code, 10);
+    assert_eq!(stderr, "");
+    let payload: Value = serde_json::from_str(&stdout).expect("json output");
+    assert_eq!(payload["summary"]["planned_count"], 1);
+    assert_eq!(payload["summary"]["skipped_count"], 0);
+    assert!(payload["planned"].as_array().unwrap().iter().any(|item| {
+        item["path"] == "release.yaml"
+            && item["target_kind"] == "HelmRelease"
+            && item["current_version"] == "14.1.3"
+            && item["latest_version"] == "14.3.0"
+    }));
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/jellyseerr/Chart.yaml");
 }
 
 #[test]
@@ -886,6 +972,22 @@ fn paperless_update_factory() -> StaticResolverFactory {
     )
 }
 
+struct RepositoryResolverFactory {
+    truecharts_base_url: String,
+}
+
+impl ResolverFactory for RepositoryResolverFactory {
+    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
+        Box::new(RepositoryChartResolver::with_truecharts_base_url(
+            &self.truecharts_base_url,
+        ))
+    }
+
+    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync> {
+        Box::new(StaticImageVersionResolver::new(HashMap::new()))
+    }
+}
+
 fn run_cli(args: &[&str], input: &str, factory: &StaticResolverFactory) -> (u8, String, String) {
     run_cli_with_options(args, input, factory, PlanOptions { max_workers: 1 })
 }
@@ -928,6 +1030,29 @@ fn run_cli_with_options(
         &mut stderr,
         factory,
         plan_options,
+    )
+    .expect("run cli");
+    (
+        code,
+        String::from_utf8(stdout).expect("utf8 stdout"),
+        String::from_utf8(stderr).expect("utf8 stderr"),
+    )
+}
+
+fn run_cli_with_any_factory(
+    args: &[&str],
+    input: &str,
+    factory: &impl ResolverFactory,
+) -> (u8, String, String) {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let code = run_with_args(
+        args,
+        Cursor::new(input.as_bytes()),
+        &mut stdout,
+        &mut stderr,
+        factory,
+        PlanOptions { max_workers: 1 },
     )
     .expect("run cli");
     (

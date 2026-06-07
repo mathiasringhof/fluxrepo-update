@@ -243,18 +243,13 @@ impl RepositoryChartResolver {
     fn resolve_truecharts(&self, chart_name: &str) -> Result<String> {
         let url = format!("{}/{chart_name}/Chart.yaml", self.truecharts_base_url);
         let text = self.fetch_chart_metadata(&url)?;
-        let document: Value = yaml_serde::from_str(&text)?;
-        document
-            .get("version")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| {
-                ResolverError::permanent(
-                    ResolverErrorCode::ChartNotFound,
-                    format!("Unable to resolve TrueCharts version for {chart_name}"),
-                )
-                .into()
-            })
+        top_level_chart_version(&text).ok_or_else(|| {
+            ResolverError::permanent(
+                ResolverErrorCode::ChartNotFound,
+                format!("Unable to resolve TrueCharts version for {chart_name}"),
+            )
+            .into()
+        })
     }
 
     fn resolve_index(
@@ -364,6 +359,52 @@ impl RepositoryChartResolver {
             ResolverError::request_failed(ResolverErrorCode::ChartRequestFailed, url, error).into()
         })
     }
+}
+
+fn top_level_chart_version(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let value = line.strip_prefix("version:")?.trim();
+        let value = strip_inline_comment(value).trim();
+        if value.is_empty() {
+            return None;
+        }
+        Some(unquote_yaml_scalar(value).to_string())
+    })
+}
+
+fn strip_inline_comment(value: &str) -> &str {
+    let mut quote = None;
+    let mut previous = '\0';
+    for (index, character) in value.char_indices() {
+        match character {
+            '"' if quote != Some('\'') && previous != '\\' => {
+                quote = if quote == Some('"') { None } else { Some('"') };
+            }
+            '\'' if quote != Some('"') => {
+                quote = if quote == Some('\'') {
+                    None
+                } else {
+                    Some('\'')
+                };
+            }
+            '#' if quote.is_none() => return &value[..index],
+            _ => {}
+        }
+        previous = character;
+    }
+    value
+}
+
+fn unquote_yaml_scalar(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .unwrap_or(value)
 }
 
 pub struct RepositoryChartResolverBuilder {

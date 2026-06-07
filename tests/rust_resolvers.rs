@@ -6,7 +6,8 @@ use common::{ResponseSpec, TestHttpServer};
 use fluxrepo_update::models::{HelmRepository, RepoType};
 use fluxrepo_update::resolvers::{
     ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
-    is_newer_version, parse_image_reference, parse_next_link, select_comparable_tags,
+    ResolverError, ResolverErrorCode, is_newer_version, parse_image_reference, parse_next_link,
+    select_comparable_tags,
 };
 
 #[test]
@@ -168,6 +169,98 @@ fn repository_chart_resolver_uses_truecharts_oci_special_case() {
     let requests = server.finish();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].path, "/paperless-ngx/Chart.yaml");
+}
+
+#[test]
+fn repository_chart_resolver_reads_truecharts_version_without_full_yaml_parse() {
+    let server = TestHttpServer::new(vec![ResponseSpec::new(
+        200,
+        r#"annotations:
+  artifacthub.io/links: |-
+    - name: support
+    url: https://discord.com/invite/tVsPTHWTtr
+apiVersion: v2
+appVersion: 2.7.3
+badProviderField: [
+dependencies:
+  - name: common
+    version: 29.3.4
+    repository: oci://oci.trueforge.org/truecharts
+description: Jellyseerr is a fork of Overseerr with support for Jellyfin and Emby.
+name: jellyseerr
+version: 14.3.0
+"#,
+    )]);
+    let resolver = RepositoryChartResolver::with_truecharts_base_url(&server.base_url);
+    let repository = helm_repository("truecharts", "oci://ghcr.io/truecharts/charts", "oci");
+
+    let latest = resolver
+        .resolve(&repository, "jellyseerr", Some("14.1.3"))
+        .expect("resolve truecharts chart");
+
+    assert_eq!(latest, "14.3.0");
+    server.finish();
+}
+
+#[test]
+fn repository_chart_resolver_extracts_truecharts_top_level_version_shapes() {
+    let cases = [
+        ("quoted", r#"version: "14.3.0""#, "14.3.0"),
+        ("unquoted", "version: 14.3.0", "14.3.0"),
+        (
+            "inline comment",
+            r#"version: "14.3.0" # chart package version"#,
+            "14.3.0",
+        ),
+        (
+            "dependency version first",
+            r#"dependencies:
+  - name: common
+    version: 29.3.4
+version: 14.3.0"#,
+            "14.3.0",
+        ),
+    ];
+
+    for (case_name, chart_yaml, expected) in cases {
+        let server = TestHttpServer::new(vec![ResponseSpec::new(200, chart_yaml)]);
+        let resolver = RepositoryChartResolver::with_truecharts_base_url(&server.base_url);
+        let repository = helm_repository("truecharts", "oci://ghcr.io/truecharts/charts", "oci");
+
+        let latest = resolver
+            .resolve(&repository, case_name, Some("14.1.3"))
+            .expect("resolve truecharts chart");
+
+        assert_eq!(latest, expected, "{case_name}");
+        server.finish();
+    }
+}
+
+#[test]
+fn repository_chart_resolver_rejects_truecharts_chart_without_top_level_version() {
+    let server = TestHttpServer::new(vec![ResponseSpec::new(
+        200,
+        r#"dependencies:
+  - name: common
+    version: 29.3.4
+name: jellyseerr
+"#,
+    )]);
+    let resolver = RepositoryChartResolver::with_truecharts_base_url(&server.base_url);
+    let repository = helm_repository("truecharts", "oci://ghcr.io/truecharts/charts", "oci");
+
+    let error = resolver
+        .resolve(&repository, "jellyseerr", Some("14.1.3"))
+        .expect_err("missing top-level chart version");
+
+    assert_eq!(
+        error
+            .downcast_ref::<ResolverError>()
+            .expect("resolver error")
+            .code(),
+        ResolverErrorCode::ChartNotFound
+    );
+    server.finish();
 }
 
 #[test]
