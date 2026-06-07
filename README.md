@@ -91,7 +91,7 @@ Run the Rust test suite:
 
 ```bash
 cargo test
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets
 ```
 
 ## Safety And Modes

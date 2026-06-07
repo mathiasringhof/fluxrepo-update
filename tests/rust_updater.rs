@@ -1,3 +1,5 @@
+#![allow(clippy::needless_raw_string_hashes)]
+
 mod common;
 
 use std::collections::HashMap;

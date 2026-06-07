@@ -648,35 +648,29 @@ fn resolve_deployment_target(
     if latest_image == target.image {
         return ResolutionOutcome::Noop;
     }
-    let current_version = match parse_image_reference(&target.image)
+    let Some(current_version) = parse_image_reference(&target.image)
         .ok()
         .and_then(|reference| reference.tag)
-    {
-        Some(tag) => tag,
-        None => {
-            return ResolutionOutcome::Skipped(SkippedUpdate::new(
-                Some(target.path.clone()),
-                format!(
-                    "could not determine comparable image tags for {}",
-                    target.image
-                ),
-            ));
-        }
+    else {
+        return ResolutionOutcome::Skipped(SkippedUpdate::new(
+            Some(target.path.clone()),
+            format!(
+                "could not determine comparable image tags for {}",
+                target.image
+            ),
+        ));
     };
-    let latest_version = match parse_image_reference(&latest_image)
+    let Some(latest_version) = parse_image_reference(&latest_image)
         .ok()
         .and_then(|reference| reference.tag)
-    {
-        Some(tag) => tag,
-        None => {
-            return ResolutionOutcome::Skipped(SkippedUpdate::new(
-                Some(target.path.clone()),
-                format!(
-                    "could not determine comparable image tags for {}",
-                    target.image
-                ),
-            ));
-        }
+    else {
+        return ResolutionOutcome::Skipped(SkippedUpdate::new(
+            Some(target.path.clone()),
+            format!(
+                "could not determine comparable image tags for {}",
+                target.image
+            ),
+        ));
     };
     if !is_newer_version(&current_version, &latest_version) {
         return ResolutionOutcome::Noop;

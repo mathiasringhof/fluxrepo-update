@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -257,7 +258,7 @@ fn write_response(stream: &mut std::net::TcpStream, response: ResponseSpec) {
         response.body.len()
     );
     for (name, value) in response.headers {
-        text.push_str(&format!("{name}: {value}\r\n"));
+        let _ = write!(text, "{name}: {value}\r\n");
     }
     text.push_str("\r\n");
     text.push_str(&response.body);

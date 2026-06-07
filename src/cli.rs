@@ -153,7 +153,7 @@ where
         Ok(cli) => cli,
         Err(error) => {
             write!(stderr, "{error}")?;
-            return Ok(error.exit_code() as u8);
+            return Ok(u8::try_from(error.exit_code()).unwrap_or(EXIT_STRICT_FAILURE));
         }
     };
 
@@ -309,7 +309,7 @@ where
     let inventory = scan_repo(&repo_root)?;
     let target_count = inventory.chart_targets.len() + inventory.deployment_targets.len();
     if !json_output {
-        writeln!(stderr, "Resolving updates for {} targets...", target_count)?;
+        writeln!(stderr, "Resolving updates for {target_count} targets...")?;
     }
     let chart_resolver = resolver_factory.chart_resolver();
     let image_resolver = resolver_factory.image_resolver();

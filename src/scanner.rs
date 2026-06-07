@@ -142,7 +142,7 @@ fn collect_yaml_files(path: &Path, results: &mut Vec<PathBuf>) -> Result<()> {
     let mut entries = fs::read_dir(path)
         .with_context(|| format!("failed to read directory {}", path.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.path());
+    entries.sort_by_key(std::fs::DirEntry::path);
 
     for entry in entries {
         let child_path = entry.path();
@@ -185,9 +185,7 @@ fn parse_repository(
     let spec = mapping_field(document, "spec")?;
     let name = string_field(metadata, "name")?;
     let url = string_field(spec, "url")?;
-    let repo_type = string_field(spec, "type")
-        .map(RepoType::from)
-        .unwrap_or(RepoType::Default);
+    let repo_type = string_field(spec, "type").map_or(RepoType::Default, RepoType::from);
 
     Some(HelmRepository {
         name,

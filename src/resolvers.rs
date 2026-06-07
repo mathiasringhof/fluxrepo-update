@@ -424,11 +424,13 @@ impl Default for RepositoryChartResolverBuilder {
 }
 
 impl RepositoryChartResolverBuilder {
+    #[must_use]
     pub fn client(mut self, client: Client) -> Self {
         self.client = Some(client);
         self
     }
 
+    #[must_use]
     pub fn truecharts_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.truecharts_base_url = base_url.into();
         self
@@ -767,6 +769,7 @@ pub struct RegistryImageResolverBuilder {
 }
 
 impl RegistryImageResolverBuilder {
+    #[must_use]
     pub fn client(mut self, client: Client) -> Self {
         self.client = Some(client);
         self
