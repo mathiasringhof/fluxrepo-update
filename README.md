@@ -90,8 +90,15 @@ cargo run -- update-helm tests/fixtures/kubeflux --json --non-interactive
 Run the Rust test suite:
 
 ```bash
-cargo test
-cargo clippy --all-targets
+cargo fmt --all --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+```
+
+Enable the local pre-commit hook to run those same checks before each commit:
+
+```bash
+git config core.hooksPath .githooks
 ```
 
 ## Safety And Modes

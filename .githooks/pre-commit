@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+printf '%s\n' "Running cargo fmt --all --check"
+cargo fmt --all --check
+
+printf '%s\n' "Running cargo clippy --all-targets --locked -- -D warnings"
+cargo clippy --all-targets --locked -- -D warnings
+
+printf '%s\n' "Running cargo test --locked"
+cargo test --locked

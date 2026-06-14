@@ -512,14 +512,14 @@ fn read_prompt_choice<R: Read>(input: &mut R) -> Result<char> {
 }
 
 fn display_prompt_choice(choice: char) -> char {
-    if matches!(choice, 'y' | 'Y') { 'y' } else { 'n' }
+    if matches!(choice, 'y' | 'Y') {
+        'y'
+    } else {
+        'n'
+    }
 }
 
-fn echo_prompt_choice<E: Write>(
-    output: &mut E,
-    choice: char,
-    terminal_stdin: bool,
-) -> Result<()> {
+fn echo_prompt_choice<E: Write>(output: &mut E, choice: char, terminal_stdin: bool) -> Result<()> {
     if terminal_stdin {
         write!(output, "{}\r\n", display_prompt_choice(choice))?;
     } else {
@@ -796,42 +796,6 @@ impl<'a, E: Write> ProgressRenderer<'a, E> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{echo_prompt_choice, read_prompt_choice};
-    use std::io::ErrorKind;
-
-    #[test]
-    fn prompt_choice_treats_ctrl_c_as_interrupted() {
-        let mut input = [0x03].as_slice();
-
-        let error = read_prompt_choice(&mut input).expect_err("ctrl-c should interrupt");
-
-        assert_eq!(
-            error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
-            Some(ErrorKind::Interrupted)
-        );
-    }
-
-    #[test]
-    fn prompt_choice_echo_uses_crlf_in_raw_terminal_mode() {
-        let mut output = Vec::new();
-
-        echo_prompt_choice(&mut output, 'n', true).expect("echo choice");
-
-        assert_eq!(output, b"n\r\n");
-    }
-
-    #[test]
-    fn prompt_choice_echo_uses_lf_for_non_terminal_input() {
-        let mut output = Vec::new();
-
-        echo_prompt_choice(&mut output, 'Y', false).expect("echo choice");
-
-        assert_eq!(output, b"y\n");
-    }
-}
-
 fn render_progress_bar(completed: usize, total: usize, width: usize) -> String {
     if total == 0 {
         return "-".repeat(width);
@@ -859,4 +823,42 @@ fn ellipsize(text: &str, max_width: usize) -> String {
         .skip(chars.len() - tail_len)
         .collect::<String>();
     format!("{head}...{tail}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{echo_prompt_choice, read_prompt_choice};
+    use std::io::ErrorKind;
+
+    #[test]
+    fn prompt_choice_treats_ctrl_c_as_interrupted() {
+        let mut input = [0x03].as_slice();
+
+        let error = read_prompt_choice(&mut input).expect_err("ctrl-c should interrupt");
+
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(ErrorKind::Interrupted)
+        );
+    }
+
+    #[test]
+    fn prompt_choice_echo_uses_crlf_in_raw_terminal_mode() {
+        let mut output = Vec::new();
+
+        echo_prompt_choice(&mut output, 'n', true).expect("echo choice");
+
+        assert_eq!(output, b"n\r\n");
+    }
+
+    #[test]
+    fn prompt_choice_echo_uses_lf_for_non_terminal_input() {
+        let mut output = Vec::new();
+
+        echo_prompt_choice(&mut output, 'Y', false).expect("echo choice");
+
+        assert_eq!(output, b"y\n");
+    }
 }
