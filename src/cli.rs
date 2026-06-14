@@ -44,6 +44,7 @@ impl ResolverFactory for DefaultResolverFactory {
 
 #[derive(Debug, Parser)]
 #[command(name = "fluxrepo-update")]
+#[command(version)]
 #[command(about = "Inspect and update FluxCD manifest versions")]
 struct Cli {
     #[command(subcommand)]
@@ -158,7 +159,11 @@ where
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(error) => {
-            write!(stderr, "{error}")?;
+            if error.use_stderr() {
+                write!(stderr, "{error}")?;
+            } else {
+                write!(stdout, "{error}")?;
+            }
             return Ok(u8::try_from(error.exit_code()).unwrap_or(EXIT_STRICT_FAILURE));
         }
     };

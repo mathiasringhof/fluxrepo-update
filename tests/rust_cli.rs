@@ -17,6 +17,22 @@ use fluxrepo_update::updater::PlanOptions;
 use serde_json::Value;
 
 #[test]
+fn version_flag_prints_package_version() {
+    let (code, stdout, stderr) = run_cli(
+        &["fluxrepo-update", "--version"],
+        "",
+        &StaticResolverFactory::default(),
+    );
+
+    assert_eq!(code, 0);
+    assert_eq!(
+        stdout,
+        format!("fluxrepo-update {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(stderr, "");
+}
+
+#[test]
 fn inventory_json_matches_fixture_contract() {
     let (code, stdout, _) = run_cli(
         &[
