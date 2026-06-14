@@ -504,6 +504,8 @@ fn read_prompt_choice<R: Read>(input: &mut R) -> Result<char> {
     let count = input.read(&mut buffer)?;
     if count == 0 {
         Ok('\n')
+    } else if buffer[0] == 0x03 {
+        Err(io::Error::new(io::ErrorKind::Interrupted, "prompt interrupted").into())
     } else {
         Ok(char::from(buffer[0]))
     }
@@ -796,7 +798,20 @@ impl<'a, E: Write> ProgressRenderer<'a, E> {
 
 #[cfg(test)]
 mod tests {
-    use super::echo_prompt_choice;
+    use super::{echo_prompt_choice, read_prompt_choice};
+    use std::io::ErrorKind;
+
+    #[test]
+    fn prompt_choice_treats_ctrl_c_as_interrupted() {
+        let mut input = [0x03].as_slice();
+
+        let error = read_prompt_choice(&mut input).expect_err("ctrl-c should interrupt");
+
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
+            Some(ErrorKind::Interrupted)
+        );
+    }
 
     #[test]
     fn prompt_choice_echo_uses_crlf_in_raw_terminal_mode() {
