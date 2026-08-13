@@ -28,6 +28,18 @@ digest-pinned image references, or generated Flux bootstrap manifests.
 
 ## Requirements
 
+Prebuilt Linux binaries do not require Rust. Download the archive for your architecture
+from the [latest release](https://github.com/mathiasringhof/fluxrepo-update/releases/latest):
+
+```bash
+# x86_64; use aarch64-unknown-linux-gnu on 64-bit ARM
+curl -LO https://github.com/mathiasringhof/fluxrepo-update/releases/latest/download/fluxrepo-update-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf fluxrepo-update-x86_64-unknown-linux-gnu.tar.gz
+sudo install fluxrepo-update /usr/local/bin/
+```
+
+Building from source requires:
+
 - Rust `>=1.95`
 - Cargo
 - network access for `update-helm`, which fetches chart metadata from Helm repository `index.yaml`

@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Linux ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          archive="fluxrepo-update-${TARGET}.tar.gz"
+          tar -C "target/${TARGET}/release" -czf "${archive}" fluxrepo-update
+          sha256sum "${archive}" > "${archive}.sha256"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fluxrepo-update-${{ matrix.target }}
+          path: |
+            fluxrepo-update-${{ matrix.target }}.tar.gz
+            fluxrepo-update-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          --repo "${GITHUB_REPOSITORY}"
+          --title "${GITHUB_REF_NAME}"
+          --generate-notes ||
+          gh release view "${GITHUB_REF_NAME}"
+          --repo "${GITHUB_REPOSITORY}"
+          >/dev/null
+
+      - name: Upload GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release upload "${GITHUB_REF_NAME}"
+          --repo "${GITHUB_REPOSITORY}"
+          "fluxrepo-update-${{ matrix.target }}.tar.gz"
+          "fluxrepo-update-${{ matrix.target }}.tar.gz.sha256"
+          --clobber
