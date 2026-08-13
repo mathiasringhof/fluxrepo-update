@@ -13,7 +13,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
+  build-linux:
     name: Linux ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -61,26 +61,38 @@ jobs:
             fluxrepo-update-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
 
-      - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${GITHUB_REF_NAME}"
-          --repo "${GITHUB_REPOSITORY}"
-          --title "${GITHUB_REF_NAME}"
-          --generate-notes ||
-          gh release view "${GITHUB_REF_NAME}"
-          --repo "${GITHUB_REPOSITORY}"
-          >/dev/null
+  publish-release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-linux
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fluxrepo-update-*
+          path: dist
+          merge-multiple: true
 
-      - name: Upload GitHub release assets
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create GitHub release and upload assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release upload "${GITHUB_REF_NAME}"
-          --repo "${GITHUB_REPOSITORY}"
-          "fluxrepo-update-${{ matrix.target }}.tar.gz"
-          "fluxrepo-update-${{ matrix.target }}.tar.gz.sha256"
-          --clobber
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if gh release create "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              dist/*; then
+              exit 0
+            fi
+            if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              gh release upload "${GITHUB_REF_NAME}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                dist/* \
+                --clobber
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          exit 1
