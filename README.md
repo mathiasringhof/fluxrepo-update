@@ -1,30 +1,31 @@
 # fluxrepo-update
 
 `fluxrepo-update` is a Rust CLI for inspecting a FluxCD repository and updating
-Helm chart versions and Deployment image tags without depending on `helm` or `yq`.
+explicit Helm chart and container-image versions without depending on `helm` or `yq`.
 
-It currently updates two manifest types directly:
+It discovers manifest-local update targets through supported schemas:
 
-- discover `HelmRepository` sources and `HelmRelease` update targets
-- detect patch manifests that inherit chart metadata from a matching base release
-- discover versioned `Deployment` image fields in `containers` and `initContainers`
-- update `spec.chart.spec.version` when a newer chart version is available
-- update `Deployment` image tags when a newer comparable tag is available
+- explicit `HelmRelease.spec.chart.spec.version` values with source identity in the same manifest
+- `containers` and `initContainers` images in Deployments, StatefulSets, DaemonSets, Jobs,
+  CronJobs, and Pods
+- recursive scalar and `repository`/`tag` image bindings under `HelmRelease.spec.values`
+- public HTTP Helm repositories, generic public OCI chart repositories, and public container registries
 
 ## What It Does
 
 The CLI has two commands:
 
 - `inventory`: scan a repository and report what the tool sees
-- `update-helm`: resolve latest chart versions and Deployment image tags, show planned updates, and optionally apply them
+- `update-helm`: resolve latest stable chart and image versions, show a deterministic plan, and optionally apply it
 
 The tool edits:
 
 - `HelmRelease.spec.chart.spec.version`
-- `Deployment.spec.template.spec.{containers,initContainers}[*].image`
+- standard workload PodSpec `containers` and `initContainers` image scalars
+- concrete scalar images and `image.repository`/`image.tag` mappings under `HelmRelease.spec.values`
 
-It does not rewrite `spec.values`, mutable image channels such as `latest` or `main`,
-digest-pinned image references, or generated Flux bootstrap manifests.
+It leaves inherited, templated, mutable, tagless, digest-pinned, and unknown image schemas
+unchanged. Generated Flux bootstrap manifests are never edited.
 
 ## Requirements
 
@@ -42,8 +43,7 @@ Building from source requires:
 
 - Rust `>=1.95`
 - Cargo
-- network access for `update-helm`, which fetches chart metadata from Helm repository `index.yaml`
-  files, the TrueCharts GitHub-backed special case, and container registry tag APIs
+- network access for `update-helm`, which fetches Helm indexes and OCI/container registry tags
 
 ## Quick Start
 
@@ -143,7 +143,7 @@ Invalid combinations:
 ## Exit Codes
 
 - `0`: no updates applied, no updates available, or no updates approved
-- `2`: invalid option combination or `--strict` failed because some targets were skipped
+- `2`: invalid arguments or a runtime/write failure
 - `10`: planning mode found updates
 - `20`: updates were applied
 
@@ -151,28 +151,11 @@ See [docs/output.md](docs/output.md) for the JSON success and error shapes.
 
 ## Current Coverage
 
-Updated directly:
-
-- `HelmRelease.spec.chart.spec.version` in base manifests such as
-  `apps/base/*/release.yaml`
-- `HelmRelease.spec.chart.spec.version` in patch manifests such as
-  `apps/production/*/release-patch.yaml` when chart metadata is inherited from a matching
-  base `HelmRelease`
-- `Deployment` image tags in direct workload manifests such as
-  `apps/base/sonarr/deployment.yaml` and `apps/production/openssh/deployment.yaml`
-- standard Helm repositories resolved through `index.yaml`
-- the existing TrueCharts OCI special case
-- public registry tags resolved through the OCI registry HTTP API for comparable versioned tags
-
-Not updated directly:
-
-- values-only `HelmRelease` overlays
-- image references outside `Deployment` container and initContainer fields
-- image references inside `HelmRelease.spec.values`
-- mutable image tags such as `latest`, `main`, and bare image references without an explicit tag
-- digest-pinned image references
-- generic OCI repositories other than the TrueCharts special case
-- generated Flux manifests under `clusters/*/flux-system/gotk-*`
+The scanner accepts `.yaml` and `.yml`, excludes hidden/cache paths and generated
+`flux-system/gotk-*` files, and treats every manifest independently. Resolution is
+best-effort: unresolved targets retain stable IDs and reason codes while other updates
+remain available. Latest stable selection supports semantic, calendar, and numeric versions,
+can cross major versions, excludes prereleases, and never proposes a downgrade.
 
 ## Docs
 

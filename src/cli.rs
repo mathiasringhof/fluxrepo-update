@@ -61,7 +61,7 @@ enum Commands {
         json_output: bool,
     },
     #[command(name = "update-helm")]
-    #[command(about = "Plan or apply HelmRelease and Deployment image updates")]
+    #[command(about = "Plan or apply HelmRelease and image binding updates")]
     UpdateHelm {
         #[arg(value_name = "REPO_ROOT", help = "Flux repository root")]
         repo_root: PathBuf,
@@ -69,8 +69,6 @@ enum Commands {
         json_output: bool,
         #[arg(long, help = "Apply all planned updates; requires --non-interactive")]
         write: bool,
-        #[arg(long, help = "Exit with code 2 when any target is skipped")]
-        strict: bool,
         #[arg(long = "non-interactive", help = "Disable prompts")]
         non_interactive: bool,
         #[arg(long = "apply-id", value_name = "ID")]
@@ -178,14 +176,12 @@ where
             repo_root,
             json_output,
             write,
-            strict,
             non_interactive,
             apply_ids,
         } => update_helm_command(
             repo_root,
             json_output,
             write,
-            strict,
             non_interactive,
             apply_ids,
             input,
@@ -245,11 +241,7 @@ fn inventory_command<W: Write>(
     } else {
         writeln!(stdout, "Repositories: {}", inventory.repositories.len())?;
         writeln!(stdout, "Chart targets: {}", inventory.chart_targets.len())?;
-        writeln!(
-            stdout,
-            "Deployment targets: {}",
-            inventory.deployment_targets.len()
-        )?;
+        writeln!(stdout, "Image bindings: {}", inventory.image_bindings.len())?;
         writeln!(
             stdout,
             "HelmReleases without chart version: {}",
@@ -279,7 +271,6 @@ fn update_helm_command<R, W, E, F>(
     repo_root: PathBuf,
     json_output: bool,
     write: bool,
-    strict: bool,
     non_interactive: bool,
     apply_ids: Vec<String>,
     input: R,
@@ -320,7 +311,7 @@ where
         writeln!(stderr, "Scanning {}...", repo_root.display())?;
     }
     let inventory = scan_repo(&repo_root)?;
-    let target_count = inventory.chart_targets.len() + inventory.deployment_targets.len();
+    let target_count = inventory.chart_targets.len() + inventory.image_bindings.len();
     if !json_output {
         writeln!(stderr, "Resolving updates for {target_count} targets...")?;
     }
@@ -352,25 +343,6 @@ where
             plan_options,
         )
     };
-
-    if strict && !report.skipped.is_empty() {
-        emit_update_output(
-            &report,
-            OutputContext::new(
-                &repo_root,
-                json_output,
-                "plan",
-                strict,
-                non_interactive,
-                human_output,
-            ),
-            0,
-            0,
-            stdout,
-            stderr,
-        )?;
-        return Ok(EXIT_STRICT_FAILURE);
-    }
 
     let report = if write && non_interactive && !apply_ids.is_empty() {
         match select_updates_by_apply_id(report, &repo_root, &apply_ids) {
@@ -414,7 +386,6 @@ where
                     &repo_root,
                     json_output,
                     "apply",
-                    strict,
                     non_interactive,
                     human_output,
                 ),
@@ -432,7 +403,6 @@ where
                 &repo_root,
                 json_output,
                 "apply",
-                strict,
                 non_interactive,
                 human_output,
             ),
@@ -450,7 +420,6 @@ where
             &repo_root,
             json_output,
             "plan",
-            strict,
             non_interactive,
             human_output,
         ),
@@ -589,7 +558,6 @@ struct OutputContext<'a> {
     repo_root: &'a Path,
     json_output: bool,
     mode: &'a str,
-    strict: bool,
     non_interactive: bool,
     human_output: HumanOutput,
 }
@@ -599,7 +567,6 @@ impl<'a> OutputContext<'a> {
         repo_root: &'a Path,
         json_output: bool,
         mode: &'a str,
-        strict: bool,
         non_interactive: bool,
         human_output: HumanOutput,
     ) -> Self {
@@ -607,7 +574,6 @@ impl<'a> OutputContext<'a> {
             repo_root,
             json_output,
             mode,
-            strict,
             non_interactive,
             human_output,
         }
@@ -629,7 +595,6 @@ fn emit_update_output<W: Write, E: Write>(
             serde_json::to_string_pretty(&report.to_json_value(
                 context.repo_root,
                 context.mode,
-                context.strict,
                 context.non_interactive,
                 applied_count,
                 changed_file_count
@@ -729,9 +694,9 @@ fn render_update_line(
             }
             line
         }
-        PlannedUpdate::Deployment(deployment_update) => format!(
-            "{path}: Deployment {} {} {current} -> {latest}",
-            deployment_update.target_name, deployment_update.yaml_path
+        PlannedUpdate::Image(image_update) => format!(
+            "{path}: ImageBinding {} {} {current} -> {latest}",
+            image_update.target_name, image_update.yaml_path
         ),
     }
 }
@@ -742,7 +707,7 @@ fn render_prompt(update: &PlannedUpdate, repo_root: &Path, human_output: HumanOu
     let latest = human_output.styled(update.latest_version(), AnsiStyle::Green);
     let label = match update {
         PlannedUpdate::Chart(_) => "chart",
-        PlannedUpdate::Deployment(_) => "image",
+        PlannedUpdate::Image(_) => "image",
     };
     format!("Update {path} ({label} {current} -> {latest})? [y/N] ")
 }

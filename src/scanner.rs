@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -6,8 +5,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::models::{
-    DeploymentImageTarget, HelmReleaseTarget, HelmRepository, ImageReference, Inventory, RepoType,
-    ResourceId,
+    HelmReleaseTarget, HelmRepository, ImageBinding, ImageBindingValueKind, ImageReference,
+    Inventory, RepoType, ResourceId,
 };
 use yaml_serde::{Deserializer, Mapping, Value};
 
@@ -26,8 +25,6 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
         .canonicalize()
         .with_context(|| format!("failed to resolve {}", repo_root.display()))?;
     let mut inventory = Inventory::new(repo_root.clone());
-    let mut release_candidates = Vec::new();
-    let mut full_source_by_id: HashMap<ResourceId, HelmReleaseTarget> = HashMap::new();
 
     for path in iter_yaml_files(&repo_root)? {
         if is_skipped_path(&path) {
@@ -53,25 +50,28 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
 
             if kind == "HelmRelease" {
                 if let Some(target) = parse_helmrelease(&path, document_index, mapping) {
-                    if target.chart_name.is_some() && target.repo_name.is_some() {
-                        let replace_existing = full_source_by_id
-                            .get(&target.resource_id)
-                            .is_none_or(|existing| prefer_source(&target.path, &existing.path));
-                        if replace_existing {
-                            full_source_by_id.insert(target.resource_id.clone(), target.clone());
-                        }
+                    if target.can_update() {
+                        inventory.chart_targets.push(target);
+                    } else if target.current_version.is_some() {
+                        inventory.unresolved_chart_targets.push(target);
+                    } else {
+                        inventory.helmreleases_without_chart_version.push(target);
                     }
-                    release_candidates.push(target);
                 }
-            } else if kind == "Deployment" {
-                inventory
-                    .deployment_targets
-                    .extend(parse_deployment_targets(
-                        &path,
-                        document_index,
-                        mapping,
-                        document,
-                    ));
+                inventory.image_bindings.extend(parse_helm_value_targets(
+                    &path,
+                    document_index,
+                    mapping,
+                    document,
+                ));
+            } else if is_podspec_kind(&kind) {
+                inventory.image_bindings.extend(parse_workload_targets(
+                    &path,
+                    document_index,
+                    &kind,
+                    mapping,
+                    document,
+                ));
             }
 
             inventory.image_references.extend(parse_image_references(
@@ -84,30 +84,10 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
         }
     }
 
-    for mut target in release_candidates {
-        if (target.chart_name.is_none() || target.repo_name.is_none())
-            && let Some(source) = full_source_by_id.get(&target.resource_id)
-        {
-            target.chart_name.clone_from(&source.chart_name);
-            target.repo_name.clone_from(&source.repo_name);
-            target.source_path = Some(source.path.clone());
-            target.source_is_inherited =
-                source.path != target.path || source.document_index != target.document_index;
-        }
-
-        if target.can_update() {
-            inventory.chart_targets.push(target);
-        } else if target.current_version.is_some() {
-            inventory.unresolved_chart_targets.push(target);
-        } else {
-            inventory.helmreleases_without_chart_version.push(target);
-        }
-    }
-
     inventory
         .chart_targets
         .sort_by_key(|item| (item.path.clone(), item.document_index));
-    inventory.deployment_targets.sort_by_key(|item| {
+    inventory.image_bindings.sort_by_key(|item| {
         (
             item.path.clone(),
             item.document_index,
@@ -153,9 +133,10 @@ fn collect_yaml_files(path: &Path, results: &mut Vec<PathBuf>) -> Result<()> {
                 continue;
             }
             collect_yaml_files(&child_path, results)?;
-        } else if child_path
-            .extension()
-            .is_some_and(|extension| extension == "yaml")
+        } else if file_type.is_file()
+            && child_path
+                .extension()
+                .is_some_and(|extension| extension == "yaml" || extension == "yml")
         {
             results.push(child_path);
         }
@@ -204,6 +185,12 @@ fn parse_helmrelease(
     let metadata = mapping_field(document, "metadata")?;
     let name = string_field(metadata, "name")?;
     let namespace = string_field(metadata, "namespace");
+    let source_kind = nested_string(document, &["spec", "chart", "spec", "sourceRef", "kind"]);
+    let repo_name = if source_kind.as_deref() == Some("HelmRepository") {
+        nested_string(document, &["spec", "chart", "spec", "sourceRef", "name"])
+    } else {
+        None
+    };
 
     Some(HelmReleaseTarget {
         path: path.to_path_buf(),
@@ -215,18 +202,19 @@ fn parse_helmrelease(
         },
         chart_name: nested_string(document, &["spec", "chart", "spec", "chart"]),
         current_version: nested_string(document, &["spec", "chart", "spec", "version"]),
-        repo_name: nested_string(document, &["spec", "chart", "spec", "sourceRef", "name"]),
+        repo_name,
         source_path: Some(path.to_path_buf()),
         source_is_inherited: false,
     })
 }
 
-fn parse_deployment_targets(
+fn parse_workload_targets(
     path: &Path,
     document_index: usize,
+    kind: &str,
     document: &Mapping,
     value: &Value,
-) -> Vec<DeploymentImageTarget> {
+) -> Vec<ImageBinding> {
     let Some(metadata) = mapping_field(document, "metadata") else {
         return Vec::new();
     };
@@ -235,22 +223,137 @@ fn parse_deployment_targets(
     };
     let namespace = string_field(metadata, "namespace");
     let resource_id = ResourceId {
-        kind: "Deployment".to_string(),
+        kind: kind.to_string(),
         name,
         namespace,
     };
 
-    iter_images(value)
+    iter_scalar_images(value)
         .into_iter()
-        .filter(|(yaml_path, _)| is_deployment_image_path(yaml_path))
-        .map(|(yaml_path, image)| DeploymentImageTarget {
+        .filter(|(yaml_path, _)| is_workload_image_path(kind, yaml_path))
+        .map(|(yaml_path, image)| ImageBinding {
             path: path.to_path_buf(),
             document_index,
             resource_id: resource_id.clone(),
             yaml_path,
             image,
+            value_kind: ImageBindingValueKind::ImageReference,
         })
         .collect()
+}
+
+fn parse_helm_value_targets(
+    path: &Path,
+    document_index: usize,
+    document: &Mapping,
+    value: &Value,
+) -> Vec<ImageBinding> {
+    let Some(metadata) = mapping_field(document, "metadata") else {
+        return Vec::new();
+    };
+    let Some(name) = string_field(metadata, "name") else {
+        return Vec::new();
+    };
+    let resource_id = ResourceId {
+        kind: "HelmRelease".to_string(),
+        name,
+        namespace: string_field(metadata, "namespace"),
+    };
+    let Some(values) = value
+        .as_mapping()
+        .and_then(|root| root.get(Value::String("spec".to_string())))
+        .and_then(Value::as_mapping)
+        .and_then(|spec| spec.get(Value::String("values".to_string())))
+    else {
+        return Vec::new();
+    };
+
+    let mut bindings = Vec::new();
+    collect_helm_value_bindings(values, "spec.values", &mut bindings);
+    bindings
+        .into_iter()
+        .map(|(yaml_path, image, value_kind)| ImageBinding {
+            path: path.to_path_buf(),
+            document_index,
+            resource_id: resource_id.clone(),
+            yaml_path,
+            image,
+            value_kind,
+        })
+        .collect()
+}
+
+fn collect_helm_value_bindings(
+    value: &Value,
+    path: &str,
+    results: &mut Vec<(String, String, ImageBindingValueKind)>,
+) {
+    match value {
+        Value::Mapping(mapping) => {
+            if let Some(image) = concrete_image_mapping(mapping) {
+                results.push((format!("{path}.tag"), image, ImageBindingValueKind::Tag));
+            } else if let Some(image) = recognizable_unsupported_image_mapping(mapping) {
+                results.push((
+                    path.to_string(),
+                    image,
+                    ImageBindingValueKind::UnsupportedSchema,
+                ));
+            }
+            for (key, child) in mapping {
+                let Some(key) = key.as_str() else {
+                    continue;
+                };
+                let child_path = format!("{path}.{key}");
+                if key == "image"
+                    && let Some(image) = child.as_str()
+                {
+                    results.push((
+                        child_path.clone(),
+                        image.to_string(),
+                        ImageBindingValueKind::ImageReference,
+                    ));
+                }
+                collect_helm_value_bindings(child, &child_path, results);
+            }
+        }
+        Value::Sequence(items) => {
+            for (index, child) in items.iter().enumerate() {
+                collect_helm_value_bindings(child, &format!("{path}[{index}]"), results);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn recognizable_unsupported_image_mapping(mapping: &Mapping) -> Option<String> {
+    let repository = string_field(mapping, "repository")?;
+    if mapping.contains_key(Value::String("tag".to_string())) {
+        return None;
+    }
+    let (field, version) = ["version", "imageTag"]
+        .into_iter()
+        .find_map(|field| string_field(mapping, field).map(|value| (field, value)))?;
+    Some(format!("{repository} ({field}: {version})"))
+}
+
+fn concrete_image_mapping(mapping: &Mapping) -> Option<String> {
+    let repository = string_field(mapping, "repository")?;
+    let tag = string_field(mapping, "tag").filter(|tag| !tag.trim().is_empty())?;
+    let registry = string_field(mapping, "registry").filter(|registry| !registry.trim().is_empty());
+    let repository = match registry {
+        Some(registry) if !repository.starts_with(&format!("{registry}/")) => {
+            format!("{registry}/{repository}")
+        }
+        _ => repository,
+    };
+    let digest = ["digest", "sha", "sha256"]
+        .into_iter()
+        .find_map(|field| string_field(mapping, field))
+        .filter(|digest| !digest.trim().is_empty());
+    Some(digest.map_or_else(
+        || format!("{repository}:{tag}"),
+        |digest| format!("{repository}:{tag}@{digest}"),
+    ))
 }
 
 fn parse_image_references(
@@ -284,6 +387,42 @@ fn iter_images(value: &Value) -> Vec<(String, String)> {
     let mut results = Vec::new();
     collect_images(value, "", &mut results);
     results
+}
+
+fn iter_scalar_images(value: &Value) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    collect_scalar_images(value, "", &mut results);
+    results
+}
+
+fn collect_scalar_images(value: &Value, path: &str, results: &mut Vec<(String, String)>) {
+    match value {
+        Value::Mapping(mapping) => {
+            for (key, child) in mapping {
+                let Some(key_text) = key.as_str() else {
+                    continue;
+                };
+                let child_path = if path.is_empty() {
+                    key_text.to_string()
+                } else {
+                    format!("{path}.{key_text}")
+                };
+                if key_text == "image" {
+                    if let Some(image) = child.as_str() {
+                        results.push((child_path, image.to_string()));
+                    }
+                } else {
+                    collect_scalar_images(child, &child_path, results);
+                }
+            }
+        }
+        Value::Sequence(items) => {
+            for (index, child) in items.iter().enumerate() {
+                collect_scalar_images(child, &format!("{path}[{index}]"), results);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_images(value: &Value, path: &str, results: &mut Vec<(String, String)>) {
@@ -325,21 +464,31 @@ fn collect_images(value: &Value, path: &str, results: &mut Vec<(String, String)>
     }
 }
 
-fn is_deployment_image_path(yaml_path: &str) -> bool {
-    yaml_path.starts_with("spec.template.spec.containers[")
-        || yaml_path.starts_with("spec.template.spec.initContainers[")
+fn is_podspec_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "Deployment" | "StatefulSet" | "DaemonSet" | "Job" | "CronJob" | "Pod"
+    )
 }
 
-fn prefer_source(candidate: &Path, existing: &Path) -> bool {
-    let candidate_text = candidate.to_string_lossy();
-    let existing_text = existing.to_string_lossy();
-    if candidate_text.contains("/base/") && !existing_text.contains("/base/") {
-        return true;
-    }
-    if !candidate_text.contains("/base/") && existing_text.contains("/base/") {
-        return false;
-    }
-    candidate_text < existing_text
+fn is_workload_image_path(kind: &str, yaml_path: &str) -> bool {
+    let podspec_path = match kind {
+        "Pod" => "spec",
+        "CronJob" => "spec.jobTemplate.spec.template.spec",
+        _ => "spec.template.spec",
+    };
+    ["containers", "initContainers"].into_iter().any(|field| {
+        let prefix = format!("{podspec_path}.{field}[");
+        let Some(remainder) = yaml_path.strip_prefix(&prefix) else {
+            return false;
+        };
+        let Some((index, suffix)) = remainder.split_once(']') else {
+            return false;
+        };
+        !index.is_empty()
+            && index.chars().all(|character| character.is_ascii_digit())
+            && suffix == ".image"
+    })
 }
 
 fn nested_string(document: &Mapping, path: &[&str]) -> Option<String> {

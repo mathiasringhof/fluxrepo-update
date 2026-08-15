@@ -50,7 +50,7 @@ fn inventory_json_matches_fixture_contract() {
     assert_eq!(payload["repository_count"], 1);
     assert!(payload["repositories"].as_array().is_some());
     assert!(payload["chart_targets"].as_array().is_some());
-    assert!(payload["deployment_targets"].as_array().is_some());
+    assert!(payload["image_bindings"].as_array().is_some());
     assert!(
         payload["helmreleases_without_chart_version"]
             .as_array()
@@ -60,7 +60,7 @@ fn inventory_json_matches_fixture_contract() {
     assert!(payload["image_references"].as_array().is_some());
     assert!(payload["chart_target_count"].as_u64().expect("chart count") >= 2);
     assert!(
-        payload["deployment_target_count"]
+        payload["image_binding_count"]
             .as_u64()
             .expect("deployment count")
             >= 2
@@ -106,19 +106,18 @@ fn inventory_json_matches_fixture_contract() {
             })
     );
     assert!(
-        payload["chart_targets"]
+        payload["unresolved_chart_targets"]
             .as_array()
             .unwrap()
             .iter()
             .any(|item| {
                 item["path"] == "apps/production/paperless/release-patch.yaml"
                     && item["name"] == "paperless-ngx"
-                    && item["source_path"] == "apps/base/paperless-ngx/release.yaml"
-                    && item["source_is_inherited"] == true
+                    && item["current_version"] == "11.29.10"
             })
     );
     assert!(
-        payload["deployment_targets"]
+        payload["image_bindings"]
             .as_array()
             .unwrap()
             .iter()
@@ -173,7 +172,7 @@ fn inventory_human_output_prints_summary_counts() {
     assert_eq!(code, 0);
     assert!(stdout.contains("Repositories:"));
     assert!(stdout.contains("Chart targets:"));
-    assert!(stdout.contains("Deployment targets:"));
+    assert!(stdout.contains("Image bindings:"));
     assert!(stdout.contains("Unresolved chart targets:"));
 }
 
@@ -230,7 +229,7 @@ fn update_helm_json_dry_run_returns_agent_friendly_payload() {
     assert_eq!(stderr, "");
     let payload: Value = serde_json::from_str(&stdout).expect("json output");
     assert_eq!(payload["mode"], "plan");
-    assert_eq!(payload["strict"], false);
+    assert!(payload.get("strict").is_none());
     assert_eq!(payload["non_interactive"], true);
     assert_eq!(payload["summary"]["applied_count"], 0);
     assert!(payload["summary"]["planned_count"].as_u64().unwrap() >= 1);
@@ -243,14 +242,14 @@ fn update_helm_json_dry_run_returns_agent_friendly_payload() {
         assert!(skipped.get("source_url").is_some());
     }
     assert!(payload["planned"].as_array().unwrap().iter().any(|item| {
-        item["path"] == "apps/production/paperless/release-patch.yaml"
-            && item["inherited_source"] == true
+        item["path"] == "apps/base/paperless-ngx/release.yaml"
+            && item["inherited_source"] == false
             && item["yaml_path"] == "spec.chart.spec.version"
             && item["latest_version"] == "12.1.0"
     }));
     assert!(payload["planned"].as_array().unwrap().iter().any(|item| {
         item["path"] == "apps/base/sonarr/deployment.yaml"
-            && item["target_kind"] == "Deployment"
+            && item["target_kind"] == "ImageBinding"
             && item["yaml_path"] == "spec.template.spec.containers[0].image"
             && item["latest_image"] == "linuxserver/sonarr:version-4.0.17.3000"
     }));
@@ -280,8 +279,8 @@ fn update_helm_json_write_returns_applied_exit_code() {
     assert!(payload["summary"]["applied_count"].as_u64().unwrap() >= 1);
     assert!(payload["summary"]["changed_file_count"].as_u64().unwrap() >= 1);
     assert!(
-        fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
-            .expect("read patch")
+        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
+            .expect("read release")
             .contains("12.1.0")
     );
     assert!(
@@ -320,20 +319,27 @@ fn update_helm_json_plan_includes_stable_apply_ids() {
 }
 
 #[test]
-fn update_helm_json_plan_resolves_truecharts_with_repository_resolver() {
+fn update_helm_json_plan_resolves_generic_oci_with_repository_resolver() {
     let temp = tempfile::tempdir().expect("temp dir");
     let repo_root = temp.path().join("repo");
+    let server = TestHttpServer::new(vec![
+        ResponseSpec::new(200, r#"{"tags":["14.1.3","14.3.0"]}"#)
+            .header("Content-Type", "application/json"),
+    ]);
     write_file(
         &repo_root.join("source.yaml"),
-        r#"apiVersion: source.toolkit.fluxcd.io/v1
+        &format!(
+            r#"apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
 metadata:
-  name: truecharts
+  name: public-oci
   namespace: flux-system
 spec:
   type: oci
-  url: oci://oci.trueforge.org/truecharts
+  url: oci://{}/charts
 "#,
+            server.base_url.trim_start_matches("http://")
+        ),
     );
     write_file(
         &repo_root.join("release.yaml"),
@@ -349,28 +355,11 @@ spec:
       version: "14.1.3"
       sourceRef:
         kind: HelmRepository
-        name: truecharts
+        name: public-oci
         namespace: flux-system
 "#,
     );
-    let server = TestHttpServer::new(vec![ResponseSpec::new(
-        200,
-        r#"annotations:
-  artifacthub.io/links: |-
-    - name: support
-    url: https://discord.com/invite/tVsPTHWTtr
-badProviderField: [
-dependencies:
-  - name: common
-    version: 29.3.4
-    repository: oci://oci.trueforge.org/truecharts
-name: jellyseerr
-version: 14.3.0
-"#,
-    )]);
-    let factory = RepositoryResolverFactory {
-        truecharts_base_url: server.base_url.clone(),
-    };
+    let factory = RepositoryResolverFactory;
 
     let (code, stdout, stderr) = run_cli_with_any_factory(
         &[
@@ -397,7 +386,7 @@ version: 14.3.0
     }));
     let requests = server.finish();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].path, "/jellyseerr/Chart.yaml");
+    assert_eq!(requests[0].path, "/v2/charts/jellyseerr/tags/list?n=1000");
 }
 
 #[test]
@@ -688,13 +677,12 @@ fn update_helm_interactive_mode_applies_selected_updates_only() {
             "update-helm",
             repo_root.to_str().expect("repo path"),
         ],
-        "y\nn\n",
+        "y\n",
         &factory,
     );
 
     assert_eq!(code, 20);
-    assert!(stderr.contains("[y/N] y\nUpdate"));
-    assert!(stderr.contains("[y/N] n\n"));
+    assert!(stderr.contains("[y/N] y\n"));
     assert!(
         fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
             .expect("read base")
@@ -758,7 +746,7 @@ fn update_helm_interactive_prompt_includes_update_details() {
             "update-helm",
             repo_root.to_str().expect("repo path"),
         ],
-        "n\nn\n",
+        "n\n",
         &factory,
     );
 
@@ -766,7 +754,7 @@ fn update_helm_interactive_prompt_includes_update_details() {
     assert!(stderr.contains("Update apps/base/paperless-ngx/release.yaml"));
     assert!(stderr.contains("chart"));
     assert!(stderr.contains("12.0.0 -> 12.1.0"));
-    assert!(stderr.contains("[y/N] n\nUpdate"));
+    assert!(stderr.contains("[y/N] n\n"));
 }
 
 #[test]
@@ -786,12 +774,12 @@ fn update_helm_interactive_mode_defaults_empty_answer_to_no() {
             "update-helm",
             repo_root.to_str().expect("repo path"),
         ],
-        "\n\n",
+        "\n",
         &factory,
     );
 
     assert_eq!(code, 0);
-    assert!(stderr.contains("[y/N] n\nUpdate"));
+    assert!(stderr.contains("[y/N] n\n"));
     assert!(stderr.contains("No updates were approved."));
     assert!(
         fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
@@ -896,16 +884,8 @@ fn update_helm_missing_repo_root_returns_parse_error() {
 }
 
 #[test]
-fn update_helm_strict_fails_on_skipped_resolution() {
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "12.1.0".to_string(),
-        )]),
-        HashMap::new(),
-    );
-
-    let (code, stdout, _) = run_cli(
+fn update_helm_rejects_the_removed_strict_option() {
+    let (code, _, stderr) = run_cli(
         &[
             "fluxrepo-update",
             "update-helm",
@@ -915,14 +895,11 @@ fn update_helm_strict_fails_on_skipped_resolution() {
             "--non-interactive",
         ],
         "",
-        &factory,
+        &StaticResolverFactory::default(),
     );
 
     assert_eq!(code, 2);
-    let payload: Value = serde_json::from_str(&stdout).expect("json output");
-    assert_eq!(payload["strict"], true);
-    assert!(payload["summary"]["skipped_count"].as_u64().unwrap() >= 1);
-    assert!(payload["summary"]["planned_count"].as_u64().unwrap() >= 1);
+    assert!(!stderr.is_empty());
 }
 
 #[test]
@@ -998,15 +975,14 @@ fn update_helm_non_json_plan_output_includes_target_context() {
     assert_eq!(code, 10);
     for expected in [
         "apps/base/sonarr/deployment.yaml",
-        "Deployment",
+        "ImageBinding",
         "sonarr-deployment",
         "spec.template.spec.containers[0].image",
         "version-4.0.16.2944 -> version-4.0.17.3000",
-        "apps/production/paperless/release-patch.yaml",
+        "apps/base/paperless-ngx/release.yaml",
         "HelmRelease",
         "paperless-ngx",
-        "11.29.10 -> 12.1.0",
-        "inherited-source",
+        "12.0.0 -> 12.1.0",
     ] {
         assert!(
             stderr.contains(expected),
@@ -1028,15 +1004,11 @@ fn paperless_update_factory() -> StaticResolverFactory {
     )
 }
 
-struct RepositoryResolverFactory {
-    truecharts_base_url: String,
-}
+struct RepositoryResolverFactory;
 
 impl ResolverFactory for RepositoryResolverFactory {
     fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
-        Box::new(RepositoryChartResolver::with_truecharts_base_url(
-            &self.truecharts_base_url,
-        ))
+        Box::new(RepositoryChartResolver::default())
     }
 
     fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync> {

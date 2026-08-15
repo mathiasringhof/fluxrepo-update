@@ -8,7 +8,7 @@ Use `update-helm` to answer "what version bumps are available?" and, if desired,
 those bumps.
 
 `update-helm` always scans the repository first, then resolves the latest chart versions
-and Deployment image tags from remote sources.
+and image-binding versions from public remote sources.
 
 ## Safe First Run
 
@@ -40,7 +40,7 @@ Human-readable output includes counts for:
 
 - `Repositories`
 - `Chart targets`
-- `Deployment targets`
+- `Image bindings`
 - `HelmReleases without chart version`
 - `Unresolved chart targets`
 - `Image references`
@@ -50,14 +50,12 @@ Use `--json` when you need the actual item lists instead of summary counts.
 
 ### `update-helm`
 
-Plans or applies updates for updateable `HelmRelease` resources and versioned
-`Deployment` image fields.
+Plans or applies explicit chart versions and image bindings.
 
 ```bash
 cargo run -- update-helm /path/to/flux-repo
 cargo run -- update-helm /path/to/flux-repo --non-interactive
 cargo run -- update-helm /path/to/flux-repo --json --non-interactive
-cargo run -- update-helm /path/to/flux-repo --write
 cargo run -- update-helm /path/to/flux-repo --write --non-interactive
 cargo run -- update-helm /path/to/flux-repo --write --non-interactive --apply-id '<id-from-plan>'
 ```
@@ -67,12 +65,11 @@ Options:
 - `--json`: emit machine-readable output
 - `--write`: apply all planned updates without prompts; requires `--non-interactive`
 - `--apply-id <ID>`: apply one planned item by JSON plan ID; repeat for multiple items
-- `--strict`: fail if any target is skipped during version resolution
 - `--non-interactive`: disable prompts
 
-`Deployment` updates are limited to direct `containers[*].image` and
-`initContainers[*].image` fields. Mutable tags such as `latest` and `main`, digest-pinned
-images, and bare image references without an explicit tag are reported as skipped.
+Image bindings include standard workload `containers`/`initContainers` scalars and
+recursive scalar or `repository`/`tag` mappings under `HelmRelease.spec.values`.
+Mutable, templated, digest-pinned, tagless, blank, and unknown schemas remain unchanged.
 Apply mode edits the targeted YAML scalar in place so unrelated formatting, comments,
 quote style, and multi-document separators stay intact where possible.
 
@@ -115,20 +112,20 @@ The CLI rejects these combinations:
 With `--json`, failures after argument parsing are reported as JSON on stderr with
 `error`, `message`, and `exit_code` fields.
 
-`--strict` changes skipped resolutions from a warning into a failing exit code. A skip can
-happen because:
+Unresolved targets are normal best-effort plan outcomes and do not block other updates.
+A skip can happen because:
 
 - the referenced `HelmRepository` is missing from the scanned repo
 - the chart could not be found in the repository index
 - the remote repository could not be reached
-- the repository changed to an incompatible version scheme, so no comparable upgrade path could be derived
+- the version scheme is unfamiliar or incomparable
 - the image tag is mutable or otherwise not comparable
 - the container registry could not list tags for the image
-- the repository type is unsupported, such as generic OCI
+- the image is templated, mutable, tagless, or digest-pinned
 
 ## Exit Codes
 
 - `0`: no updates applied, no updates found, or no updates approved
-- `2`: invalid arguments or `--strict` encountered skipped targets
+- `2`: invalid arguments or a runtime/write failure
 - `10`: planning mode found updates
 - `20`: updates were applied

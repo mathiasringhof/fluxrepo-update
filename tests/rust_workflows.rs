@@ -118,7 +118,7 @@ spec:
     }));
     assert!(plan["planned"].as_array().unwrap().iter().any(|item| {
         item["path"] == "deployment.yaml"
-            && item["target_kind"] == "Deployment"
+            && item["target_kind"] == "ImageBinding"
             && item["current_version"] == "2.4.0"
             && item["latest_version"] == "2.5.0"
     }));
@@ -153,6 +153,300 @@ spec:
 
     assert_eq!(chart_server.finish().len(), 2);
     assert_eq!(registry_server.finish().len(), 2);
+}
+
+#[test]
+fn update_helm_workflow_updates_recursive_mapping_and_scalar_helm_values() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let repo_root = temp.path().join("repo");
+    write_file(
+        &repo_root.join("release.yml"),
+        r#"kind: HelmRelease
+metadata:
+  name: dashboard
+spec:
+  values:
+    sidecar:
+      image:
+        registry: registry.example
+        repository: helpers/sidecar
+        tag: "3.0.0" # retain this comment
+    helper:
+      image: registry.example/helpers/helper:1.0.0
+    nested:
+      metrics:
+        repository: registry.example/metrics
+        tag: "2.0.0"
+"#,
+    );
+    let factory = StaticResolverFactory::new(
+        HashMap::new(),
+        HashMap::from([
+            (
+                "registry.example/helpers/sidecar:3.0.0".to_string(),
+                "registry.example/helpers/sidecar:4.0.0".to_string(),
+            ),
+            (
+                "registry.example/helpers/helper:1.0.0".to_string(),
+                "registry.example/helpers/helper:1.1.0".to_string(),
+            ),
+            (
+                "registry.example/metrics:2.0.0".to_string(),
+                "registry.example/metrics:2.1.0".to_string(),
+            ),
+        ]),
+    );
+
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            repo_root.to_str().expect("repo path"),
+            "--json",
+            "--write",
+            "--non-interactive",
+        ],
+        &factory,
+    );
+
+    assert_eq!(code, 20, "{stderr}");
+    let report: Value = serde_json::from_str(&stdout).expect("report json");
+    assert_eq!(report["summary"]["applied_count"], 3);
+    let paths = report["planned"]
+        .as_array()
+        .expect("planned updates")
+        .iter()
+        .map(|item| item["yaml_path"].as_str().expect("yaml path"))
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"spec.values.sidecar.image.tag"));
+    assert!(paths.contains(&"spec.values.helper.image"));
+    assert!(paths.contains(&"spec.values.nested.metrics.tag"));
+    assert_eq!(
+        fs::read_to_string(repo_root.join("release.yml")).expect("read release"),
+        r#"kind: HelmRelease
+metadata:
+  name: dashboard
+spec:
+  values:
+    sidecar:
+      image:
+        registry: registry.example
+        repository: helpers/sidecar
+        tag: "4.0.0" # retain this comment
+    helper:
+      image: registry.example/helpers/helper:1.1.0
+    nested:
+      metrics:
+        repository: registry.example/metrics
+        tag: "2.1.0"
+"#
+    );
+}
+
+#[test]
+fn inventory_workflow_covers_yml_exclusions_and_incomplete_documents() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let repo_root = temp.path().join("repo");
+    write_file(
+        &repo_root.join("pod.yml"),
+        "kind: Pod\nmetadata: {name: visible}\nspec: {containers: [{image: example/app:1.0.0}]}\n",
+    );
+    write_file(
+        &repo_root.join(".hidden/pod.yaml"),
+        "kind: Pod\nmetadata: {name: hidden}\nspec: {containers: [{image: example/hidden:1.0.0}]}\n",
+    );
+    write_file(
+        &repo_root.join(".cache/pod.yml"),
+        "kind: Pod\nmetadata: {name: cached}\nspec: {containers: [{image: example/cached:1.0.0}]}\n",
+    );
+    write_file(
+        &repo_root.join("clusters/prod/flux-system/gotk-components.yaml"),
+        "kind: Pod\nmetadata: {name: generated}\nspec: {containers: [{image: example/generated:1.0.0}]}\n",
+    );
+    write_file(
+        &repo_root.join("incomplete.yaml"),
+        "metadata: {name: incomplete}\nspec: {containers: [{image: example/incomplete:1.0.0}]}\n",
+    );
+
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "inventory",
+            repo_root.to_str().expect("repo path"),
+            "--json",
+        ],
+        &StaticResolverFactory::default(),
+    );
+
+    assert_eq!(code, 0, "{stderr}");
+    let inventory: Value = serde_json::from_str(&stdout).expect("inventory json");
+    assert_eq!(inventory["image_binding_count"], 1);
+    assert_eq!(inventory["image_bindings"][0]["path"], "pod.yml");
+    assert_eq!(
+        inventory["skipped_paths"],
+        serde_json::json!(["clusters/prod/flux-system/gotk-components.yaml"])
+    );
+}
+
+#[test]
+fn inventory_workflow_reports_malformed_yaml_as_json_error() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let repo_root = temp.path().join("repo");
+    write_file(&repo_root.join("broken.yml"), "kind: [\n");
+
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "inventory",
+            repo_root.to_str().expect("repo path"),
+            "--json",
+        ],
+        &StaticResolverFactory::default(),
+    );
+
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    let error: Value = serde_json::from_str(&stderr).expect("error json");
+    assert_eq!(error["error"], "runtime_error");
+    assert!(error["message"].as_str().unwrap().contains("broken.yml"));
+}
+
+#[test]
+fn update_helm_workflow_reports_conservative_helm_value_skips() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let repo_root = temp.path().join("repo");
+    write_file(
+        &repo_root.join("release.yaml"),
+        r#"kind: HelmRelease
+metadata: {name: conservative}
+spec:
+  values:
+    tagless: {image: registry.example/tagless/app}
+    mutable: {image: registry.example/mutable/app:latest}
+    templated: {image: "{{ .Values.image }}"}
+    pinned:
+      image:
+        repository: registry.example/pinned/app
+        tag: "1.0.0"
+        digest: sha256:deadbeef
+    blank:
+      image:
+        repository: registry.example/blank/app
+        tag: ""
+    unknown:
+      image:
+        repository: registry.example/unknown/app
+        version: "1.0.0"
+"#,
+    );
+
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            repo_root.to_str().expect("repo path"),
+            "--json",
+            "--non-interactive",
+        ],
+        &DefaultResolverFactory,
+    );
+
+    assert_eq!(code, 0, "{stderr}");
+    let report: Value = serde_json::from_str(&stdout).expect("report json");
+    assert_eq!(report["summary"]["planned_count"], 0);
+    assert_eq!(report["summary"]["skipped_count"], 5);
+    let reasons = report["skipped"]
+        .as_array()
+        .expect("skipped updates")
+        .iter()
+        .map(|item| item["reason_code"].as_str().expect("reason code"))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        reasons,
+        std::collections::BTreeSet::from([
+            "image_reference_missing_tag",
+            "image_reference_pinned_by_digest",
+            "mutable_image_tag",
+            "templated_image_reference",
+            "unsupported_image_schema",
+        ])
+    );
+}
+
+#[test]
+fn update_helm_workflow_applies_all_standard_podspec_image_bindings() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let repo_root = temp.path().join("repo");
+    let path = repo_root.join("workloads.yml");
+    write_file(
+        &path,
+        r"kind: Deployment
+metadata: {name: deployment}
+spec: {template: {spec: {containers: [{image: example/deployment:1.0.0}], initContainers: [{image: example/deployment-init:1.0.0}]}}}
+---
+kind: StatefulSet
+metadata: {name: statefulset}
+spec: {template: {spec: {containers: [{image: example/statefulset:1.0.0}], initContainers: [{image: example/statefulset-init:1.0.0}]}}}
+---
+kind: DaemonSet
+metadata: {name: daemonset}
+spec: {template: {spec: {containers: [{image: example/daemonset:1.0.0}], initContainers: [{image: example/daemonset-init:1.0.0}]}}}
+---
+kind: Job
+metadata: {name: job}
+spec: {template: {spec: {containers: [{image: example/job:1.0.0}], initContainers: [{image: example/job-init:1.0.0}]}}}
+---
+kind: CronJob
+metadata: {name: cronjob}
+spec: {jobTemplate: {spec: {template: {spec: {containers: [{image: example/cronjob:1.0.0}], initContainers: [{image: example/cronjob-init:1.0.0}]}}}}}
+---
+kind: Pod
+metadata: {name: pod}
+spec: {containers: [{image: example/pod:1.0.0}], initContainers: [{image: example/pod-init:1.0.0}]}
+",
+    );
+    let image_versions = [
+        "deployment",
+        "deployment-init",
+        "statefulset",
+        "statefulset-init",
+        "daemonset",
+        "daemonset-init",
+        "job",
+        "job-init",
+        "cronjob",
+        "cronjob-init",
+        "pod",
+        "pod-init",
+    ]
+    .into_iter()
+    .map(|name| {
+        (
+            format!("example/{name}:1.0.0"),
+            format!("example/{name}:2.0.0"),
+        )
+    })
+    .collect();
+    let factory = StaticResolverFactory::new(HashMap::new(), image_versions);
+
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            repo_root.to_str().expect("repo path"),
+            "--json",
+            "--write",
+            "--non-interactive",
+        ],
+        &factory,
+    );
+
+    assert_eq!(code, 20, "{stderr}");
+    let report: Value = serde_json::from_str(&stdout).expect("report json");
+    assert_eq!(report["summary"]["applied_count"], 12);
+    let written = fs::read_to_string(path).expect("read workloads");
+    assert!(!written.contains(":1.0.0"));
+    assert_eq!(written.matches(":2.0.0").count(), 12);
 }
 
 #[test]

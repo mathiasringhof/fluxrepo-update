@@ -43,11 +43,14 @@ pub enum ResolverErrorCode {
     UnsupportedRepositoryType,
     ChartNotFound,
     IncompatibleVersionScheme,
+    CurrentVersionNotFound,
+    CurrentVersionNewerThanSource,
     ChartRequestFailed,
     RegistryRequestFailed,
     MutableImageTag,
     ImageReferenceMissingTag,
     ImageReferencePinnedByDigest,
+    TemplatedImageReference,
     UnparseableImageReference,
     Unclassified,
 }
@@ -169,7 +172,6 @@ impl ImageVersionResolver for StaticImageVersionResolver {
 
 pub struct RepositoryChartResolver {
     client: Client,
-    truecharts_base_url: String,
     version_cache: Mutex<HashMap<ChartVersionCacheKey, String>>,
     index_cache: Mutex<HashMap<ChartIndexCacheKey, Value>>,
 }
@@ -203,21 +205,16 @@ impl ChartVersionResolver for RepositoryChartResolver {
             return Ok(version.clone());
         }
 
-        let version = if repository.repo_type == RepoType::Oci {
-            if repository.name == "truecharts" {
-                self.resolve_truecharts(chart_name)?
-            } else {
+        let version = match &repository.repo_type {
+            RepoType::Oci => self.resolve_oci(repository, chart_name, current_version)?,
+            RepoType::Default => self.resolve_index(repository, chart_name, current_version)?,
+            RepoType::Other(repo_type) => {
                 return Err(ResolverError::permanent(
                     ResolverErrorCode::UnsupportedRepositoryType,
-                    format!(
-                        "OCI repository support is not implemented for {}",
-                        repository.name
-                    ),
+                    format!("unsupported Helm repository type {repo_type}"),
                 )
                 .into());
             }
-        } else {
-            self.resolve_index(repository, chart_name, current_version)?
         };
         self.version_cache
             .lock()
@@ -232,24 +229,35 @@ impl RepositoryChartResolver {
         RepositoryChartResolverBuilder::default()
     }
 
-    pub fn with_truecharts_base_url(base_url: impl Into<String>) -> Self {
-        Self::builder().truecharts_base_url(base_url).build()
-    }
-
-    pub fn truecharts_base_url(&self) -> &str {
-        &self.truecharts_base_url
-    }
-
-    fn resolve_truecharts(&self, chart_name: &str) -> Result<String> {
-        let url = format!("{}/{chart_name}/Chart.yaml", self.truecharts_base_url);
-        let text = self.fetch_chart_metadata(&url)?;
-        top_level_chart_version(&text).ok_or_else(|| {
+    fn resolve_oci(
+        &self,
+        repository: &HelmRepository,
+        chart_name: &str,
+        current_version: Option<&str>,
+    ) -> Result<String> {
+        let current_version = current_version.ok_or_else(|| {
             ResolverError::permanent(
-                ResolverErrorCode::ChartNotFound,
-                format!("Unable to resolve TrueCharts version for {chart_name}"),
+                ResolverErrorCode::IncompatibleVersionScheme,
+                format!("OCI chart {chart_name} has no explicit current version"),
             )
-            .into()
-        })
+        })?;
+        let repository_path = repository.url.strip_prefix("oci://").ok_or_else(|| {
+            ResolverError::permanent(
+                ResolverErrorCode::UnsupportedRepositoryType,
+                format!("invalid OCI repository URL {}", repository.url),
+            )
+        })?;
+        let image = format!(
+            "{}/{chart_name}:{current_version}",
+            repository_path.trim_end_matches('/')
+        );
+        let registry_resolver = RegistryImageResolver::builder()
+            .client(self.client.clone())
+            .build();
+        let resolved_image = registry_resolver.resolve(&image)?;
+        parse_image_reference(&resolved_image)?
+            .tag
+            .ok_or_else(|| anyhow!("resolved OCI chart did not contain a version tag"))
     }
 
     fn resolve_index(
@@ -301,6 +309,36 @@ impl RepositoryChartResolver {
         }
 
         let candidates = if let Some(current_version) = current_version {
+            if !is_recognized_version(current_version) {
+                return Err(ResolverError::permanent(
+                    ResolverErrorCode::IncompatibleVersionScheme,
+                    format!("unfamiliar chart version scheme: {current_version}"),
+                )
+                .into());
+            }
+            let newest_stable = versions
+                .iter()
+                .filter(|version| !is_prerelease_version(version))
+                .max_by(|left, right| compare_versions(left, right));
+            if newest_stable.is_some_and(|latest| {
+                is_comparable_version(current_version, latest)
+                    && compare_versions(current_version, latest).is_gt()
+            }) {
+                return Err(ResolverError::permanent(
+                    ResolverErrorCode::CurrentVersionNewerThanSource,
+                    format!(
+                        "current chart version {current_version} is newer than every stable source version"
+                    ),
+                )
+                .into());
+            }
+            if !versions.iter().any(|version| version == current_version) {
+                return Err(ResolverError::permanent(
+                    ResolverErrorCode::CurrentVersionNotFound,
+                    format!("current chart version {current_version} is absent from the source"),
+                )
+                .into());
+            }
             let comparable = select_comparable_versions(current_version, &versions);
             if comparable.is_empty() {
                 return Err(ResolverError::permanent(
@@ -361,66 +399,9 @@ impl RepositoryChartResolver {
     }
 }
 
-fn top_level_chart_version(text: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let value = line.strip_prefix("version:")?.trim();
-        let value = strip_inline_comment(value).trim();
-        if value.is_empty() {
-            return None;
-        }
-        Some(unquote_yaml_scalar(value).to_string())
-    })
-}
-
-fn strip_inline_comment(value: &str) -> &str {
-    let mut quote = None;
-    let mut previous = '\0';
-    for (index, character) in value.char_indices() {
-        match character {
-            '"' if quote != Some('\'') && previous != '\\' => {
-                quote = if quote == Some('"') { None } else { Some('"') };
-            }
-            '\'' if quote != Some('"') => {
-                quote = if quote == Some('\'') {
-                    None
-                } else {
-                    Some('\'')
-                };
-            }
-            '#' if quote.is_none() => return &value[..index],
-            _ => {}
-        }
-        previous = character;
-    }
-    value
-}
-
-fn unquote_yaml_scalar(value: &str) -> &str {
-    value
-        .strip_prefix('"')
-        .and_then(|value| value.strip_suffix('"'))
-        .or_else(|| {
-            value
-                .strip_prefix('\'')
-                .and_then(|value| value.strip_suffix('\''))
-        })
-        .unwrap_or(value)
-}
-
+#[derive(Default)]
 pub struct RepositoryChartResolverBuilder {
     client: Option<Client>,
-    truecharts_base_url: String,
-}
-
-impl Default for RepositoryChartResolverBuilder {
-    fn default() -> Self {
-        Self {
-            client: None,
-            truecharts_base_url:
-                "https://raw.githubusercontent.com/truecharts/public/refs/heads/master/charts/stable"
-                    .to_string(),
-        }
-    }
 }
 
 impl RepositoryChartResolverBuilder {
@@ -430,16 +411,9 @@ impl RepositoryChartResolverBuilder {
         self
     }
 
-    #[must_use]
-    pub fn truecharts_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.truecharts_base_url = base_url.into();
-        self
-    }
-
     pub fn build(self) -> RepositoryChartResolver {
         RepositoryChartResolver {
             client: self.client.unwrap_or_else(default_http_client),
-            truecharts_base_url: self.truecharts_base_url.trim_end_matches('/').to_string(),
             version_cache: Mutex::new(HashMap::new()),
             index_cache: Mutex::new(HashMap::new()),
         }
@@ -550,6 +524,13 @@ impl ImageVersionResolver for RegistryImageResolver {
             return Ok(cached);
         }
 
+        if image.contains("{{") || image.contains("}}") || image.contains("${") {
+            return Err(ResolverError::permanent(
+                ResolverErrorCode::TemplatedImageReference,
+                format!("image reference is templated: {image}"),
+            )
+            .into());
+        }
         let reference = parse_image_reference(image).map_err(|error| {
             ResolverError::permanent(
                 ResolverErrorCode::UnparseableImageReference,
@@ -583,8 +564,38 @@ impl ImageVersionResolver for RegistryImageResolver {
             )
             .into());
         }
+        if !is_recognized_version(tag) {
+            return Err(ResolverError::permanent(
+                ResolverErrorCode::IncompatibleVersionScheme,
+                format!("unfamiliar image tag scheme: {tag}"),
+            )
+            .into());
+        }
 
         let tags = self.list_tags(&reference)?;
+        let newest_stable = tags
+            .iter()
+            .filter(|candidate| {
+                !is_mutable_image_tag(candidate)
+                    && !looks_like_commit_tag(candidate)
+                    && !is_prerelease_version(candidate)
+                    && is_comparable_version(tag, candidate)
+            })
+            .max_by(|left, right| compare_versions(left, right));
+        if newest_stable.is_some_and(|latest| compare_versions(tag, latest).is_gt()) {
+            return Err(ResolverError::permanent(
+                ResolverErrorCode::CurrentVersionNewerThanSource,
+                format!("current image tag {tag} is newer than every stable source tag"),
+            )
+            .into());
+        }
+        if !tags.iter().any(|candidate| candidate == tag) {
+            return Err(ResolverError::permanent(
+                ResolverErrorCode::CurrentVersionNotFound,
+                format!("current image tag {tag} is absent from the registry"),
+            )
+            .into());
+        }
         let comparable_tags =
             select_comparable_tags(tag, &tags.iter().map(String::as_str).collect::<Vec<_>>());
         if comparable_tags.is_empty() {
@@ -844,6 +855,7 @@ pub fn select_comparable_tags<'a>(current_tag: &str, tags: &[&'a str]) -> Vec<&'
         .filter(|tag| {
             !is_mutable_image_tag(tag)
                 && !looks_like_commit_tag(tag)
+                && !is_prerelease_version(tag)
                 && is_comparable_version(current_tag, tag)
         })
         .collect()
@@ -852,16 +864,23 @@ pub fn select_comparable_tags<'a>(current_tag: &str, tags: &[&'a str]) -> Vec<&'
 pub fn select_comparable_versions(current_version: &str, versions: &[String]) -> Vec<String> {
     versions
         .iter()
-        .filter(|version| is_comparable_version(current_version, version))
+        .filter(|version| {
+            !is_prerelease_version(version) && is_comparable_version(current_version, version)
+        })
         .cloned()
         .collect()
 }
 
 pub fn is_newer_version(current: &str, candidate: &str) -> bool {
-    is_comparable_version(current, candidate) && compare_versions(candidate, current).is_gt()
+    !is_prerelease_version(candidate)
+        && is_comparable_version(current, candidate)
+        && compare_versions(candidate, current).is_gt()
 }
 
 fn compare_versions(left: &str, right: &str) -> Ordering {
+    if let (Some(left), Some(right)) = (parse_semver(left), parse_semver(right)) {
+        return left.cmp(&right);
+    }
     let left = comparable_version_sort_key(left);
     let right = comparable_version_sort_key(right);
     left.cmp(&right)
@@ -875,6 +894,9 @@ fn comparable_version_sort_key(version: &str) -> SortKey {
 }
 
 fn is_comparable_version(current: &str, candidate: &str) -> bool {
+    if parse_semver(current).is_some() && parse_semver(candidate).is_some() {
+        return true;
+    }
     let current_version = parse_comparable_version(current);
     let candidate_version = parse_comparable_version(candidate);
     let (Some(current_version), Some(candidate_version)) = (current_version, candidate_version)
@@ -884,14 +906,7 @@ fn is_comparable_version(current: &str, candidate: &str) -> bool {
 
     match current_version.family {
         VersionFamily::Date => candidate_version.family == VersionFamily::Date,
-        VersionFamily::NumericSeries => {
-            matches!(
-                candidate_version.family,
-                VersionFamily::NumericSeries | VersionFamily::Numeric
-            ) && candidate_version.numeric_parts.len() >= 2
-                && candidate_version.numeric_parts[..2] == current_version.numeric_parts[..2]
-        }
-        VersionFamily::Numeric => matches!(
+        VersionFamily::NumericSeries | VersionFamily::Numeric => matches!(
             candidate_version.family,
             VersionFamily::NumericSeries | VersionFamily::Numeric
         ),
@@ -901,6 +916,10 @@ fn is_comparable_version(current: &str, candidate: &str) -> bool {
                 && candidate_version.numeric_parts.len() == current_version.numeric_parts.len()
         }
     }
+}
+
+fn is_recognized_version(version: &str) -> bool {
+    parse_semver(version).is_some() || parse_comparable_version(version).is_some()
 }
 
 fn parse_comparable_version(version: &str) -> Option<ComparableVersion> {
@@ -961,6 +980,79 @@ fn is_mutable_image_tag(tag: &str) -> bool {
     )
 }
 
+fn is_prerelease_version(version: &str) -> bool {
+    if let Some(version) = parse_semver(version) {
+        return !version.stable;
+    }
+    version
+        .split_once('+')
+        .map_or(version, |(precedence, _)| precedence)
+        .to_lowercase()
+        .split(['.', '-', '_'])
+        .any(is_prerelease_identifier)
+}
+
+fn is_prerelease_identifier(identifier: &str) -> bool {
+    ["alpha", "beta", "preview", "pre", "dev", "snapshot", "rc"]
+        .into_iter()
+        .any(|prefix| {
+            identifier.strip_prefix(prefix).is_some_and(|suffix| {
+                suffix.is_empty() || suffix.chars().all(|character| character.is_ascii_digit())
+            })
+        })
+}
+
+fn parse_semver(version: &str) -> Option<SemanticVersion> {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let (version, build) = version
+        .split_once('+')
+        .map_or((version, None), |(core, build)| (core, Some(build)));
+    if build.is_some_and(|build| !valid_semver_identifiers(build, false)) {
+        return None;
+    }
+    let (core, prerelease) = version
+        .split_once('-')
+        .map_or((version, None), |(core, suffix)| (core, Some(suffix)));
+    if prerelease.is_some_and(|prerelease| !valid_semver_identifiers(prerelease, true)) {
+        return None;
+    }
+    let mut parts = core.split('.');
+    let major = parse_semver_core_number(parts.next()?)?;
+    let minor = parse_semver_core_number(parts.next()?)?;
+    let patch = parse_semver_core_number(parts.next()?)?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(SemanticVersion {
+        major,
+        minor,
+        patch,
+        stable: prerelease.is_none(),
+    })
+}
+
+fn parse_semver_core_number(value: &str) -> Option<u64> {
+    if value.len() > 1 && value.starts_with('0') {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn valid_semver_identifiers(value: &str, reject_numeric_leading_zero: bool) -> bool {
+    value.split('.').all(|identifier| {
+        !identifier.is_empty()
+            && identifier
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-')
+            && !(reject_numeric_leading_zero
+                && identifier.len() > 1
+                && identifier.starts_with('0')
+                && identifier
+                    .chars()
+                    .all(|character| character.is_ascii_digit()))
+    })
+}
+
 fn looks_like_commit_tag(tag: &str) -> bool {
     COMMIT_TAG_RE.is_match(&tag.to_lowercase())
 }
@@ -1006,6 +1098,14 @@ enum VersionFamily {
     NumericSeries,
     Numeric,
     Pattern,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SemanticVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    stable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

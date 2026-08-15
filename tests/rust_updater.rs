@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use common::{ResponseSpec, TestHttpServer, copy_fixture, write_file};
 use fluxrepo_update::models::{
-    DeploymentImageTarget, HelmRepository, Inventory, RepoType, ResourceId,
+    HelmRepository, ImageBinding, ImageBindingValueKind, Inventory, RepoType, ResourceId,
 };
 use fluxrepo_update::resolvers::{
     ImageVersionResolver, RepositoryChartResolver, StaticImageVersionResolver,
@@ -19,7 +19,7 @@ use fluxrepo_update::resolvers::{
 };
 use fluxrepo_update::scanner::scan_repo;
 use fluxrepo_update::updater::{
-    PlanOptions, PlannedChartUpdate, PlannedDeploymentUpdate, PlannedUpdate, SkippedUpdate,
+    PlanOptions, PlannedChartUpdate, PlannedImageUpdate, PlannedUpdate, SkippedUpdate,
     UpdateReport, apply_updates, plan_updates, plan_updates_with_options,
     plan_updates_with_progress,
 };
@@ -44,19 +44,19 @@ fn plans_and_applies_chart_and_deployment_updates() {
 
     assert!(report.planned.iter().any(|item| {
         item.path().strip_prefix(&repo_root).expect("relative path")
-            == Path::new("apps/production/paperless/release-patch.yaml")
+            == Path::new("apps/base/paperless-ngx/release.yaml")
     }));
     assert!(report.planned.iter().any(|item| {
         item.path().strip_prefix(&repo_root).expect("relative path")
             == Path::new("apps/base/sonarr/deployment.yaml")
-            && item.target_kind() == "Deployment"
+            && item.target_kind() == "ImageBinding"
             && item.current_version() == "version-4.0.16.2944"
             && item.latest_version() == "version-4.0.17.3000"
     }));
     assert!(report.planned.iter().any(|item| {
         item.path().strip_prefix(&repo_root).expect("relative path")
             == Path::new("apps/production/openssh/deployment.yaml")
-            && item.target_kind() == "Deployment"
+            && item.target_kind() == "ImageBinding"
             && item.current_version() == "3.22"
             && item.latest_version() == "3.22.1"
     }));
@@ -65,8 +65,8 @@ fn plans_and_applies_chart_and_deployment_updates() {
 
     assert!(changed_files >= 3);
     assert!(
-        fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
-            .expect("read patch")
+        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
+            .expect("read release")
             .contains("12.1.0")
     );
     assert!(
@@ -82,7 +82,7 @@ fn plans_and_applies_chart_and_deployment_updates() {
 }
 
 #[test]
-fn changes_base_and_patch_chart_versions_without_touching_values_only_overlay() {
+fn changes_only_manifest_local_chart_versions() {
     let (_temp, repo_root) = copy_fixture();
     let inventory = scan_repo(&repo_root).expect("scan fixture");
     let chart_resolver = StaticVersionResolver::new(HashMap::from([
@@ -113,7 +113,7 @@ fn changes_base_and_patch_chart_versions_without_touching_values_only_overlay() 
         })
         .collect::<Vec<_>>();
     assert!(planned_paths.contains(&PathBuf::from("apps/base/paperless-ngx/release.yaml")));
-    assert!(planned_paths.contains(&PathBuf::from(
+    assert!(!planned_paths.contains(&PathBuf::from(
         "apps/production/paperless/release-patch.yaml"
     )));
     assert!(!planned_paths.contains(&PathBuf::from(
@@ -131,7 +131,7 @@ fn changes_base_and_patch_chart_versions_without_touching_values_only_overlay() 
     assert!(
         fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
             .expect("read patch")
-            .contains("12.1.0")
+            .contains("11.29.10")
     );
     assert!(
         fs::read_to_string(repo_root.join("apps/base/audiobookshelf/release.yaml"))
@@ -169,14 +169,17 @@ fn progress_reports_each_resolved_target() {
     );
 
     let seen = seen.into_inner().expect("progress lock");
-    let total_targets = inventory.chart_targets.len() + inventory.deployment_targets.len();
+    let total_targets = inventory.chart_targets.len()
+        + inventory.unresolved_chart_targets.len()
+        + inventory.image_bindings.len();
     assert_eq!(seen.len(), total_targets);
     assert_eq!(seen.first().map(|event| event.0), Some(1));
     assert_eq!(seen.last().map(|event| event.0), Some(total_targets));
     assert!(seen.iter().all(|(_, total, _)| *total == total_targets));
-    assert!(seen.iter().any(|(_, _, path)| {
-        path == &PathBuf::from("apps/production/paperless/release-patch.yaml")
-    }));
+    assert!(
+        seen.iter()
+            .any(|(_, _, path)| { path == &PathBuf::from("apps/base/paperless-ngx/release.yaml") })
+    );
 }
 
 #[test]
@@ -208,8 +211,8 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
             document_index: 0,
         },
     );
-    inventory.deployment_targets.extend([
-        DeploymentImageTarget {
+    inventory.image_bindings.extend([
+        ImageBinding {
             path: PathBuf::from("/repo/service-same.yaml"),
             document_index: 0,
             resource_id: ResourceId {
@@ -219,8 +222,9 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
             },
             yaml_path: "spec.template.spec.containers[0].image".to_string(),
             image: "example/service:2.0.0".to_string(),
+            value_kind: ImageBindingValueKind::ImageReference,
         },
-        DeploymentImageTarget {
+        ImageBinding {
             path: PathBuf::from("/repo/service-older.yaml"),
             document_index: 0,
             resource_id: ResourceId {
@@ -230,6 +234,7 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
             },
             yaml_path: "spec.template.spec.containers[0].image".to_string(),
             image: "example/service:1.0.0".to_string(),
+            value_kind: ImageBindingValueKind::ImageReference,
         },
     ]);
 
@@ -249,15 +254,13 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
     );
 
     assert!(report.planned.is_empty());
+    assert_eq!(report.skipped.len(), 1);
     assert_eq!(
-        report.skipped,
-        vec![SkippedUpdate::missing_helm_repository(
-            Some(PathBuf::from("/repo/release.yaml")),
-            "missing-repo"
-        )]
+        report.skipped[0].path,
+        Some(PathBuf::from("/repo/release.yaml"))
     );
 
-    let payload = report.to_json_value(Path::new("/repo"), "plan", false, true, 0, 0);
+    let payload = report.to_json_value(Path::new("/repo"), "plan", true, 0, 0);
     assert_eq!(
         payload["skipped"][0]["reason"],
         "missing HelmRepository missing-repo"
@@ -268,6 +271,49 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
     );
     assert_eq!(payload["skipped"][0]["retryable"], false);
     assert_eq!(payload["skipped"][0]["source_url"], serde_json::Value::Null);
+}
+
+#[test]
+fn planning_reports_manifest_local_chart_versions_without_identity_as_unresolved() {
+    let mut inventory = Inventory::new(PathBuf::from("/repo"));
+    inventory
+        .unresolved_chart_targets
+        .push(fluxrepo_update::models::HelmReleaseTarget {
+            path: PathBuf::from("/repo/overlay.yaml"),
+            document_index: 0,
+            resource_id: ResourceId {
+                kind: "HelmRelease".to_string(),
+                name: "demo".to_string(),
+                namespace: None,
+            },
+            chart_name: None,
+            repo_name: None,
+            current_version: Some("1.0.0".to_string()),
+            source_path: Some(PathBuf::from("/repo/overlay.yaml")),
+            source_is_inherited: false,
+        });
+
+    let report = plan_updates(
+        &inventory,
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
+    );
+    let payload = report.to_json_value(Path::new("/repo"), "plan", true, 0, 0);
+
+    assert_eq!(payload["summary"]["skipped_count"], 1);
+    assert_eq!(
+        payload["skipped"][0]["reason_code"],
+        "missing_chart_identity"
+    );
+    assert_eq!(
+        payload["skipped"][0]["yaml_path"],
+        "spec.chart.spec.version"
+    );
+    assert!(
+        payload["skipped"][0]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("v1:"))
+    );
 }
 
 #[test]
@@ -306,7 +352,7 @@ fn update_report_serializes_retryable_chart_request_skip_with_source_url() {
         &RepositoryChartResolver::default(),
         &StaticImageVersionResolver::new(HashMap::new()),
     );
-    let payload = report.to_json_value(Path::new("/repo"), "plan", false, true, 0, 0);
+    let payload = report.to_json_value(Path::new("/repo"), "plan", true, 0, 0);
 
     assert_eq!(payload["skipped"][0]["path"], "release.yaml");
     assert_eq!(payload["skipped"][0]["reason_code"], "chart_request_failed");
@@ -324,10 +370,10 @@ fn update_report_serializes_retryable_chart_request_skip_with_source_url() {
 #[test]
 fn update_report_serializes_permanent_image_skip_codes() {
     let mut inventory = Inventory::new(PathBuf::from("/repo"));
-    inventory.deployment_targets.extend([
-        deployment_target("/repo/latest.yaml", "latest", "example/app:latest"),
-        deployment_target("/repo/missing-tag.yaml", "missing-tag", "example/app"),
-        deployment_target("/repo/digest.yaml", "digest", "example/app@sha256:deadbeef"),
+    inventory.image_bindings.extend([
+        image_binding("/repo/latest.yaml", "latest", "example/app:latest"),
+        image_binding("/repo/missing-tag.yaml", "missing-tag", "example/app"),
+        image_binding("/repo/digest.yaml", "digest", "example/app@sha256:deadbeef"),
     ]);
 
     let report = plan_updates(
@@ -335,7 +381,7 @@ fn update_report_serializes_permanent_image_skip_codes() {
         &StaticVersionResolver::new(HashMap::new()),
         &fluxrepo_update::resolvers::RegistryImageResolver::default(),
     );
-    let payload = report.to_json_value(Path::new("/repo"), "plan", false, true, 0, 0);
+    let payload = report.to_json_value(Path::new("/repo"), "plan", true, 0, 0);
     let skipped = payload["skipped"].as_array().expect("skipped array");
 
     let compact = skipped
@@ -370,7 +416,7 @@ fn update_report_serializes_permanent_image_skip_codes() {
 }
 
 #[test]
-fn resolves_multiple_deployment_targets_concurrently() {
+fn resolves_multiple_image_bindings_concurrently() {
     struct ConcurrentImageResolver {
         active_calls: AtomicUsize,
         max_active_calls: AtomicUsize,
@@ -388,8 +434,8 @@ fn resolves_multiple_deployment_targets_concurrently() {
 
     let inventory = Inventory {
         repo_root: PathBuf::from("/repo"),
-        deployment_targets: (0..4)
-            .map(|index| DeploymentImageTarget {
+        image_bindings: (0..4)
+            .map(|index| ImageBinding {
                 path: PathBuf::from(format!("/repo/service-{index}.yaml")),
                 document_index: 0,
                 resource_id: ResourceId {
@@ -399,6 +445,7 @@ fn resolves_multiple_deployment_targets_concurrently() {
                 },
                 yaml_path: "spec.template.spec.containers[0].image".to_string(),
                 image: format!("example/service-{index}:1.0.0"),
+                value_kind: ImageBindingValueKind::ImageReference,
             })
             .collect(),
         ..Inventory::new(PathBuf::from("/repo"))
@@ -437,8 +484,8 @@ fn planning_options_can_force_sequential_resolution() {
 
     let inventory = Inventory {
         repo_root: PathBuf::from("/repo"),
-        deployment_targets: (0..3)
-            .map(|index| DeploymentImageTarget {
+        image_bindings: (0..3)
+            .map(|index| ImageBinding {
                 path: PathBuf::from(format!("/repo/service-{index}.yaml")),
                 document_index: 0,
                 resource_id: ResourceId {
@@ -448,6 +495,7 @@ fn planning_options_can_force_sequential_resolution() {
                 },
                 yaml_path: "spec.template.spec.containers[0].image".to_string(),
                 image: format!("example/service-{index}:1.0.0"),
+                value_kind: ImageBindingValueKind::ImageReference,
             })
             .collect(),
         ..Inventory::new(PathBuf::from("/repo"))
@@ -469,7 +517,40 @@ fn planning_options_can_force_sequential_resolution() {
 }
 
 #[test]
-fn preserves_input_order_for_skipped_deployment_targets() {
+fn sequential_and_concurrent_plans_have_identical_order_ids_and_reasons() {
+    let mut inventory = Inventory::new(PathBuf::from("/repo"));
+    inventory.image_bindings.extend([
+        image_binding("/repo/c.yaml", "c", "example/c:1.0.0"),
+        image_binding("/repo/a.yaml", "a", "example/a:1.0.0"),
+        image_binding("/repo/b.yaml", "b", "example/b:latest"),
+    ]);
+    let resolver = StaticImageVersionResolver::new(HashMap::from([
+        ("example/a:1.0.0".to_string(), "example/a:2.0.0".to_string()),
+        ("example/c:1.0.0".to_string(), "example/c:3.0.0".to_string()),
+    ]));
+    let chart_resolver = StaticVersionResolver::new(HashMap::new());
+
+    let sequential = plan_updates_with_options(
+        &inventory,
+        &chart_resolver,
+        &resolver,
+        PlanOptions { max_workers: 1 },
+    );
+    let concurrent = plan_updates_with_options(
+        &inventory,
+        &chart_resolver,
+        &resolver,
+        PlanOptions { max_workers: 4 },
+    );
+
+    assert_eq!(
+        sequential.to_json_value(Path::new("/repo"), "plan", true, 0, 0),
+        concurrent.to_json_value(Path::new("/repo"), "plan", true, 0, 0)
+    );
+}
+
+#[test]
+fn preserves_input_order_for_skipped_image_bindings() {
     struct DelayedImageResolver;
 
     impl ImageVersionResolver for DelayedImageResolver {
@@ -494,18 +575,18 @@ fn preserves_input_order_for_skipped_deployment_targets() {
     }
 
     let mut inventory = Inventory::new(PathBuf::from("/repo"));
-    inventory.deployment_targets.extend([
-        deployment_target(
+    inventory.image_bindings.extend([
+        image_binding(
             "/repo/service-one.yaml",
             "service-one",
             "example/service-one:1.0.0",
         ),
-        deployment_target(
+        image_binding(
             "/repo/service-two.yaml",
             "service-two",
             "example/service-two:1.0.0",
         ),
-        deployment_target(
+        image_binding(
             "/repo/service-three.yaml",
             "service-three",
             "example/service-three:1.0.0",
@@ -532,14 +613,18 @@ fn preserves_input_order_for_skipped_deployment_targets() {
         vec!["service-three.yaml"]
     );
     assert_eq!(
-        report.skipped,
+        report
+            .skipped
+            .iter()
+            .map(|skip| (skip.path.as_deref(), skip.reason.as_str()))
+            .collect::<Vec<_>>(),
         vec![
-            SkippedUpdate::new(
-                Some(PathBuf::from("/repo/service-one.yaml")),
+            (
+                Some(Path::new("/repo/service-one.yaml")),
                 "failed for service-one"
             ),
-            SkippedUpdate::new(
-                Some(PathBuf::from("/repo/service-two.yaml")),
+            (
+                Some(Path::new("/repo/service-two.yaml")),
                 "failed for service-two"
             ),
         ]
@@ -553,12 +638,14 @@ fn update_report_serializes_non_repo_path_skip_reason() {
         skipped: vec![SkippedUpdate::new(None, "network timeout")],
     };
 
-    let payload = report.to_json_value(Path::new("/repo"), "plan", false, true, 0, 0);
+    let payload = report.to_json_value(Path::new("/repo"), "plan", true, 0, 0);
 
     assert_eq!(
         payload["skipped"],
         serde_json::json!([{
+            "id": "v1::unresolved:unclassified",
             "path": "",
+            "yaml_path": null,
             "reason": "network timeout",
             "reason_code": "unclassified",
             "retryable": false,
@@ -596,6 +683,143 @@ fn apply_updates_rejects_non_mapping_helmrelease_documents() {
 }
 
 #[test]
+fn apply_updates_rejects_a_chart_scalar_changed_after_planning() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("release.yaml");
+    let changed = "kind: HelmRelease\nspec: {chart: {spec: {version: 1.5.0}}}\n";
+    write_file(&path, changed);
+    let report = UpdateReport {
+        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
+            path: path.clone(),
+            document_index: 0,
+            target_name: "demo".to_string(),
+            chart_name: "demo".to_string(),
+            repo_name: "demo".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: "2.0.0".to_string(),
+            inherited_source: false,
+        })],
+        skipped: Vec::new(),
+    };
+
+    let error = apply_updates(&report).expect_err("reject stale chart plan");
+
+    assert!(error.to_string().contains("changed after planning"));
+    assert_eq!(fs::read_to_string(path).expect("read release"), changed);
+}
+
+#[test]
+fn apply_updates_rejects_an_image_scalar_changed_after_planning() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("pod.yaml");
+    let changed = "kind: Pod\nspec: {containers: [{image: example/demo:1.5.0}]}\n";
+    write_file(&path, changed);
+    let report = UpdateReport {
+        planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
+            path: path.clone(),
+            document_index: 0,
+            target_name: "demo".to_string(),
+            yaml_path: "spec.containers[0].image".to_string(),
+            current_image: "example/demo:1.0.0".to_string(),
+            latest_image: "example/demo:2.0.0".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: "2.0.0".to_string(),
+            value_kind: ImageBindingValueKind::ImageReference,
+        })],
+        skipped: Vec::new(),
+    };
+
+    let error = apply_updates(&report).expect_err("reject stale image plan");
+
+    assert!(error.to_string().contains("changed after planning"));
+    assert_eq!(fs::read_to_string(path).expect("read pod"), changed);
+}
+
+#[test]
+fn apply_updates_prepares_every_file_before_writing_any_file() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let first_path = temp.path().join("a.yaml");
+    let second_path = temp.path().join("b.yaml");
+    let manifest = "kind: Pod\nmetadata:\n  name: demo\nspec:\n  containers:\n    - image: example/demo:1.0.0\n";
+    write_file(&first_path, manifest);
+    write_file(&second_path, manifest);
+    let update = |path: PathBuf, yaml_path: &str| {
+        PlannedUpdate::Image(PlannedImageUpdate {
+            path,
+            document_index: 0,
+            target_name: "demo".to_string(),
+            yaml_path: yaml_path.to_string(),
+            current_image: "example/demo:1.0.0".to_string(),
+            latest_image: "example/demo:2.0.0".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: "2.0.0".to_string(),
+            value_kind: ImageBindingValueKind::ImageReference,
+        })
+    };
+    let report = UpdateReport {
+        planned: vec![
+            update(first_path.clone(), "spec.containers[0].image"),
+            update(second_path, "spec.missing[0].image"),
+        ],
+        skipped: Vec::new(),
+    };
+
+    apply_updates(&report).expect_err("later transformation should fail");
+
+    assert_eq!(
+        fs::read_to_string(first_path).expect("read first file"),
+        manifest
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_updates_reports_partial_application_after_a_later_write_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().expect("temp dir");
+    let first_path = temp.path().join("a.yaml");
+    let second_path = temp.path().join("b.yaml");
+    let manifest =
+        "kind: Pod\nmetadata: {name: demo}\nspec: {containers: [{image: example/demo:1.0.0}]}\n";
+    write_file(&first_path, manifest);
+    write_file(&second_path, manifest);
+    fs::set_permissions(&second_path, fs::Permissions::from_mode(0o444))
+        .expect("make second file read-only");
+    let update = |path: PathBuf| {
+        PlannedUpdate::Image(PlannedImageUpdate {
+            path,
+            document_index: 0,
+            target_name: "demo".to_string(),
+            yaml_path: "spec.containers[0].image".to_string(),
+            current_image: "example/demo:1.0.0".to_string(),
+            latest_image: "example/demo:2.0.0".to_string(),
+            current_version: "1.0.0".to_string(),
+            latest_version: "2.0.0".to_string(),
+            value_kind: ImageBindingValueKind::ImageReference,
+        })
+    };
+    let report = UpdateReport {
+        planned: vec![update(first_path.clone()), update(second_path.clone())],
+        skipped: Vec::new(),
+    };
+
+    let error = apply_updates(&report).expect_err("second write should fail");
+
+    assert!(error.to_string().contains("after 1 file(s) were applied"));
+    assert!(
+        error
+            .to_string()
+            .contains(&second_path.display().to_string())
+    );
+    assert!(
+        fs::read_to_string(first_path)
+            .expect("read first file")
+            .contains("example/demo:2.0.0")
+    );
+}
+
+#[test]
 fn apply_updates_supports_terminal_list_indexes_in_yaml_paths() {
     let temp = tempfile::tempdir().expect("temp dir");
     let path = temp.path().join("deployment.yaml");
@@ -613,7 +837,7 @@ spec:
 "#,
     );
     let report = UpdateReport {
-        planned: vec![PlannedUpdate::Deployment(PlannedDeploymentUpdate {
+        planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
             path: path.clone(),
             document_index: 0,
             target_name: "demo".to_string(),
@@ -622,6 +846,7 @@ spec:
             latest_image: "new".to_string(),
             current_version: "old".to_string(),
             latest_version: "new".to_string(),
+            value_kind: ImageBindingValueKind::ImageReference,
         })],
         skipped: Vec::new(),
     };
@@ -700,7 +925,7 @@ metadata:
 "#;
     write_file(&path, original);
     let report = UpdateReport {
-        planned: vec![PlannedUpdate::Deployment(PlannedDeploymentUpdate {
+        planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
             path: path.clone(),
             document_index: 0,
             target_name: "demo".to_string(),
@@ -709,6 +934,7 @@ metadata:
             latest_image: "example/demo:1.0.1".to_string(),
             current_version: "1.0.0".to_string(),
             latest_version: "1.0.1".to_string(),
+            value_kind: ImageBindingValueKind::ImageReference,
         })],
         skipped: Vec::new(),
     };
@@ -788,8 +1014,8 @@ spec:
     );
 }
 
-fn deployment_target(path: &str, name: &str, image: &str) -> DeploymentImageTarget {
-    DeploymentImageTarget {
+fn image_binding(path: &str, name: &str, image: &str) -> ImageBinding {
+    ImageBinding {
         path: PathBuf::from(path),
         document_index: 0,
         resource_id: ResourceId {
@@ -799,5 +1025,6 @@ fn deployment_target(path: &str, name: &str, image: &str) -> DeploymentImageTarg
         },
         yaml_path: "spec.template.spec.containers[0].image".to_string(),
         image: image.to_string(),
+        value_kind: ImageBindingValueKind::ImageReference,
     }
 }

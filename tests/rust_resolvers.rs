@@ -13,11 +13,21 @@ use fluxrepo_update::resolvers::{
 };
 
 #[test]
-fn comparable_tags_stay_within_numeric_track() {
-    let comparable =
-        select_comparable_tags("3.22", &["3.22", "3.22.3", "3.23", "20260127", "latest"]);
+fn stable_tag_selection_can_cross_numeric_tracks_and_major_versions() {
+    let comparable = select_comparable_tags(
+        "3.22",
+        &[
+            "3.22",
+            "3.22.3",
+            "3.23",
+            "4.0.0",
+            "20260127",
+            "latest",
+            "5.0.0-rc.1",
+        ],
+    );
 
-    assert_eq!(comparable, vec!["3.22", "3.22.3"]);
+    assert_eq!(comparable, vec!["3.22", "3.22.3", "3.23", "4.0.0"]);
 }
 
 #[test]
@@ -39,9 +49,14 @@ fn version_comparison_stays_within_comparable_families() {
         ("20250101", "20250102", true),
         ("20250101", "20241231", false),
         ("3.22", "3.22.3", true),
-        ("3.22", "3.23.0", false),
+        ("3.22", "3.23.0", true),
+        ("3.22", "4.0.0", true),
         ("v1.2.3", "v1.2.4", true),
-        ("1.2.3-alpha.1", "1.2.3-alpha.2", true),
+        ("1.0.0+build.1", "1.1.0", true),
+        ("1.0.0-rc.1", "1.0.0", true),
+        ("1.0.0-milestone.1", "1.0.0", true),
+        ("1.0.0-0", "1.0.0", true),
+        ("1.2.3-alpha.1", "1.2.3-alpha.2", false),
         ("1.2.3-alpha.1", "1.2.3-beta.1", false),
         ("version-10.0_p1-r10", "version-10.2_p1-r0", true),
     ];
@@ -56,6 +71,24 @@ fn version_comparison_stays_within_comparable_families() {
 }
 
 #[test]
+fn repository_chart_resolver_rejects_unknown_repository_types() {
+    let resolver = RepositoryChartResolver::default();
+    let repository = helm_repository("demo", "https://example.invalid/charts", "custom");
+
+    let error = resolver
+        .resolve(&repository, "demo", Some("1.0.0"))
+        .expect_err("unsupported repository type");
+
+    assert_eq!(
+        error
+            .downcast_ref::<ResolverError>()
+            .expect("resolver error")
+            .code(),
+        ResolverErrorCode::UnsupportedRepositoryType
+    );
+}
+
+#[test]
 fn comparable_tag_selection_filters_mutable_commits_and_other_tracks() {
     let cases = [
         (
@@ -64,14 +97,9 @@ fn comparable_tag_selection_filters_mutable_commits_and_other_tracks() {
             vec!["20250101", "20250102"],
         ),
         (
-            "1.2.3-alpha.1",
-            vec![
-                "1.2.3-alpha.1",
-                "1.2.3-alpha.2",
-                "1.2.3-beta.1",
-                "commit-deadbee",
-            ],
-            vec!["1.2.3-alpha.1", "1.2.3-alpha.2"],
+            "1.2.3",
+            vec!["1.2.3", "1.3.0-rc.1", "commit-deadbee"],
+            vec!["1.2.3"],
         ),
     ];
 
@@ -110,30 +138,53 @@ entries:
 }
 
 #[test]
-fn repository_chart_resolver_selects_latest_comparable_chart_version() {
+fn repository_chart_resolver_advances_prerelease_to_latest_stable_version() {
     let server = TestHttpServer::new(vec![ResponseSpec::new(
         200,
         r#"
 entries:
-  unpoller:
-    - version: "2.11.2-Chart5"
-    - version: "2.11.2-Chart6"
-    - version: "2.1.0"
+  demo:
+    - version: "1.0.0-milestone.1"
+    - version: "1.0.0"
+    - version: "2.0.0-rc.1"
 "#,
     )]);
     let resolver = RepositoryChartResolver::default();
-    let repository = helm_repository("unpoller", &server.base_url, "default");
+    let repository = helm_repository("demo", &server.base_url, "default");
 
     let latest = resolver
-        .resolve(&repository, "unpoller", Some("2.11.2-Chart5"))
+        .resolve(&repository, "demo", Some("1.0.0-milestone.1"))
         .expect("resolve comparable chart");
 
-    assert_eq!(latest, "2.11.2-Chart6");
+    assert_eq!(latest, "1.0.0");
     server.finish();
 }
 
 #[test]
-fn repository_chart_resolver_rejects_when_no_comparable_chart_versions_exist() {
+fn repository_chart_resolver_reports_unfamiliar_version_schemes() {
+    let server = TestHttpServer::new(vec![ResponseSpec::new(
+        200,
+        "entries:\n  demo:\n    - version: foo\n    - version: bar\n",
+    )]);
+    let resolver = RepositoryChartResolver::default();
+    let repository = helm_repository("demo", &server.base_url, "default");
+
+    let error = resolver
+        .resolve(&repository, "demo", Some("foo"))
+        .expect_err("unfamiliar version scheme");
+
+    assert_eq!(
+        error
+            .downcast_ref::<ResolverError>()
+            .expect("resolver error")
+            .code(),
+        ResolverErrorCode::IncompatibleVersionScheme
+    );
+    server.finish();
+}
+
+#[test]
+fn repository_chart_resolver_reports_a_newer_semver_prerelease() {
     let server = TestHttpServer::new(vec![ResponseSpec::new(
         200,
         r#"
@@ -147,148 +198,64 @@ entries:
 
     let error = resolver
         .resolve(&repository, "unpoller", Some("2.11.2-Chart6"))
-        .expect_err("no comparable chart versions");
-
-    assert!(
-        error
-            .to_string()
-            .contains("no comparable chart versions found")
-    );
-    server.finish();
-}
-
-#[test]
-fn repository_chart_resolver_uses_truecharts_oci_special_case() {
-    let server = TestHttpServer::new(vec![ResponseSpec::new(200, "version: \"13.3.0\"\n")]);
-    let resolver = RepositoryChartResolver::with_truecharts_base_url(&server.base_url);
-    let repository = helm_repository("truecharts", "oci://ghcr.io/truecharts/charts", "oci");
-
-    let latest = resolver
-        .resolve(&repository, "paperless-ngx", None)
-        .expect("resolve truecharts chart");
-
-    assert_eq!(latest, "13.3.0");
-    let requests = server.finish();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].path, "/paperless-ngx/Chart.yaml");
-}
-
-#[test]
-fn repository_chart_resolver_reads_truecharts_version_without_full_yaml_parse() {
-    let server = TestHttpServer::new(vec![ResponseSpec::new(
-        200,
-        r#"annotations:
-  artifacthub.io/links: |-
-    - name: support
-    url: https://discord.com/invite/tVsPTHWTtr
-apiVersion: v2
-appVersion: 2.7.3
-badProviderField: [
-dependencies:
-  - name: common
-    version: 29.3.4
-    repository: oci://oci.trueforge.org/truecharts
-description: Jellyseerr is a fork of Overseerr with support for Jellyfin and Emby.
-name: jellyseerr
-version: 14.3.0
-"#,
-    )]);
-    let resolver = RepositoryChartResolver::with_truecharts_base_url(&server.base_url);
-    let repository = helm_repository("truecharts", "oci://ghcr.io/truecharts/charts", "oci");
-
-    let latest = resolver
-        .resolve(&repository, "jellyseerr", Some("14.1.3"))
-        .expect("resolve truecharts chart");
-
-    assert_eq!(latest, "14.3.0");
-    server.finish();
-}
-
-#[test]
-fn repository_chart_resolver_extracts_truecharts_top_level_version_shapes() {
-    let cases = [
-        ("quoted", r#"version: "14.3.0""#, "14.3.0"),
-        ("unquoted", "version: 14.3.0", "14.3.0"),
-        (
-            "inline comment",
-            r#"version: "14.3.0" # chart package version"#,
-            "14.3.0",
-        ),
-        (
-            "dependency version first",
-            r#"dependencies:
-  - name: common
-    version: 29.3.4
-version: 14.3.0"#,
-            "14.3.0",
-        ),
-    ];
-
-    for (case_name, chart_yaml, expected) in cases {
-        let server = TestHttpServer::new(vec![ResponseSpec::new(200, chart_yaml)]);
-        let resolver = RepositoryChartResolver::with_truecharts_base_url(&server.base_url);
-        let repository = helm_repository("truecharts", "oci://ghcr.io/truecharts/charts", "oci");
-
-        let latest = resolver
-            .resolve(&repository, case_name, Some("14.1.3"))
-            .expect("resolve truecharts chart");
-
-        assert_eq!(latest, expected, "{case_name}");
-        server.finish();
-    }
-}
-
-#[test]
-fn repository_chart_resolver_rejects_truecharts_chart_without_top_level_version() {
-    let server = TestHttpServer::new(vec![ResponseSpec::new(
-        200,
-        r#"dependencies:
-  - name: common
-    version: 29.3.4
-name: jellyseerr
-"#,
-    )]);
-    let resolver = RepositoryChartResolver::with_truecharts_base_url(&server.base_url);
-    let repository = helm_repository("truecharts", "oci://ghcr.io/truecharts/charts", "oci");
-
-    let error = resolver
-        .resolve(&repository, "jellyseerr", Some("14.1.3"))
-        .expect_err("missing top-level chart version");
+        .expect_err("current prerelease is newer than the source");
 
     assert_eq!(
         error
             .downcast_ref::<ResolverError>()
             .expect("resolver error")
             .code(),
-        ResolverErrorCode::ChartNotFound
+        ResolverErrorCode::CurrentVersionNewerThanSource
     );
     server.finish();
 }
 
 #[test]
-fn repository_chart_resolver_default_truecharts_url_matches_contract() {
+fn repository_chart_resolver_reports_a_current_version_missing_from_the_source() {
+    let server = TestHttpServer::new(vec![ResponseSpec::new(
+        200,
+        "entries:\n  demo:\n    - version: 1.0.0\n    - version: 2.0.0\n",
+    )]);
     let resolver = RepositoryChartResolver::default();
+    let repository = helm_repository("demo", &server.base_url, "default");
+
+    let error = resolver
+        .resolve(&repository, "demo", Some("1.5.0"))
+        .expect_err("missing current version");
 
     assert_eq!(
-        resolver.truecharts_base_url(),
-        "https://raw.githubusercontent.com/truecharts/public/refs/heads/master/charts/stable"
+        error
+            .downcast_ref::<ResolverError>()
+            .expect("resolver error")
+            .code(),
+        ResolverErrorCode::CurrentVersionNotFound
     );
+    server.finish();
 }
 
 #[test]
-fn repository_chart_resolver_rejects_unsupported_oci_repository() {
+fn repository_chart_resolver_resolves_generic_oci_repositories_by_protocol() {
+    let server = TestHttpServer::new(vec![
+        ResponseSpec::new(200, r#"{"tags":["1.0.0","1.2.0","2.0.0-rc.1","2.0.0"]}"#)
+            .header("Content-Type", "application/json"),
+    ]);
     let resolver = RepositoryChartResolver::default();
-    let repository = helm_repository("example", "oci://registry.example.com/charts", "oci");
-
-    let error = resolver
-        .resolve(&repository, "demo", None)
-        .expect_err("unsupported OCI repository");
-
-    assert!(
-        error
-            .to_string()
-            .contains("OCI repository support is not implemented")
+    let repository = helm_repository(
+        "not-a-vendor-name",
+        &format!(
+            "oci://{}/charts",
+            server.base_url.trim_start_matches("http://")
+        ),
+        "oci",
     );
+
+    let latest = resolver
+        .resolve(&repository, "demo", Some("1.0.0"))
+        .expect("resolve generic OCI chart");
+
+    assert_eq!(latest, "2.0.0");
+    let requests = server.finish();
+    assert_eq!(requests[0].path, "/v2/charts/demo/tags/list?n=1000");
 }
 
 #[test]
@@ -403,6 +370,23 @@ fn registry_resolver_rejects_unsupported_image_references_before_network() {
 }
 
 #[test]
+fn registry_resolver_reports_templated_images_without_network_access() {
+    let resolver = RegistryImageResolver::default();
+
+    let error = resolver
+        .resolve("registry.example/{{ .Values.image }}:1.0.0")
+        .expect_err("templated image must be unresolved");
+
+    assert_eq!(
+        error
+            .downcast_ref::<ResolverError>()
+            .expect("resolver error")
+            .code(),
+        ResolverErrorCode::TemplatedImageReference
+    );
+}
+
+#[test]
 fn registry_resolver_uses_bearer_token_and_paginates_tags() {
     let server = TestHttpServer::new(vec![
         ResponseSpec::new(401, "").header(
@@ -428,7 +412,7 @@ fn registry_resolver_uses_bearer_token_and_paginates_tags() {
     assert_eq!(
         latest,
         format!(
-            "{}/demo/app:3.22.4",
+            "{}/demo/app:3.23.0",
             server.base_url.trim_start_matches("http://")
         )
     );

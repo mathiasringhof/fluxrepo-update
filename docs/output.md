@@ -13,7 +13,7 @@ name, update field, and version change:
 
 ```text
 apps/base/demo/release.yaml: HelmRelease demo demo-chart 1.0.0 -> 1.2.0
-apps/base/sonarr/deployment.yaml: Deployment sonarr spec.template.spec.containers[0].image 4.0.0 -> 4.1.0
+apps/base/sonarr/deployment.yaml: ImageBinding sonarr spec.template.spec.containers[0].image 4.0.0 -> 4.1.0
 ```
 
 When stderr is a terminal, `update-helm` colors paths cyan, current versions yellow, and
@@ -27,7 +27,7 @@ Top-level summary fields:
 - `repo_root`: absolute path to the scanned repository
 - `repository_count`: number of `HelmRepository` resources found
 - `chart_target_count`: number of `HelmRelease` resources that can be updated directly
-- `deployment_target_count`: number of `Deployment` image fields that can be updated directly
+- `image_binding_count`: number of explicit workload or Helm-values image bindings
 - `helmreleases_without_chart_version_count`: number of `HelmRelease` resources that do
   not expose `spec.chart.spec.version`
 - `unresolved_chart_target_count`: number of releases that carry a version but still lack
@@ -56,15 +56,12 @@ Each item describes a `HelmRelease` that can be updated:
 - `chart_name`: `spec.chart.spec.chart`
 - `repo_name`: `spec.chart.spec.sourceRef.name`
 - `current_version`: current `spec.chart.spec.version`
-- `source_path`: manifest that supplied chart metadata
-- `source_is_inherited`: whether chart metadata came from another matching `HelmRelease`
+- `source_path`: the same manifest containing the explicit chart identity
+- `source_is_inherited`: always `false`; cross-manifest inference is not performed
 
-If `source_is_inherited` is `true`, the file being updated is usually an overlay patch that
-contains the version field but not the full chart source metadata.
+### `image_bindings`
 
-### `deployment_targets`
-
-Each item describes a `Deployment` image field that can be updated directly:
+Each item describes an explicit workload or Helm-values image binding:
 
 - `path`: relative file path
 - `document_index`: document position inside a multi-document YAML file
@@ -90,14 +87,13 @@ edited by `update-helm`.
 ### `unresolved_chart_targets`
 
 These are `HelmRelease` resources that contain a version field but still cannot be updated
-because chart or repository metadata could not be resolved, even after inheritance.
+because its own manifest lacks chart or repository identity.
 
 ## `update-helm --json`
 
 Top-level fields:
 
 - `mode`: `plan` or `apply`
-- `strict`: whether `--strict` was enabled
 - `non_interactive`: whether prompts were disabled
 - `summary`: counts for planned, applied, skipped, and changed files
 - `planned`: planned or applied chart updates
@@ -126,20 +122,23 @@ Each item includes:
 
 `HelmRelease` items also include `chart_name` and `repo_name`.
 
-`Deployment` items also include `current_image` and `latest_image`.
+`ImageBinding` items also include `current_image` and `latest_image`.
 
-`inherited_source` means the update target inherited chart metadata from another manifest,
-typically a base `HelmRelease`. For `Deployment` items it is always `false`.
+`inherited_source` is retained for compatibility and is always `false`.
 
 Use `planned[].id` with repeated `--apply-id` flags to apply selected updates in
 `--write --non-interactive` mode. IDs include the planned target and current/latest versions,
 so stale IDs are rejected instead of silently applying a different plan item.
+Apply also rechecks the targeted YAML scalar immediately before preparing writes and fails
+closed if it changed or disappeared after planning.
 
 ### `skipped`
 
 Each item includes:
 
 - `path`
+- `id`: stable unresolved-target identity
+- `yaml_path`: exact explicit version field when known
 - `reason`: human-readable explanation, intended for display
 - `reason_code`: stable snake_case code for automation
 - `retryable`: `true` when retrying later may succeed, such as request/network failures
@@ -151,14 +150,18 @@ human-facing logs.
 Current reason codes include:
 
 - `missing_helm_repository`
+- `missing_chart_identity`
 - `unsupported_repository_type`
 - `chart_not_found`
 - `incompatible_version_scheme`
+- `current_version_not_found`
+- `current_version_newer_than_source`
 - `chart_request_failed`
 - `registry_request_failed`
 - `mutable_image_tag`
 - `image_reference_missing_tag`
 - `image_reference_pinned_by_digest`
+- `templated_image_reference`
 - `unparseable_image_reference`
 - `unclassified`
 
@@ -181,6 +184,6 @@ Clap parse and help errors keep their normal text output.
 ## Exit Codes
 
 - `0`: no updates applied, no updates found, or no updates approved
-- `2`: invalid arguments or strict failure
+- `2`: invalid arguments or a runtime/write failure
 - `10`: planning mode found updates
 - `20`: updates were applied

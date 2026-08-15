@@ -4,14 +4,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use serde_json::{Value as JsonValue, json};
 use yaml_edit::path::YamlPath;
 use yaml_edit::{Document as EditDocument, Scalar as EditScalar, ScalarValue, YamlFile};
 
-use crate::models::{DeploymentImageTarget, HelmReleaseTarget, Inventory, TargetKind};
+use crate::models::{
+    HelmReleaseTarget, ImageBinding, ImageBindingValueKind, Inventory, TargetKind,
+};
 use crate::resolvers::{
     ChartVersionResolver, ImageVersionResolver, ResolverError, ResolverErrorCode, is_newer_version,
     parse_image_reference,
@@ -30,7 +32,7 @@ pub struct PlannedChartUpdate {
 }
 
 #[derive(Debug, Clone)]
-pub struct PlannedDeploymentUpdate {
+pub struct PlannedImageUpdate {
     pub path: PathBuf,
     pub document_index: usize,
     pub target_name: String,
@@ -39,26 +41,27 @@ pub struct PlannedDeploymentUpdate {
     pub latest_image: String,
     pub current_version: String,
     pub latest_version: String,
+    pub value_kind: ImageBindingValueKind,
 }
 
 #[derive(Debug, Clone)]
 pub enum PlannedUpdate {
     Chart(PlannedChartUpdate),
-    Deployment(PlannedDeploymentUpdate),
+    Image(PlannedImageUpdate),
 }
 
 impl PlannedUpdate {
     pub fn path(&self) -> &Path {
         match self {
             Self::Chart(update) => &update.path,
-            Self::Deployment(update) => &update.path,
+            Self::Image(update) => &update.path,
         }
     }
 
     pub fn document_index(&self) -> usize {
         match self {
             Self::Chart(update) => update.document_index,
-            Self::Deployment(update) => update.document_index,
+            Self::Image(update) => update.document_index,
         }
     }
 
@@ -69,28 +72,28 @@ impl PlannedUpdate {
     pub fn kind(&self) -> TargetKind {
         match self {
             Self::Chart(_) => TargetKind::HelmRelease,
-            Self::Deployment(_) => TargetKind::Deployment,
+            Self::Image(_) => TargetKind::ImageBinding,
         }
     }
 
     pub fn target_name(&self) -> &str {
         match self {
             Self::Chart(update) => &update.target_name,
-            Self::Deployment(update) => &update.target_name,
+            Self::Image(update) => &update.target_name,
         }
     }
 
     pub fn current_version(&self) -> &str {
         match self {
             Self::Chart(update) => &update.current_version,
-            Self::Deployment(update) => &update.current_version,
+            Self::Image(update) => &update.current_version,
         }
     }
 
     pub fn latest_version(&self) -> &str {
         match self {
             Self::Chart(update) => &update.latest_version,
-            Self::Deployment(update) => &update.latest_version,
+            Self::Image(update) => &update.latest_version,
         }
     }
 
@@ -117,7 +120,7 @@ impl PlannedUpdate {
                     update.latest_version.clone(),
                 ]);
             }
-            Self::Deployment(update) => {
+            Self::Image(update) => {
                 parts.extend([
                     update.yaml_path.clone(),
                     update.current_image.clone(),
@@ -158,11 +161,11 @@ impl PlannedUpdate {
                 "latest_version": update.latest_version,
                 "inherited_source": update.inherited_source,
             }),
-            Self::Deployment(update) => json!({
+            Self::Image(update) => json!({
                 "id": self.selection_id(repo_root),
                 "path": path,
                 "document_index": update.document_index,
-                "target_kind": "Deployment",
+                "target_kind": "ImageBinding",
                 "target_name": update.target_name,
                 "yaml_path": update.yaml_path,
                 "current_image": update.current_image,
@@ -211,14 +214,12 @@ impl UpdateReport {
         &self,
         repo_root: &Path,
         mode: &str,
-        strict: bool,
         non_interactive: bool,
         applied_count: usize,
         changed_file_count: usize,
     ) -> JsonValue {
         json!({
             "mode": mode,
-            "strict": strict,
             "non_interactive": non_interactive,
             "summary": {
                 "planned_count": self.planned.len(),
@@ -239,6 +240,8 @@ pub struct SkippedUpdate {
     pub reason_code: SkipReasonCode,
     pub retryable: bool,
     pub source_url: Option<String>,
+    identity_suffix: Option<String>,
+    yaml_path: Option<String>,
 }
 
 impl SkippedUpdate {
@@ -265,6 +268,74 @@ impl SkippedUpdate {
         Self::new(path, error.to_string())
     }
 
+    fn unresolved_chart(target: &HelmReleaseTarget) -> Self {
+        Self::with_reason(
+            Some(target.path.clone()),
+            SkipReason::new(
+                "explicit chart version lacks manifest-local chart or source identity",
+                SkipReasonCode::MissingChartIdentity,
+                false,
+                None,
+            ),
+        )
+        .with_target_identity(
+            format!(
+                "HelmRelease:{}:{}:{}",
+                target.document_index,
+                target.resource_id.name,
+                target.current_version.as_deref().unwrap_or_default()
+            ),
+            "spec.chart.spec.version",
+        )
+    }
+
+    fn from_image_resolution_error(target: &ImageBinding, error: anyhow::Error) -> Self {
+        Self::from_resolution_error(Some(target.path.clone()), error).with_target_identity(
+            format!(
+                "ImageBinding:{}:{}:{}:{}",
+                target.document_index, target.resource_id.name, target.yaml_path, target.image
+            ),
+            &target.yaml_path,
+        )
+    }
+
+    fn unsupported_image_schema(target: &ImageBinding) -> Self {
+        Self::with_reason(
+            Some(target.path.clone()),
+            SkipReason::new(
+                "recognizable image mapping uses an unsupported version schema",
+                SkipReasonCode::UnsupportedImageSchema,
+                false,
+                None,
+            ),
+        )
+        .with_target_identity(
+            format!(
+                "ImageBinding:{}:{}:{}:{}",
+                target.document_index, target.resource_id.name, target.yaml_path, target.image
+            ),
+            &target.yaml_path,
+        )
+    }
+
+    fn from_chart_resolution_error(target: &HelmReleaseTarget, error: anyhow::Error) -> Self {
+        Self::from_resolution_error(Some(target.path.clone()), error).with_target_identity(
+            format!(
+                "HelmRelease:{}:{}:{}",
+                target.document_index,
+                target.resource_id.name,
+                target.current_version.as_deref().unwrap_or_default()
+            ),
+            "spec.chart.spec.version",
+        )
+    }
+
+    fn with_target_identity(mut self, identity_suffix: String, yaml_path: &str) -> Self {
+        self.identity_suffix = Some(identity_suffix);
+        self.yaml_path = Some(yaml_path.to_string());
+        self
+    }
+
     fn with_reason(path: Option<PathBuf>, reason: SkipReason) -> Self {
         Self {
             path,
@@ -272,6 +343,8 @@ impl SkippedUpdate {
             reason_code: reason.code,
             retryable: reason.retryable,
             source_url: reason.source_url,
+            identity_suffix: None,
+            yaml_path: None,
         }
     }
 
@@ -287,7 +360,14 @@ impl SkippedUpdate {
             })
             .unwrap_or_default();
         json!({
+            "id": format!(
+                "v1:{}:{}:{}",
+                encode_selection_id_part(&path),
+                encode_selection_id_part(self.identity_suffix.as_deref().unwrap_or("unresolved")),
+                self.reason_code.as_str()
+            ),
             "path": path,
+            "yaml_path": self.yaml_path,
             "reason": self.reason,
             "reason_code": self.reason_code.as_str(),
             "retryable": self.retryable,
@@ -336,15 +416,20 @@ impl SkipReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkipReasonCode {
     MissingHelmRepository,
+    MissingChartIdentity,
     UnsupportedRepositoryType,
     ChartNotFound,
     IncompatibleVersionScheme,
+    CurrentVersionNotFound,
+    CurrentVersionNewerThanSource,
     ChartRequestFailed,
     RegistryRequestFailed,
     MutableImageTag,
     ImageReferenceMissingTag,
     ImageReferencePinnedByDigest,
+    TemplatedImageReference,
     UnparseableImageReference,
+    UnsupportedImageSchema,
     Unclassified,
 }
 
@@ -352,15 +437,20 @@ impl SkipReasonCode {
     fn as_str(self) -> &'static str {
         match self {
             Self::MissingHelmRepository => "missing_helm_repository",
+            Self::MissingChartIdentity => "missing_chart_identity",
             Self::UnsupportedRepositoryType => "unsupported_repository_type",
             Self::ChartNotFound => "chart_not_found",
             Self::IncompatibleVersionScheme => "incompatible_version_scheme",
+            Self::CurrentVersionNotFound => "current_version_not_found",
+            Self::CurrentVersionNewerThanSource => "current_version_newer_than_source",
             Self::ChartRequestFailed => "chart_request_failed",
             Self::RegistryRequestFailed => "registry_request_failed",
             Self::MutableImageTag => "mutable_image_tag",
             Self::ImageReferenceMissingTag => "image_reference_missing_tag",
             Self::ImageReferencePinnedByDigest => "image_reference_pinned_by_digest",
+            Self::TemplatedImageReference => "templated_image_reference",
             Self::UnparseableImageReference => "unparseable_image_reference",
+            Self::UnsupportedImageSchema => "unsupported_image_schema",
             Self::Unclassified => "unclassified",
         }
     }
@@ -372,11 +462,14 @@ impl From<ResolverErrorCode> for SkipReasonCode {
             ResolverErrorCode::UnsupportedRepositoryType => Self::UnsupportedRepositoryType,
             ResolverErrorCode::ChartNotFound => Self::ChartNotFound,
             ResolverErrorCode::IncompatibleVersionScheme => Self::IncompatibleVersionScheme,
+            ResolverErrorCode::CurrentVersionNotFound => Self::CurrentVersionNotFound,
+            ResolverErrorCode::CurrentVersionNewerThanSource => Self::CurrentVersionNewerThanSource,
             ResolverErrorCode::ChartRequestFailed => Self::ChartRequestFailed,
             ResolverErrorCode::RegistryRequestFailed => Self::RegistryRequestFailed,
             ResolverErrorCode::MutableImageTag => Self::MutableImageTag,
             ResolverErrorCode::ImageReferenceMissingTag => Self::ImageReferenceMissingTag,
             ResolverErrorCode::ImageReferencePinnedByDigest => Self::ImageReferencePinnedByDigest,
+            ResolverErrorCode::TemplatedImageReference => Self::TemplatedImageReference,
             ResolverErrorCode::UnparseableImageReference => Self::UnparseableImageReference,
             ResolverErrorCode::Unclassified => Self::Unclassified,
         }
@@ -471,7 +564,7 @@ fn plan_updates_with_optional_progress(
             item.path().to_path_buf(),
             item.document_index(),
             match item {
-                PlannedUpdate::Deployment(update) => update.yaml_path.clone(),
+                PlannedUpdate::Image(update) => update.yaml_path.clone(),
                 PlannedUpdate::Chart(_) => String::new(),
             },
         )
@@ -489,14 +582,15 @@ fn plan_updates_with_optional_progress(
 
 enum ResolutionTask<'a> {
     Chart(usize, &'a HelmReleaseTarget),
-    Deployment(usize, &'a DeploymentImageTarget),
+    UnresolvedChart(usize, &'a HelmReleaseTarget),
+    Image(usize, &'a ImageBinding),
 }
 
 impl ResolutionTask<'_> {
     fn path(&self) -> &Path {
         match self {
-            Self::Chart(_, target) => &target.path,
-            Self::Deployment(_, target) => &target.path,
+            Self::Chart(_, target) | Self::UnresolvedChart(_, target) => &target.path,
+            Self::Image(_, target) => &target.path,
         }
     }
 }
@@ -515,6 +609,7 @@ fn resolve_targets(
     progress_callback: Option<&ProgressCallback<'_>>,
 ) -> Vec<(usize, ResolutionOutcome)> {
     let chart_count = inventory.chart_targets.len();
+    let unresolved_chart_count = inventory.unresolved_chart_targets.len();
     let tasks = inventory
         .chart_targets
         .iter()
@@ -522,10 +617,21 @@ fn resolve_targets(
         .map(|(index, target)| ResolutionTask::Chart(index, target))
         .chain(
             inventory
-                .deployment_targets
+                .unresolved_chart_targets
                 .iter()
                 .enumerate()
-                .map(|(index, target)| ResolutionTask::Deployment(chart_count + index, target)),
+                .map(|(index, target)| {
+                    ResolutionTask::UnresolvedChart(chart_count + index, target)
+                }),
+        )
+        .chain(
+            inventory
+                .image_bindings
+                .iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    ResolutionTask::Image(chart_count + unresolved_chart_count + index, target)
+                }),
         )
         .collect::<Vec<_>>();
     if tasks.is_empty() {
@@ -583,8 +689,12 @@ fn resolve_task(
             *index,
             resolve_chart_target(inventory, target, chart_resolver),
         ),
-        ResolutionTask::Deployment(index, target) => {
-            (*index, resolve_deployment_target(target, image_resolver))
+        ResolutionTask::UnresolvedChart(index, target) => (
+            *index,
+            ResolutionOutcome::Skipped(SkippedUpdate::unresolved_chart(target)),
+        ),
+        ResolutionTask::Image(index, target) => {
+            (*index, resolve_image_binding(target, image_resolver))
         }
     }
 }
@@ -596,10 +706,18 @@ fn resolve_chart_target(
 ) -> ResolutionOutcome {
     let repo_name = target.repo_name.as_deref().unwrap_or_default();
     let Some(repository) = inventory.repositories.get(repo_name) else {
-        return ResolutionOutcome::Skipped(SkippedUpdate::missing_helm_repository(
-            Some(target.path.clone()),
-            repo_name,
-        ));
+        return ResolutionOutcome::Skipped(
+            SkippedUpdate::missing_helm_repository(Some(target.path.clone()), repo_name)
+                .with_target_identity(
+                    format!(
+                        "HelmRelease:{}:{}:{}",
+                        target.document_index,
+                        target.resource_id.name,
+                        target.current_version.as_deref().unwrap_or_default()
+                    ),
+                    "spec.chart.spec.version",
+                ),
+        );
     };
 
     let latest_version = match resolver.resolve(
@@ -609,9 +727,8 @@ fn resolve_chart_target(
     ) {
         Ok(version) => version,
         Err(error) => {
-            return ResolutionOutcome::Skipped(SkippedUpdate::from_resolution_error(
-                Some(target.path.clone()),
-                error,
+            return ResolutionOutcome::Skipped(SkippedUpdate::from_chart_resolution_error(
+                target, error,
             ));
         }
     };
@@ -632,16 +749,18 @@ fn resolve_chart_target(
     }))
 }
 
-fn resolve_deployment_target(
-    target: &DeploymentImageTarget,
+fn resolve_image_binding(
+    target: &ImageBinding,
     resolver: &dyn ImageVersionResolver,
 ) -> ResolutionOutcome {
+    if target.value_kind == ImageBindingValueKind::UnsupportedSchema {
+        return ResolutionOutcome::Skipped(SkippedUpdate::unsupported_image_schema(target));
+    }
     let latest_image = match resolver.resolve(&target.image) {
         Ok(image) => image,
         Err(error) => {
-            return ResolutionOutcome::Skipped(SkippedUpdate::from_resolution_error(
-                Some(target.path.clone()),
-                error,
+            return ResolutionOutcome::Skipped(SkippedUpdate::from_image_resolution_error(
+                target, error,
             ));
         }
     };
@@ -676,7 +795,7 @@ fn resolve_deployment_target(
         return ResolutionOutcome::Noop;
     }
 
-    ResolutionOutcome::Planned(PlannedUpdate::Deployment(PlannedDeploymentUpdate {
+    ResolutionOutcome::Planned(PlannedUpdate::Image(PlannedImageUpdate {
         path: target.path.clone(),
         document_index: target.document_index,
         target_name: target.resource_id.name.clone(),
@@ -685,6 +804,7 @@ fn resolve_deployment_target(
         latest_image,
         current_version,
         latest_version,
+        value_kind: target.value_kind,
     }))
 }
 
@@ -697,10 +817,14 @@ pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
             .push(update);
     }
 
-    let mut changed_files = 0;
+    let mut prepared_files = Vec::with_capacity(updates_by_path.len());
     for (path, updates) in updates_by_path {
-        let text = fs::read_to_string(&path)?;
-        let yaml_file: YamlFile = text.parse()?;
+        let text = fs::read_to_string(&path).with_context(|| {
+            format!("failed to read {} while preparing updates", path.display())
+        })?;
+        let yaml_file: YamlFile = text.parse().with_context(|| {
+            format!("failed to parse {} while preparing updates", path.display())
+        })?;
         let documents = yaml_file.documents().collect::<Vec<_>>();
 
         for update in updates {
@@ -714,28 +838,47 @@ pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
             match update {
                 PlannedUpdate::Chart(chart_update) => {
                     ensure_editable_chart_spec(document)?;
-                    set_yaml_scalar_value(
+                    set_checked_yaml_scalar_value(
                         document,
                         "spec.chart.spec.version",
+                        &chart_update.current_version,
                         &chart_update.latest_version,
-                        true,
                     )?;
                 }
-                PlannedUpdate::Deployment(deployment_update) => {
-                    set_yaml_scalar_value(
+                PlannedUpdate::Image(image_update) => {
+                    let (expected, replacement) = match image_update.value_kind {
+                        ImageBindingValueKind::ImageReference => {
+                            (&image_update.current_image, &image_update.latest_image)
+                        }
+                        ImageBindingValueKind::Tag => {
+                            (&image_update.current_version, &image_update.latest_version)
+                        }
+                        ImageBindingValueKind::UnsupportedSchema => {
+                            return Err(anyhow!("unsupported image schema cannot be applied"));
+                        }
+                    };
+                    set_checked_yaml_scalar_value(
                         document,
-                        &deployment_update.yaml_path,
-                        &deployment_update.latest_image,
-                        false,
+                        &image_update.yaml_path,
+                        expected,
+                        replacement,
                     )?;
                 }
             }
         }
 
-        fs::write(&path, yaml_file.to_string())?;
-        changed_files += 1;
+        prepared_files.push((path, yaml_file.to_string()));
     }
-    Ok(changed_files)
+
+    for (written_count, (path, text)) in prepared_files.iter().enumerate() {
+        fs::write(path, text).with_context(|| {
+            format!(
+                "failed to write {} after {written_count} file(s) were applied; inspect the working tree with Git",
+                path.display()
+            )
+        })?;
+    }
+    Ok(prepared_files.len())
 }
 
 fn ensure_editable_chart_spec(document: &EditDocument) -> Result<()> {
@@ -756,22 +899,25 @@ fn ensure_editable_chart_spec(document: &EditDocument) -> Result<()> {
     Ok(())
 }
 
-fn set_yaml_scalar_value(
+fn set_checked_yaml_scalar_value(
     document: &EditDocument,
     yaml_path: &str,
+    expected: &str,
     value: &str,
-    create_missing: bool,
 ) -> Result<()> {
-    if let Some(node) = document.get_path(yaml_path) {
-        let scalar = node
-            .as_scalar()
-            .ok_or_else(|| anyhow!("Expected YAML scalar at {yaml_path}"))?;
-        set_scalar_preserving_style(scalar, value);
-    } else if create_missing {
-        document.set_path(yaml_path, ScalarValue::string(value));
-    } else {
-        return Err(anyhow!("missing YAML path {yaml_path}"));
+    let node = document
+        .get_path(yaml_path)
+        .ok_or_else(|| anyhow!("missing YAML path {yaml_path}; target changed after planning"))?;
+    let scalar = node
+        .as_scalar()
+        .ok_or_else(|| anyhow!("Expected YAML scalar at {yaml_path}"))?;
+    let actual = scalar.as_string();
+    if actual != expected {
+        return Err(anyhow!(
+            "YAML scalar at {yaml_path} changed after planning: expected {expected:?}, found {actual:?}"
+        ));
     }
+    set_scalar_preserving_style(scalar, value);
     Ok(())
 }
 
@@ -802,7 +948,9 @@ mod tests {
         assert_eq!(
             skipped.to_json_value(Path::new("/repo")),
             json!({
+                "id": "v1:apps%2Fdemo.yaml:unresolved:unclassified",
                 "path": "apps/demo.yaml",
+                "yaml_path": null,
                 "reason": "network: timeout: still structured",
                 "reason_code": "unclassified",
                 "retryable": false,

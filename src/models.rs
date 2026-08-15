@@ -29,14 +29,14 @@ impl From<String> for RepoType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetKind {
     HelmRelease,
-    Deployment,
+    ImageBinding,
 }
 
 impl TargetKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::HelmRelease => "HelmRelease",
-            Self::Deployment => "Deployment",
+            Self::ImageBinding => "ImageBinding",
         }
     }
 }
@@ -68,12 +68,20 @@ pub struct ImageReference {
 }
 
 #[derive(Debug, Clone)]
-pub struct DeploymentImageTarget {
+pub struct ImageBinding {
     pub path: PathBuf,
     pub document_index: usize,
     pub resource_id: ResourceId,
     pub yaml_path: String,
     pub image: String,
+    pub value_kind: ImageBindingValueKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ImageBindingValueKind {
+    ImageReference,
+    Tag,
+    UnsupportedSchema,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +107,7 @@ pub struct Inventory {
     pub repo_root: PathBuf,
     pub repositories: HashMap<String, HelmRepository>,
     pub chart_targets: Vec<HelmReleaseTarget>,
-    pub deployment_targets: Vec<DeploymentImageTarget>,
+    pub image_bindings: Vec<ImageBinding>,
     pub helmreleases_without_chart_version: Vec<HelmReleaseTarget>,
     pub unresolved_chart_targets: Vec<HelmReleaseTarget>,
     pub image_references: Vec<ImageReference>,
@@ -112,7 +120,7 @@ impl Inventory {
             repo_root,
             repositories: HashMap::new(),
             chart_targets: Vec::new(),
-            deployment_targets: Vec::new(),
+            image_bindings: Vec::new(),
             helmreleases_without_chart_version: Vec::new(),
             unresolved_chart_targets: Vec::new(),
             image_references: Vec::new(),
@@ -134,7 +142,7 @@ impl Inventory {
             "repo_root": self.repo_root,
             "repository_count": self.repositories.len(),
             "chart_target_count": self.chart_targets.len(),
-            "deployment_target_count": self.deployment_targets.len(),
+            "image_binding_count": self.image_bindings.len(),
             "helmreleases_without_chart_version_count": self.helmreleases_without_chart_version.len(),
             "unresolved_chart_target_count": self.unresolved_chart_targets.len(),
             "image_reference_count": self.image_references.len(),
@@ -157,7 +165,7 @@ impl Inventory {
                 "source_path": target.source_path.as_ref().map(|path| self.relative(path)),
                 "source_is_inherited": target.source_is_inherited,
             })).collect::<Vec<_>>(),
-            "deployment_targets": self.deployment_targets.iter().map(|target| json!({
+            "image_bindings": self.image_bindings.iter().map(|target| json!({
                 "path": self.relative(&target.path),
                 "document_index": target.document_index,
                 "name": target.resource_id.name,
