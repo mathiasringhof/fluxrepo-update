@@ -6,9 +6,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
 
-use common::{ResponseSpec, StaticResolverFactory, TestHttpServer, copy_fixture, write_file};
-use fluxrepo_update::cli::{DefaultResolverFactory, run_with_args};
-use fluxrepo_update::updater::PlanOptions;
+use common::{
+    DefaultResolverFactory, ResolverFactory, ResponseSpec, StaticResolverFactory, TestHttpServer,
+    copy_fixture, write_file,
+};
+use fluxrepo_update::cli::run_with_args;
 use serde_json::Value;
 
 #[test]
@@ -515,19 +517,18 @@ fn update_helm_write_workflow_keeps_unsupported_and_generated_files_untouched() 
     );
 }
 
-fn run_cli(
-    args: &[&str],
-    factory: &impl fluxrepo_update::cli::ResolverFactory,
-) -> (u8, String, String) {
+fn run_cli(args: &[&str], factory: &impl ResolverFactory) -> (u8, String, String) {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
+    let chart_resolver = factory.chart_resolver();
+    let image_resolver = factory.image_resolver();
     let code = run_with_args(
         args,
         Cursor::new([].as_slice()),
         &mut stdout,
         &mut stderr,
-        factory,
-        PlanOptions { max_workers: 1 },
+        chart_resolver.as_ref(),
+        image_resolver.as_ref(),
     )
     .expect("run cli");
     (

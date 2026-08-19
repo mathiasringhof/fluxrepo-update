@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-use fluxrepo_update::cli::ResolverFactory;
 use fluxrepo_update::resolvers::{
-    ChartVersionResolver, ImageVersionResolver, StaticImageVersionResolver, StaticVersionResolver,
+    ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
+    StaticImageVersionResolver, StaticVersionResolver,
 };
 
 #[derive(Clone, Debug)]
@@ -154,6 +154,24 @@ pub fn write_file(path: &Path, text: &str) {
         fs::create_dir_all(parent).expect("create parent");
     }
     fs::write(path, text).expect("write file");
+}
+
+pub trait ResolverFactory {
+    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync>;
+    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync>;
+}
+
+#[derive(Debug, Default)]
+pub struct DefaultResolverFactory;
+
+impl ResolverFactory for DefaultResolverFactory {
+    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
+        Box::new(RepositoryChartResolver::default())
+    }
+
+    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync> {
+        Box::new(RegistryImageResolver::default())
+    }
 }
 
 #[derive(Debug, Clone, Default)]

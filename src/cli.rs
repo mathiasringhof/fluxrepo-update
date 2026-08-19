@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -13,33 +12,16 @@ use crate::resolvers::{
     ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
 };
 use crate::scanner::scan_repo;
-use crate::updater::{
-    PlanOptions, PlannedUpdate, UpdateReport, apply_updates, plan_updates_with_options,
-    plan_updates_with_progress,
+use crate::update_run::{
+    UpdateReview, UpdateRun, UpdateRunMode, UpdateRunOutcome, UpdateRunRejection, UpdateRunStatus,
+    UpdateSelectionIdentity,
 };
+use crate::updater::{PlannedUpdate, UpdateReport};
 
 pub const EXIT_OK: u8 = 0;
 pub const EXIT_STRICT_FAILURE: u8 = 2;
 pub const EXIT_UPDATES_AVAILABLE: u8 = 10;
 pub const EXIT_UPDATES_APPLIED: u8 = 20;
-
-pub trait ResolverFactory {
-    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync>;
-    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync>;
-}
-
-#[derive(Debug, Default)]
-pub struct DefaultResolverFactory;
-
-impl ResolverFactory for DefaultResolverFactory {
-    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
-        Box::new(RepositoryChartResolver::default())
-    }
-
-    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync> {
-        Box::new(RegistryImageResolver::default())
-    }
-}
 
 #[derive(Debug, Parser)]
 #[command(name = "fluxrepo-update")]
@@ -90,13 +72,15 @@ pub fn run() -> Result<u8> {
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
     let terminal_stderr = std::io::IsTerminal::is_terminal(&stderr);
+    let chart_resolver = RepositoryChartResolver::default();
+    let image_resolver = RegistryImageResolver::default();
     run_with_args_and_output(
         std::env::args_os(),
         interactive_approval::InteractiveApproval::classified(stdin.lock()),
         &mut stdout,
         &mut stderr,
-        &DefaultResolverFactory,
-        PlanOptions::default(),
+        &chart_resolver,
+        &image_resolver,
         HumanOutput {
             color: terminal_stderr,
             progress: terminal_stderr,
@@ -104,13 +88,13 @@ pub fn run() -> Result<u8> {
     )
 }
 
-pub fn run_with_args<I, T, R, W, E, F>(
+pub fn run_with_args<I, T, R, W, E>(
     args: I,
     input: R,
     stdout: &mut W,
     stderr: &mut E,
-    resolver_factory: &F,
-    plan_options: PlanOptions,
+    chart_resolver: &(dyn ChartVersionResolver + Sync),
+    image_resolver: &(dyn ImageVersionResolver + Sync),
 ) -> Result<u8>
 where
     I: IntoIterator<Item = T>,
@@ -118,27 +102,26 @@ where
     R: Read,
     W: Write,
     E: Write + Send,
-    F: ResolverFactory + ?Sized,
 {
     run_with_args_and_output(
         args,
         interactive_approval::InteractiveApproval::plain(input),
         stdout,
         stderr,
-        resolver_factory,
-        plan_options,
+        chart_resolver,
+        image_resolver,
         HumanOutput::plain(),
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_with_args_and_output<I, T, W, E, F>(
+fn run_with_args_and_output<I, T, W, E>(
     args: I,
     approval: interactive_approval::InteractiveApproval<'_>,
     stdout: &mut W,
     stderr: &mut E,
-    resolver_factory: &F,
-    plan_options: PlanOptions,
+    chart_resolver: &(dyn ChartVersionResolver + Sync),
+    image_resolver: &(dyn ImageVersionResolver + Sync),
     human_output: HumanOutput,
 ) -> Result<u8>
 where
@@ -146,7 +129,6 @@ where
     T: Into<OsString> + Clone,
     W: Write,
     E: Write + Send,
-    F: ResolverFactory + ?Sized,
 {
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
@@ -181,8 +163,8 @@ where
             approval,
             stdout,
             stderr,
-            resolver_factory,
-            plan_options,
+            chart_resolver,
+            image_resolver,
             human_output,
         ),
     };
@@ -260,7 +242,7 @@ fn inventory_command<W: Write>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_helm_command<W, E, F>(
+fn update_helm_command<W, E>(
     repo_root: PathBuf,
     json_output: bool,
     write: bool,
@@ -269,14 +251,13 @@ fn update_helm_command<W, E, F>(
     approval: interactive_approval::InteractiveApproval<'_>,
     stdout: &mut W,
     stderr: &mut E,
-    resolver_factory: &F,
-    plan_options: PlanOptions,
+    chart_resolver: &(dyn ChartVersionResolver + Sync),
+    image_resolver: &(dyn ImageVersionResolver + Sync),
     human_output: HumanOutput,
 ) -> Result<u8>
 where
     W: Write,
     E: Write + Send,
-    F: ResolverFactory + ?Sized,
 {
     let repo_root = repo_root.canonicalize()?;
     if write && !non_interactive {
@@ -306,117 +287,158 @@ where
     if !json_output {
         writeln!(stderr, "Resolving updates for {target_count} targets...")?;
     }
-    let chart_resolver = resolver_factory.chart_resolver();
-    let image_resolver = resolver_factory.image_resolver();
-    let report = if !json_output && human_output.progress && target_count > 0 {
-        let progress = Mutex::new(ProgressRenderer::new(stderr, &repo_root, human_output));
-        let progress_callback = |completed: usize, total: usize, path: &Path| {
-            if let Ok(mut renderer) = progress.lock() {
-                renderer.render(completed, total, path);
-            }
-        };
-        let report = plan_updates_with_progress(
-            &inventory,
-            chart_resolver.as_ref(),
-            image_resolver.as_ref(),
-            plan_options,
-            &progress_callback,
-        );
-        if let Ok(mut renderer) = progress.lock() {
-            renderer.finish();
-        }
-        report
-    } else {
-        plan_updates_with_options(
-            &inventory,
-            chart_resolver.as_ref(),
-            image_resolver.as_ref(),
-            plan_options,
+
+    let mode = if !apply_ids.is_empty() {
+        UpdateRunMode::ApplySelected(
+            apply_ids
+                .into_iter()
+                .map(UpdateSelectionIdentity::new)
+                .collect(),
         )
-    };
-
-    let report = if write && non_interactive && !apply_ids.is_empty() {
-        match select_updates_by_apply_id(report, &repo_root, &apply_ids) {
-            Ok(report) => report,
-            Err(missing_ids) => {
-                let message = format_unknown_apply_ids(&missing_ids);
-                if json_output {
-                    emit_json_error_message(
-                        stderr,
-                        "invalid_arguments",
-                        &message,
-                        EXIT_STRICT_FAILURE,
-                    )?;
-                } else {
-                    writeln!(stderr, "{message}")?;
-                }
-                return Ok(EXIT_STRICT_FAILURE);
-            }
-        }
+    } else if write {
+        UpdateRunMode::ApplyAll
+    } else if non_interactive {
+        UpdateRunMode::PlanOnly
     } else {
-        report
+        UpdateRunMode::ReviewAndApply
     };
 
-    if !report.planned.is_empty() && (write || !non_interactive) {
-        let approved_report = if non_interactive {
-            report
-        } else {
-            approval.review(report, stderr, &repo_root, human_output)?
+    let progress_events = Mutex::new(Vec::new());
+    let progress_observer = |completed: usize, total: usize, path: &Path| {
+        if let Ok(mut events) = progress_events.lock() {
+            events.push((completed, total, path.to_path_buf()));
+        }
+    };
+    let show_progress = !json_output && human_output.progress && target_count > 0;
+    let outcome = {
+        let mut approval = Some(approval);
+        let mut approval_callback = |reviews: &[UpdateReview]| {
+            if show_progress {
+                render_progress_events(stderr, &repo_root, human_output, &progress_events);
+            }
+            approval
+                .take()
+                .expect("approval callback is invoked at most once")
+                .review(reviews, stderr, &repo_root, human_output)
         };
-        if approved_report.planned.is_empty() {
-            emit_update_output(
-                &approved_report,
-                OutputContext::new(
-                    &repo_root,
-                    json_output,
-                    "apply",
-                    non_interactive,
-                    human_output,
-                ),
-                0,
-                0,
+        let run = UpdateRun::new(&inventory, chart_resolver, image_resolver);
+        if show_progress {
+            run.with_progress(&progress_observer)
+                .execute(mode, Some(&mut approval_callback))?
+        } else {
+            run.execute(mode, Some(&mut approval_callback))?
+        }
+    };
+    if show_progress {
+        render_progress_events(stderr, &repo_root, human_output, &progress_events);
+    }
+
+    if let Some(UpdateRunRejection::UnknownSelections(unknown)) = outcome.rejection() {
+        let ids = unknown
+            .iter()
+            .map(|identity| identity.as_str().to_string())
+            .collect::<Vec<_>>();
+        let message = format_unknown_apply_ids(&ids);
+        if json_output {
+            emit_json_error_message(stderr, "invalid_arguments", &message, EXIT_STRICT_FAILURE)?;
+        } else {
+            writeln!(stderr, "{message}")?;
+        }
+        return Ok(EXIT_STRICT_FAILURE);
+    }
+
+    match outcome.status() {
+        UpdateRunStatus::NoUpdates => {
+            emit_outcome(
+                &outcome,
+                &repo_root,
+                json_output,
+                "plan",
+                non_interactive,
+                human_output,
                 stdout,
                 stderr,
             )?;
-            return Ok(EXIT_OK);
+            Ok(EXIT_OK)
         }
-        let changed_files = apply_updates(&approved_report)?;
-        emit_update_output(
-            &approved_report,
-            OutputContext::new(
+        UpdateRunStatus::UpdatesPlanned => {
+            emit_outcome(
+                &outcome,
+                &repo_root,
+                json_output,
+                "plan",
+                non_interactive,
+                human_output,
+                stdout,
+                stderr,
+            )?;
+            Ok(EXIT_UPDATES_AVAILABLE)
+        }
+        UpdateRunStatus::NoUpdatesApproved => {
+            emit_outcome(
+                &outcome,
                 &repo_root,
                 json_output,
                 "apply",
                 non_interactive,
                 human_output,
-            ),
-            approved_report.planned.len(),
-            changed_files,
-            stdout,
-            stderr,
-        )?;
-        return Ok(EXIT_UPDATES_APPLIED);
+                stdout,
+                stderr,
+            )?;
+            Ok(EXIT_OK)
+        }
+        UpdateRunStatus::UpdatesApplied => {
+            emit_outcome(
+                &outcome,
+                &repo_root,
+                json_output,
+                "apply",
+                non_interactive,
+                human_output,
+                stdout,
+                stderr,
+            )?;
+            Ok(EXIT_UPDATES_APPLIED)
+        }
+        UpdateRunStatus::RunRejected => unreachable!("run rejection handled above"),
     }
+}
 
+#[allow(clippy::too_many_arguments)]
+fn emit_outcome<W: Write, E: Write>(
+    outcome: &UpdateRunOutcome,
+    repo_root: &Path,
+    json_output: bool,
+    mode: &str,
+    non_interactive: bool,
+    human_output: HumanOutput,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<()> {
+    let selected = if mode == "apply" {
+        outcome.applied()
+    } else {
+        outcome.plan().identities()
+    };
+    let report = UpdateReport {
+        planned: outcome
+            .plan()
+            .planned()
+            .iter()
+            .zip(outcome.plan().identities())
+            .filter(|(_, identity)| selected.contains(identity))
+            .map(|(update, _)| update.clone())
+            .collect(),
+        skipped: outcome.plan().skipped().to_vec(),
+    };
     emit_update_output(
         &report,
-        OutputContext::new(
-            &repo_root,
-            json_output,
-            "plan",
-            non_interactive,
-            human_output,
-        ),
-        0,
-        0,
+        OutputContext::new(repo_root, json_output, mode, non_interactive, human_output),
+        outcome.applied().len(),
+        outcome.changed_paths().len(),
         stdout,
         stderr,
-    )?;
-    if report.planned.is_empty() {
-        Ok(EXIT_OK)
-    } else {
-        Ok(EXIT_UPDATES_AVAILABLE)
-    }
+    )
 }
 
 mod interactive_approval {
@@ -429,7 +451,7 @@ mod interactive_approval {
     use anyhow::{Result, anyhow};
     use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
 
-    use super::{AnsiStyle, HumanOutput, PlannedUpdate, UpdateReport, relative_path};
+    use super::{AnsiStyle, HumanOutput, UpdateReview, UpdateSelectionIdentity, relative_path};
 
     pub(super) struct InteractiveApproval<'a> {
         input: Box<dyn ApprovalInput + 'a>,
@@ -454,13 +476,13 @@ mod interactive_approval {
 
         pub(super) fn review<E: Write>(
             mut self,
-            report: UpdateReport,
+            reviews: &[UpdateReview],
             output: &mut E,
             repo_root: &Path,
             human_output: HumanOutput,
-        ) -> Result<UpdateReport> {
+        ) -> Result<Vec<UpdateSelectionIdentity>> {
             let original = self.input.enter_raw_mode()?;
-            let review_result = self.review_updates(report, output, repo_root, human_output);
+            let review_result = self.review_updates(reviews, output, repo_root, human_output);
             let restoration_result = original
                 .as_ref()
                 .map_or(Ok(()), |settings| self.input.restore(settings));
@@ -477,18 +499,14 @@ mod interactive_approval {
 
         fn review_updates<E: Write>(
             &mut self,
-            report: UpdateReport,
+            reviews: &[UpdateReview],
             output: &mut E,
             repo_root: &Path,
             human_output: HumanOutput,
-        ) -> Result<UpdateReport> {
+        ) -> Result<Vec<UpdateSelectionIdentity>> {
             let mut approved = Vec::new();
-            for update in report.planned {
-                write!(
-                    output,
-                    "{}",
-                    render_prompt(&update, repo_root, human_output)
-                )?;
+            for review in reviews {
+                write!(output, "{}", render_prompt(review, repo_root, human_output))?;
                 output.flush()?;
                 let mut buffer = [0; 1];
                 let count = self.input.read(&mut buffer)?;
@@ -511,13 +529,10 @@ mod interactive_approval {
                     writeln!(output, "{displayed}")?;
                 }
                 if matches!(choice, 'y' | 'Y') {
-                    approved.push(update);
+                    approved.push(review.identity().clone());
                 }
             }
-            Ok(UpdateReport {
-                planned: approved,
-                skipped: report.skipped,
-            })
+            Ok(approved)
         }
     }
 
@@ -603,17 +618,14 @@ mod interactive_approval {
         }
     }
 
-    fn render_prompt(
-        update: &PlannedUpdate,
-        repo_root: &Path,
-        human_output: HumanOutput,
-    ) -> String {
-        let path = human_output.styled(&relative_path(update.path(), repo_root), AnsiStyle::Cyan);
-        let current = human_output.styled(update.current_version(), AnsiStyle::Yellow);
-        let latest = human_output.styled(update.latest_version(), AnsiStyle::Green);
-        let label = match update {
-            PlannedUpdate::Chart(_) => "chart",
-            PlannedUpdate::Image(_) => "image",
+    fn render_prompt(review: &UpdateReview, repo_root: &Path, human_output: HumanOutput) -> String {
+        let path = human_output.styled(&relative_path(review.path(), repo_root), AnsiStyle::Cyan);
+        let current = human_output.styled(review.current_version(), AnsiStyle::Yellow);
+        let latest = human_output.styled(review.latest_version(), AnsiStyle::Green);
+        let label = if review.target_kind() == "HelmRelease" {
+            "chart"
+        } else {
+            "image"
         };
         format!("Update {path} ({label} {current} -> {latest})? [y/N] ")
     }
@@ -625,33 +637,6 @@ fn format_unknown_apply_ids(ids: &[String]) -> String {
     } else {
         format!("Unknown apply ids: {}", ids.join(", "))
     }
-}
-
-fn select_updates_by_apply_id(
-    report: UpdateReport,
-    repo_root: &Path,
-    apply_ids: &[String],
-) -> std::result::Result<UpdateReport, Vec<String>> {
-    if apply_ids.is_empty() {
-        return Ok(report);
-    }
-
-    let mut requested = apply_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let mut approved = Vec::new();
-    for update in report.planned {
-        let id = update.selection_id(repo_root);
-        if requested.remove(&id) {
-            approved.push(update);
-        }
-    }
-    if !requested.is_empty() {
-        return Err(requested.into_iter().collect());
-    }
-
-    Ok(UpdateReport {
-        planned: approved,
-        skipped: report.skipped,
-    })
 }
 
 struct OutputContext<'a> {
@@ -783,21 +768,22 @@ fn render_update_line(
     let current = human_output.styled(update.current_version(), AnsiStyle::Yellow);
     let latest = human_output.styled(update.latest_version(), AnsiStyle::Green);
 
-    match update {
-        PlannedUpdate::Chart(chart_update) => {
-            let mut line = format!(
-                "{path}: HelmRelease {} {} {current} -> {latest}",
-                chart_update.target_name, chart_update.chart_name
-            );
-            if chart_update.inherited_source {
-                line.push_str(" inherited-source");
-            }
-            line
+    if update.kind() == crate::models::TargetKind::HelmRelease {
+        let mut line = format!(
+            "{path}: HelmRelease {} {} {current} -> {latest}",
+            update.target_name(),
+            update.chart_name().unwrap_or_default(),
+        );
+        if update.inherited_source() {
+            line.push_str(" inherited-source");
         }
-        PlannedUpdate::Image(image_update) => format!(
+        line
+    } else {
+        format!(
             "{path}: ImageBinding {} {} {current} -> {latest}",
-            image_update.target_name, image_update.yaml_path
-        ),
+            update.target_name(),
+            update.yaml_path(),
+        )
     }
 }
 
@@ -806,6 +792,25 @@ fn relative_path(path: &Path, repo_root: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .to_string()
+}
+
+fn render_progress_events<E: Write>(
+    stderr: &mut E,
+    repo_root: &Path,
+    human_output: HumanOutput,
+    events: &Mutex<Vec<(usize, usize, PathBuf)>>,
+) {
+    let Ok(mut events) = events.lock() else {
+        return;
+    };
+    if events.is_empty() {
+        return;
+    }
+    let mut renderer = ProgressRenderer::new(stderr, repo_root, human_output);
+    for (completed, total, path) in events.drain(..) {
+        renderer.render(completed, total, &path);
+    }
+    renderer.finish();
 }
 
 struct ProgressRenderer<'a, E: Write> {
@@ -882,15 +887,14 @@ fn ellipsize(text: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::interactive_approval::InteractiveApproval;
-    use super::{HumanOutput, PlannedUpdate, UpdateReport};
-    use crate::updater::{PlannedChartUpdate, SkippedUpdate};
+    use super::{HumanOutput, UpdateReview, UpdateSelectionIdentity};
     use std::io::Cursor;
     use std::io::Write as _;
     use std::path::{Path, PathBuf};
 
     #[test]
     fn plain_approval_filters_planned_updates_and_preserves_skips() {
-        let report = report_with_updates(&[
+        let reviews = reviews_with_updates(&[
             "first.yaml",
             "second.yaml",
             "third.yaml",
@@ -902,21 +906,16 @@ mod tests {
 
         let approved = approval
             .review(
-                report,
+                &reviews,
                 &mut output,
                 Path::new("/repo"),
                 HumanOutput::plain(),
             )
             .expect("review updates");
 
-        assert_eq!(approved.planned.len(), 2);
-        assert_eq!(approved.planned[0].path(), Path::new("/repo/first.yaml"));
-        assert_eq!(approved.planned[1].path(), Path::new("/repo/second.yaml"));
-        assert_eq!(approved.skipped.len(), 1);
-        assert_eq!(
-            approved.skipped[0].path.as_deref(),
-            Some(Path::new("/repo/skipped.yaml"))
-        );
+        assert_eq!(approved.len(), 2);
+        assert_eq!(approved[0].as_str(), "first.yaml");
+        assert_eq!(approved[1].as_str(), "second.yaml");
         let output = String::from_utf8(output).expect("utf-8");
         assert_eq!(output.matches("[y/N] y\n").count(), 2);
         assert_eq!(output.matches("[y/N] n\n").count(), 3);
@@ -933,13 +932,13 @@ mod tests {
 
     #[test]
     fn plain_approval_stops_on_ctrl_c_with_an_interrupted_error() {
-        let report = report_with_updates(&["first.yaml", "second.yaml"]);
+        let reviews = reviews_with_updates(&["first.yaml", "second.yaml"]);
         let mut output = Vec::new();
         let approval = InteractiveApproval::plain(Cursor::new([0x03, b'y']));
 
         let error = approval
             .review(
-                report,
+                &reviews,
                 &mut output,
                 Path::new("/repo"),
                 HumanOutput::plain(),
@@ -967,7 +966,7 @@ mod tests {
         let (result, output, original, restored) = review_through_pty(b'y');
         let approved = result.expect("review through PTY");
 
-        assert_eq!(approved.planned.len(), 1);
+        assert_eq!(approved.len(), 1);
         assert!(output.ends_with(b"[y/N] y\r\n"));
         assert_eq!(restored.input_modes, original.input_modes);
         assert_eq!(restored.output_modes, original.output_modes);
@@ -1032,7 +1031,7 @@ mod tests {
 
         let error = approval
             .review(
-                report_with_updates(&["first.yaml"]),
+                &reviews_with_updates(&["first.yaml"]),
                 &mut output,
                 Path::new("/repo"),
                 HumanOutput::plain(),
@@ -1071,7 +1070,7 @@ mod tests {
     fn review_through_pty(
         decision: u8,
     ) -> (
-        anyhow::Result<UpdateReport>,
+        anyhow::Result<Vec<UpdateSelectionIdentity>>,
         Vec<u8>,
         rustix::termios::Termios,
         rustix::termios::Termios,
@@ -1093,6 +1092,8 @@ mod tests {
         let observer = slave.try_clone().expect("clone PTY slave");
         let original = tcgetattr(&observer).expect("original terminal settings");
         let terminal_observer = observer.try_clone().expect("clone PTY observer");
+        let master = File::from(master);
+        let mut writer_master = master.try_clone().expect("clone PTY master");
         let writer = std::thread::spawn(move || {
             while tcgetattr(&terminal_observer)
                 .expect("active terminal settings")
@@ -1101,8 +1102,9 @@ mod tests {
             {
                 std::thread::yield_now();
             }
-            let mut master = File::from(master);
-            master.write_all(&[decision]).expect("send decision byte");
+            writer_master
+                .write_all(&[decision])
+                .expect("send decision byte");
             while !tcgetattr(&terminal_observer)
                 .expect("restored terminal settings")
                 .local_modes
@@ -1113,7 +1115,7 @@ mod tests {
         });
         let mut output = Vec::new();
         let result = InteractiveApproval::classified(slave).review(
-            report_with_updates(&["first.yaml"]),
+            &reviews_with_updates(&["first.yaml"]),
             &mut output,
             Path::new("/repo"),
             HumanOutput::plain(),
@@ -1123,27 +1125,18 @@ mod tests {
         (result, output, original, restored)
     }
 
-    fn report_with_updates(paths: &[&str]) -> UpdateReport {
-        UpdateReport {
-            planned: paths
-                .iter()
-                .map(|path| {
-                    PlannedUpdate::Chart(PlannedChartUpdate {
-                        path: PathBuf::from("/repo").join(path),
-                        document_index: 0,
-                        target_name: path.to_string(),
-                        chart_name: "chart".to_string(),
-                        repo_name: "repo".to_string(),
-                        current_version: "1.0.0".to_string(),
-                        latest_version: "2.0.0".to_string(),
-                        inherited_source: false,
-                    })
-                })
-                .collect(),
-            skipped: vec![SkippedUpdate::new(
-                Some(PathBuf::from("/repo/skipped.yaml")),
-                "unresolved",
-            )],
-        }
+    fn reviews_with_updates(paths: &[&str]) -> Vec<UpdateReview> {
+        paths
+            .iter()
+            .map(|path| {
+                UpdateReview::new(
+                    UpdateSelectionIdentity::new(*path),
+                    PathBuf::from("/repo").join(path),
+                    "HelmRelease",
+                    "1.0.0",
+                    "2.0.0",
+                )
+            })
+            .collect()
     }
 }

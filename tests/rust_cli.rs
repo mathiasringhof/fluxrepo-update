@@ -7,13 +7,13 @@ use std::fs;
 use std::io::Cursor;
 
 use common::{
-    ResponseSpec, StaticResolverFactory, TestHttpServer, copy_fixture, fixture_root, write_file,
+    ResolverFactory, ResponseSpec, StaticResolverFactory, TestHttpServer, copy_fixture,
+    fixture_root, write_file,
 };
-use fluxrepo_update::cli::{ResolverFactory, run_with_args};
+use fluxrepo_update::cli::run_with_args;
 use fluxrepo_update::resolvers::{
     ChartVersionResolver, ImageVersionResolver, RepositoryChartResolver, StaticImageVersionResolver,
 };
-use fluxrepo_update::updater::PlanOptions;
 use serde_json::Value;
 
 #[test]
@@ -1017,7 +1017,7 @@ impl ResolverFactory for RepositoryResolverFactory {
 }
 
 fn run_cli(args: &[&str], input: &str, factory: &StaticResolverFactory) -> (u8, String, String) {
-    run_cli_with_options(args, input, factory, PlanOptions { max_workers: 1 })
+    run_cli_with_any_factory(args, input, factory)
 }
 
 fn run_cli_owned(
@@ -1027,37 +1027,15 @@ fn run_cli_owned(
 ) -> (u8, String, String) {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
+    let chart_resolver = factory.chart_resolver();
+    let image_resolver = factory.image_resolver();
     let code = run_with_args(
         args,
         Cursor::new(input.as_bytes()),
         &mut stdout,
         &mut stderr,
-        factory,
-        PlanOptions { max_workers: 1 },
-    )
-    .expect("run cli");
-    (
-        code,
-        String::from_utf8(stdout).expect("utf8 stdout"),
-        String::from_utf8(stderr).expect("utf8 stderr"),
-    )
-}
-
-fn run_cli_with_options(
-    args: &[&str],
-    input: &str,
-    factory: &StaticResolverFactory,
-    plan_options: PlanOptions,
-) -> (u8, String, String) {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let code = run_with_args(
-        args,
-        Cursor::new(input.as_bytes()),
-        &mut stdout,
-        &mut stderr,
-        factory,
-        plan_options,
+        chart_resolver.as_ref(),
+        image_resolver.as_ref(),
     )
     .expect("run cli");
     (
@@ -1074,13 +1052,15 @@ fn run_cli_with_any_factory(
 ) -> (u8, String, String) {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
+    let chart_resolver = factory.chart_resolver();
+    let image_resolver = factory.image_resolver();
     let code = run_with_args(
         args,
         Cursor::new(input.as_bytes()),
         &mut stdout,
         &mut stderr,
-        factory,
-        PlanOptions { max_workers: 1 },
+        chart_resolver.as_ref(),
+        image_resolver.as_ref(),
     )
     .expect("run cli");
     (

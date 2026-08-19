@@ -20,48 +20,105 @@ use crate::resolvers::{
 };
 
 #[derive(Debug, Clone)]
-pub struct PlannedChartUpdate {
-    pub path: PathBuf,
-    pub document_index: usize,
-    pub target_name: String,
-    pub chart_name: String,
-    pub repo_name: String,
-    pub current_version: String,
-    pub latest_version: String,
-    pub inherited_source: bool,
+struct PlannedChartUpdate {
+    path: PathBuf,
+    document_index: usize,
+    target_name: String,
+    chart_name: String,
+    repo_name: String,
+    current_version: String,
+    latest_version: String,
+    inherited_source: bool,
 }
 
 #[derive(Debug, Clone)]
-pub struct PlannedImageUpdate {
-    pub path: PathBuf,
-    pub document_index: usize,
-    pub target_name: String,
-    pub yaml_path: String,
-    pub current_image: String,
-    pub latest_image: String,
-    pub current_version: String,
-    pub latest_version: String,
-    pub value_kind: ImageBindingValueKind,
+struct PlannedImageUpdate {
+    path: PathBuf,
+    document_index: usize,
+    target_name: String,
+    yaml_path: String,
+    current_image: String,
+    latest_image: String,
+    current_version: String,
+    latest_version: String,
+    value_kind: ImageBindingValueKind,
 }
 
 #[derive(Debug, Clone)]
-pub enum PlannedUpdate {
+pub struct PlannedUpdate {
+    variant: PlannedUpdateVariant,
+}
+
+#[derive(Debug, Clone)]
+enum PlannedUpdateVariant {
     Chart(PlannedChartUpdate),
     Image(PlannedImageUpdate),
 }
 
 impl PlannedUpdate {
+    #[allow(clippy::too_many_arguments)]
+    pub fn chart(
+        path: PathBuf,
+        document_index: usize,
+        target_name: String,
+        chart_name: String,
+        repo_name: String,
+        current_version: String,
+        latest_version: String,
+        inherited_source: bool,
+    ) -> Self {
+        Self {
+            variant: PlannedUpdateVariant::Chart(PlannedChartUpdate {
+                path,
+                document_index,
+                target_name,
+                chart_name,
+                repo_name,
+                current_version,
+                latest_version,
+                inherited_source,
+            }),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn image(
+        path: PathBuf,
+        document_index: usize,
+        target_name: String,
+        yaml_path: String,
+        current_image: String,
+        latest_image: String,
+        current_version: String,
+        latest_version: String,
+        value_kind: ImageBindingValueKind,
+    ) -> Self {
+        Self {
+            variant: PlannedUpdateVariant::Image(PlannedImageUpdate {
+                path,
+                document_index,
+                target_name,
+                yaml_path,
+                current_image,
+                latest_image,
+                current_version,
+                latest_version,
+                value_kind,
+            }),
+        }
+    }
+
     pub fn path(&self) -> &Path {
-        match self {
-            Self::Chart(update) => &update.path,
-            Self::Image(update) => &update.path,
+        match &self.variant {
+            PlannedUpdateVariant::Chart(update) => &update.path,
+            PlannedUpdateVariant::Image(update) => &update.path,
         }
     }
 
     pub fn document_index(&self) -> usize {
-        match self {
-            Self::Chart(update) => update.document_index,
-            Self::Image(update) => update.document_index,
+        match &self.variant {
+            PlannedUpdateVariant::Chart(update) => update.document_index,
+            PlannedUpdateVariant::Image(update) => update.document_index,
         }
     }
 
@@ -70,30 +127,58 @@ impl PlannedUpdate {
     }
 
     pub fn kind(&self) -> TargetKind {
-        match self {
-            Self::Chart(_) => TargetKind::HelmRelease,
-            Self::Image(_) => TargetKind::ImageBinding,
+        match &self.variant {
+            PlannedUpdateVariant::Chart(_) => TargetKind::HelmRelease,
+            PlannedUpdateVariant::Image(_) => TargetKind::ImageBinding,
         }
     }
 
     pub fn target_name(&self) -> &str {
-        match self {
-            Self::Chart(update) => &update.target_name,
-            Self::Image(update) => &update.target_name,
+        match &self.variant {
+            PlannedUpdateVariant::Chart(update) => &update.target_name,
+            PlannedUpdateVariant::Image(update) => &update.target_name,
         }
     }
 
     pub fn current_version(&self) -> &str {
-        match self {
-            Self::Chart(update) => &update.current_version,
-            Self::Image(update) => &update.current_version,
+        match &self.variant {
+            PlannedUpdateVariant::Chart(update) => &update.current_version,
+            PlannedUpdateVariant::Image(update) => &update.current_version,
         }
     }
 
     pub fn latest_version(&self) -> &str {
-        match self {
-            Self::Chart(update) => &update.latest_version,
-            Self::Image(update) => &update.latest_version,
+        match &self.variant {
+            PlannedUpdateVariant::Chart(update) => &update.latest_version,
+            PlannedUpdateVariant::Image(update) => &update.latest_version,
+        }
+    }
+
+    pub fn chart_name(&self) -> Option<&str> {
+        match &self.variant {
+            PlannedUpdateVariant::Chart(update) => Some(&update.chart_name),
+            PlannedUpdateVariant::Image(_) => None,
+        }
+    }
+
+    pub fn repo_name(&self) -> Option<&str> {
+        match &self.variant {
+            PlannedUpdateVariant::Chart(update) => Some(&update.repo_name),
+            PlannedUpdateVariant::Image(_) => None,
+        }
+    }
+
+    pub fn inherited_source(&self) -> bool {
+        match &self.variant {
+            PlannedUpdateVariant::Chart(update) => update.inherited_source,
+            PlannedUpdateVariant::Image(_) => false,
+        }
+    }
+
+    pub fn yaml_path(&self) -> &str {
+        match &self.variant {
+            PlannedUpdateVariant::Chart(_) => "spec.chart.spec.version",
+            PlannedUpdateVariant::Image(update) => &update.yaml_path,
         }
     }
 
@@ -110,8 +195,8 @@ impl PlannedUpdate {
             self.document_index().to_string(),
             self.target_name().to_string(),
         ];
-        match self {
-            Self::Chart(update) => {
+        match &self.variant {
+            PlannedUpdateVariant::Chart(update) => {
                 parts.extend([
                     "spec.chart.spec.version".to_string(),
                     update.repo_name.clone(),
@@ -120,7 +205,7 @@ impl PlannedUpdate {
                     update.latest_version.clone(),
                 ]);
             }
-            Self::Image(update) => {
+            PlannedUpdateVariant::Image(update) => {
                 parts.extend([
                     update.yaml_path.clone(),
                     update.current_image.clone(),
@@ -147,8 +232,8 @@ impl PlannedUpdate {
             .unwrap_or(self.path())
             .to_string_lossy()
             .to_string();
-        match self {
-            Self::Chart(update) => json!({
+        match &self.variant {
+            PlannedUpdateVariant::Chart(update) => json!({
                 "id": self.selection_id(repo_root),
                 "path": path,
                 "document_index": update.document_index,
@@ -161,7 +246,7 @@ impl PlannedUpdate {
                 "latest_version": update.latest_version,
                 "inherited_source": update.inherited_source,
             }),
-            Self::Image(update) => json!({
+            PlannedUpdateVariant::Image(update) => json!({
                 "id": self.selection_id(repo_root),
                 "path": path,
                 "document_index": update.document_index,
@@ -536,7 +621,7 @@ pub fn plan_updates_with_progress(
     )
 }
 
-fn plan_updates_with_optional_progress(
+pub(crate) fn plan_updates_with_optional_progress(
     inventory: &Inventory,
     chart_resolver: &(dyn ChartVersionResolver + Sync),
     image_resolver: &(dyn ImageVersionResolver + Sync),
@@ -563,10 +648,7 @@ fn plan_updates_with_optional_progress(
         (
             item.path().to_path_buf(),
             item.document_index(),
-            match item {
-                PlannedUpdate::Image(update) => update.yaml_path.clone(),
-                PlannedUpdate::Chart(_) => String::new(),
-            },
+            item.yaml_path().to_string(),
         )
     });
     let skipped = indexed_outcomes
@@ -737,16 +819,16 @@ fn resolve_chart_target(
         return ResolutionOutcome::Noop;
     }
 
-    ResolutionOutcome::Planned(PlannedUpdate::Chart(PlannedChartUpdate {
-        path: target.path.clone(),
-        document_index: target.document_index,
-        target_name: target.resource_id.name.clone(),
-        chart_name: target.chart_name.clone().unwrap_or_default(),
-        repo_name: target.repo_name.clone().unwrap_or_default(),
+    ResolutionOutcome::Planned(PlannedUpdate::chart(
+        target.path.clone(),
+        target.document_index,
+        target.resource_id.name.clone(),
+        target.chart_name.clone().unwrap_or_default(),
+        target.repo_name.clone().unwrap_or_default(),
         current_version,
         latest_version,
-        inherited_source: target.source_is_inherited,
-    }))
+        target.source_is_inherited,
+    ))
 }
 
 fn resolve_image_binding(
@@ -795,26 +877,35 @@ fn resolve_image_binding(
         return ResolutionOutcome::Noop;
     }
 
-    ResolutionOutcome::Planned(PlannedUpdate::Image(PlannedImageUpdate {
-        path: target.path.clone(),
-        document_index: target.document_index,
-        target_name: target.resource_id.name.clone(),
-        yaml_path: target.yaml_path.clone(),
-        current_image: target.image.clone(),
+    ResolutionOutcome::Planned(PlannedUpdate::image(
+        target.path.clone(),
+        target.document_index,
+        target.resource_id.name.clone(),
+        target.yaml_path.clone(),
+        target.image.clone(),
         latest_image,
         current_version,
         latest_version,
-        value_kind: target.value_kind,
-    }))
+        target.value_kind,
+    ))
 }
 
 pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
+    Ok(apply_updates_with_paths(report)?.len())
+}
+
+pub(crate) fn apply_updates_with_paths(report: &UpdateReport) -> Result<Vec<PathBuf>> {
+    let updates = report.planned.iter().collect::<Vec<_>>();
+    apply_planned_updates_with_paths(&updates)
+}
+
+pub(crate) fn apply_planned_updates_with_paths(updates: &[&PlannedUpdate]) -> Result<Vec<PathBuf>> {
     let mut updates_by_path: BTreeMap<PathBuf, Vec<&PlannedUpdate>> = BTreeMap::new();
-    for update in &report.planned {
+    for update in updates {
         updates_by_path
             .entry(update.path().to_path_buf())
             .or_default()
-            .push(update);
+            .push(*update);
     }
 
     let mut prepared_files = Vec::with_capacity(updates_by_path.len());
@@ -835,8 +926,8 @@ pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
                     path.display()
                 )
             })?;
-            match update {
-                PlannedUpdate::Chart(chart_update) => {
+            match &update.variant {
+                PlannedUpdateVariant::Chart(chart_update) => {
                     ensure_editable_chart_spec(document)?;
                     set_checked_yaml_scalar_value(
                         document,
@@ -845,7 +936,7 @@ pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
                         &chart_update.latest_version,
                     )?;
                 }
-                PlannedUpdate::Image(image_update) => {
+                PlannedUpdateVariant::Image(image_update) => {
                     let (expected, replacement) = match image_update.value_kind {
                         ImageBindingValueKind::ImageReference => {
                             (&image_update.current_image, &image_update.latest_image)
@@ -878,7 +969,7 @@ pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
             )
         })?;
     }
-    Ok(prepared_files.len())
+    Ok(prepared_files.into_iter().map(|(path, _)| path).collect())
 }
 
 fn ensure_editable_chart_spec(document: &EditDocument) -> Result<()> {

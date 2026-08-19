@@ -19,9 +19,8 @@ use fluxrepo_update::resolvers::{
 };
 use fluxrepo_update::scanner::scan_repo;
 use fluxrepo_update::updater::{
-    PlanOptions, PlannedChartUpdate, PlannedImageUpdate, PlannedUpdate, SkippedUpdate,
-    UpdateReport, apply_updates, plan_updates, plan_updates_with_options,
-    plan_updates_with_progress,
+    PlanOptions, PlannedUpdate, SkippedUpdate, UpdateReport, apply_updates, plan_updates,
+    plan_updates_with_options, plan_updates_with_progress,
 };
 
 #[test]
@@ -660,16 +659,16 @@ fn apply_updates_rejects_non_mapping_helmrelease_documents() {
     let path = temp.path().join("release.yaml");
     write_file(&path, "- not\n- a\n- mapping\n");
     let report = UpdateReport {
-        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
+        planned: vec![PlannedUpdate::chart(
             path,
-            document_index: 0,
-            target_name: "demo".to_string(),
-            chart_name: "demo".to_string(),
-            repo_name: "demo".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "1.0.1".to_string(),
-            inherited_source: false,
-        })],
+            0,
+            "demo".to_string(),
+            "demo".to_string(),
+            "demo".to_string(),
+            "1.0.0".to_string(),
+            "1.0.1".to_string(),
+            false,
+        )],
         skipped: Vec::new(),
     };
 
@@ -689,16 +688,16 @@ fn apply_updates_rejects_a_chart_scalar_changed_after_planning() {
     let changed = "kind: HelmRelease\nspec: {chart: {spec: {version: 1.5.0}}}\n";
     write_file(&path, changed);
     let report = UpdateReport {
-        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            chart_name: "demo".to_string(),
-            repo_name: "demo".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "2.0.0".to_string(),
-            inherited_source: false,
-        })],
+        planned: vec![PlannedUpdate::chart(
+            path.clone(),
+            0,
+            "demo".to_string(),
+            "demo".to_string(),
+            "demo".to_string(),
+            "1.0.0".to_string(),
+            "2.0.0".to_string(),
+            false,
+        )],
         skipped: Vec::new(),
     };
 
@@ -715,17 +714,17 @@ fn apply_updates_rejects_an_image_scalar_changed_after_planning() {
     let changed = "kind: Pod\nspec: {containers: [{image: example/demo:1.5.0}]}\n";
     write_file(&path, changed);
     let report = UpdateReport {
-        planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            yaml_path: "spec.containers[0].image".to_string(),
-            current_image: "example/demo:1.0.0".to_string(),
-            latest_image: "example/demo:2.0.0".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "2.0.0".to_string(),
-            value_kind: ImageBindingValueKind::ImageReference,
-        })],
+        planned: vec![PlannedUpdate::image(
+            path.clone(),
+            0,
+            "demo".to_string(),
+            "spec.containers[0].image".to_string(),
+            "example/demo:1.0.0".to_string(),
+            "example/demo:2.0.0".to_string(),
+            "1.0.0".to_string(),
+            "2.0.0".to_string(),
+            ImageBindingValueKind::ImageReference,
+        )],
         skipped: Vec::new(),
     };
 
@@ -744,17 +743,17 @@ fn apply_updates_prepares_every_file_before_writing_any_file() {
     write_file(&first_path, manifest);
     write_file(&second_path, manifest);
     let update = |path: PathBuf, yaml_path: &str| {
-        PlannedUpdate::Image(PlannedImageUpdate {
+        PlannedUpdate::image(
             path,
-            document_index: 0,
-            target_name: "demo".to_string(),
-            yaml_path: yaml_path.to_string(),
-            current_image: "example/demo:1.0.0".to_string(),
-            latest_image: "example/demo:2.0.0".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "2.0.0".to_string(),
-            value_kind: ImageBindingValueKind::ImageReference,
-        })
+            0,
+            "demo".to_string(),
+            yaml_path.to_string(),
+            "example/demo:1.0.0".to_string(),
+            "example/demo:2.0.0".to_string(),
+            "1.0.0".to_string(),
+            "2.0.0".to_string(),
+            ImageBindingValueKind::ImageReference,
+        )
     };
     let report = UpdateReport {
         planned: vec![
@@ -787,17 +786,17 @@ fn apply_updates_reports_partial_application_after_a_later_write_failure() {
     fs::set_permissions(&second_path, fs::Permissions::from_mode(0o444))
         .expect("make second file read-only");
     let update = |path: PathBuf| {
-        PlannedUpdate::Image(PlannedImageUpdate {
+        PlannedUpdate::image(
             path,
-            document_index: 0,
-            target_name: "demo".to_string(),
-            yaml_path: "spec.containers[0].image".to_string(),
-            current_image: "example/demo:1.0.0".to_string(),
-            latest_image: "example/demo:2.0.0".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "2.0.0".to_string(),
-            value_kind: ImageBindingValueKind::ImageReference,
-        })
+            0,
+            "demo".to_string(),
+            "spec.containers[0].image".to_string(),
+            "example/demo:1.0.0".to_string(),
+            "example/demo:2.0.0".to_string(),
+            "1.0.0".to_string(),
+            "2.0.0".to_string(),
+            ImageBindingValueKind::ImageReference,
+        )
     };
     let report = UpdateReport {
         planned: vec![update(first_path.clone()), update(second_path.clone())],
@@ -837,17 +836,17 @@ spec:
 "#,
     );
     let report = UpdateReport {
-        planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            yaml_path: "spec.template.spec.containers[0]".to_string(),
-            current_image: "old".to_string(),
-            latest_image: "new".to_string(),
-            current_version: "old".to_string(),
-            latest_version: "new".to_string(),
-            value_kind: ImageBindingValueKind::ImageReference,
-        })],
+        planned: vec![PlannedUpdate::image(
+            path.clone(),
+            0,
+            "demo".to_string(),
+            "spec.template.spec.containers[0]".to_string(),
+            "old".to_string(),
+            "new".to_string(),
+            "old".to_string(),
+            "new".to_string(),
+            ImageBindingValueKind::ImageReference,
+        )],
         skipped: Vec::new(),
     };
 
@@ -880,16 +879,16 @@ spec:
 "#;
     write_file(&path, original);
     let report = UpdateReport {
-        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            chart_name: "demo".to_string(),
-            repo_name: "demo".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "1.0.1".to_string(),
-            inherited_source: false,
-        })],
+        planned: vec![PlannedUpdate::chart(
+            path.clone(),
+            0,
+            "demo".to_string(),
+            "demo".to_string(),
+            "demo".to_string(),
+            "1.0.0".to_string(),
+            "1.0.1".to_string(),
+            false,
+        )],
         skipped: Vec::new(),
     };
 
@@ -925,17 +924,17 @@ metadata:
 "#;
     write_file(&path, original);
     let report = UpdateReport {
-        planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            yaml_path: "spec.template.spec.containers[0].image".to_string(),
-            current_image: "example/demo:1.0.0".to_string(),
-            latest_image: "example/demo:1.0.1".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "1.0.1".to_string(),
-            value_kind: ImageBindingValueKind::ImageReference,
-        })],
+        planned: vec![PlannedUpdate::image(
+            path.clone(),
+            0,
+            "demo".to_string(),
+            "spec.template.spec.containers[0].image".to_string(),
+            "example/demo:1.0.0".to_string(),
+            "example/demo:1.0.1".to_string(),
+            "1.0.0".to_string(),
+            "1.0.1".to_string(),
+            ImageBindingValueKind::ImageReference,
+        )],
         skipped: Vec::new(),
     };
 
@@ -957,16 +956,16 @@ fn apply_updates_preserves_crlf_line_endings_around_scalar_changes() {
     let original = "apiVersion: helm.toolkit.fluxcd.io/v2\r\nkind: HelmRelease\r\nmetadata:\r\n  name: demo\r\nspec:\r\n  chart:\r\n    spec:\r\n      chart: demo\r\n      version: \"1.0.0\"\r\n";
     write_file(&path, original);
     let report = UpdateReport {
-        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            chart_name: "demo".to_string(),
-            repo_name: "demo".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "1.0.1".to_string(),
-            inherited_source: false,
-        })],
+        planned: vec![PlannedUpdate::chart(
+            path.clone(),
+            0,
+            "demo".to_string(),
+            "demo".to_string(),
+            "demo".to_string(),
+            "1.0.0".to_string(),
+            "1.0.1".to_string(),
+            false,
+        )],
         skipped: Vec::new(),
     };
 
@@ -993,16 +992,16 @@ spec:
       version: "1.0.0""#;
     write_file(&path, original);
     let report = UpdateReport {
-        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            chart_name: "demo".to_string(),
-            repo_name: "demo".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "1.0.1".to_string(),
-            inherited_source: false,
-        })],
+        planned: vec![PlannedUpdate::chart(
+            path.clone(),
+            0,
+            "demo".to_string(),
+            "demo".to_string(),
+            "demo".to_string(),
+            "1.0.0".to_string(),
+            "1.0.1".to_string(),
+            false,
+        )],
         skipped: Vec::new(),
     };
 
