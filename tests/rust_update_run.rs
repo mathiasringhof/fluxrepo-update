@@ -320,6 +320,9 @@ fn progress_observation_is_monotonic_and_best_effort() {
     let fixture = Fixture::new();
     let events = std::sync::Mutex::new(Vec::new());
     let observer = |completed, total, _path: &std::path::Path| {
+        if completed == 1 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         events
             .lock()
             .expect("progress lock")

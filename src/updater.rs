@@ -747,12 +747,9 @@ fn resolve_targets(
             .map(|task| {
                 let outcome = resolve_task(inventory, task, chart_resolver, image_resolver);
                 if let Some(callback) = progress_callback {
-                    let completed = {
-                        let mut count = completed_tasks.lock().expect("progress lock");
-                        *count += 1;
-                        *count
-                    };
-                    callback(completed, tasks.len(), task.path());
+                    let mut completed = completed_tasks.lock().expect("progress lock");
+                    *completed += 1;
+                    callback(*completed, tasks.len(), task.path());
                 }
                 outcome
             })
