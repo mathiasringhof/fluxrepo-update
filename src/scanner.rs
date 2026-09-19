@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use yaml_edit::{Document as EditDocument, YamlFile, YamlNode};
 
 use crate::models::{
     HelmReleaseTarget, HelmRepository, ImageBinding, ImageBindingValueKind, ImageReference,
@@ -34,6 +35,9 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
 
         let documents = load_yaml_documents(&path)?;
         for (document_index, document) in documents.iter().enumerate() {
+            inventory
+                .manifest_documents
+                .insert((path.clone(), document_index), document.clone());
             let Some(mapping) = document.as_mapping() else {
                 continue;
             };
@@ -41,9 +45,7 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
             let kind = string_field(mapping, "kind").unwrap_or_default();
             if kind == "HelmRepository" {
                 if let Some(repository) = parse_repository(&path, document_index, mapping) {
-                    inventory
-                        .repositories
-                        .insert(repository.name.clone(), repository);
+                    inventory.add_repository(repository);
                 }
                 continue;
             }
@@ -151,10 +153,21 @@ fn is_skipped_path(path: &Path) -> bool {
 fn load_yaml_documents(path: &Path) -> Result<Vec<Value>> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("failed to read YAML file {}", path.display()))?;
-    Deserializer::from_str(&text)
-        .map(Value::deserialize)
-        .collect::<std::result::Result<Vec<_>, _>>()
+    parse_yaml_documents(&text)
         .with_context(|| format!("failed to parse YAML file {}", path.display()))
+}
+
+pub(crate) fn parse_yaml_documents(text: &str) -> Result<Vec<Value>> {
+    let mut values = Deserializer::from_str(text)
+        .map(Value::deserialize)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let edit: YamlFile = text.parse()?;
+    for (value, document) in values.iter_mut().zip(edit.documents()) {
+        if let Some(mapping) = document.as_mapping() {
+            preserve_numeric_text(value, &YamlNode::Mapping(mapping));
+        }
+    }
+    Ok(values)
 }
 
 fn parse_repository(
@@ -170,6 +183,7 @@ fn parse_repository(
 
     Some(HelmRepository {
         name,
+        namespace: string_field(metadata, "namespace"),
         url,
         repo_type,
         path: path.to_path_buf(),
@@ -303,7 +317,7 @@ fn collect_helm_value_bindings(
                 let Some(key) = key.as_str() else {
                     continue;
                 };
-                let child_path = format!("{path}.{key}");
+                let child_path = append_yaml_key(path, key);
                 if key == "image"
                     && let Some(image) = child.as_str()
                 {
@@ -402,14 +416,10 @@ fn collect_scalar_images(value: &Value, path: &str, results: &mut Vec<(String, S
                 let Some(key_text) = key.as_str() else {
                     continue;
                 };
-                let child_path = if path.is_empty() {
-                    key_text.to_string()
-                } else {
-                    format!("{path}.{key_text}")
-                };
+                let child_path = append_yaml_key(path, key_text);
                 if key_text == "image" {
                     if let Some(image) = child.as_str() {
-                        results.push((child_path, image.to_string()));
+                        results.push((child_path.clone(), image.to_string()));
                     }
                 } else {
                     collect_scalar_images(child, &child_path, results);
@@ -428,31 +438,30 @@ fn collect_scalar_images(value: &Value, path: &str, results: &mut Vec<(String, S
 fn collect_images(value: &Value, path: &str, results: &mut Vec<(String, String)>) {
     match value {
         Value::Mapping(mapping) => {
+            if let Some(image) = concrete_image_mapping(mapping) {
+                results.push((path.to_string(), image));
+            }
             for (key, child) in mapping {
                 let Some(key_text) = key.as_str() else {
                     continue;
                 };
-                let child_path = if path.is_empty() {
-                    key_text.to_string()
-                } else {
-                    format!("{path}.{key_text}")
-                };
+                let child_path = append_yaml_key(path, key_text);
 
                 if key_text == "image" {
                     if let Some(image) = child.as_str() {
-                        results.push((child_path, image.to_string()));
+                        results.push((child_path.clone(), image.to_string()));
                     } else if let Some(image_mapping) = child.as_mapping()
+                        && concrete_image_mapping(image_mapping).is_none()
                         && let Some(repository) = string_field(image_mapping, "repository")
                     {
                         let rendered = match string_field(image_mapping, "tag") {
                             Some(tag) if !tag.is_empty() => format!("{repository}:{tag}"),
                             _ => repository,
                         };
-                        results.push((child_path, rendered));
+                        results.push((child_path.clone(), rendered));
                     }
-                } else {
-                    collect_images(child, &child_path, results);
                 }
+                collect_images(child, &child_path, results);
             }
         }
         Value::Sequence(items) => {
@@ -521,5 +530,120 @@ fn value_to_string(value: &Value) -> Option<String> {
         Value::Number(number) => Some(number.to_string()),
         Value::Bool(value) => Some(value.to_string()),
         _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum YamlPathPart {
+    Key(String),
+    Index(usize),
+}
+
+fn append_yaml_key(path: &str, key: &str) -> String {
+    if !key.is_empty()
+        && key
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        if path.is_empty() {
+            key.to_string()
+        } else {
+            format!("{path}.{key}")
+        }
+    } else {
+        format!(
+            "{path}[{}]",
+            serde_json::to_string(key).expect("string serializes")
+        )
+    }
+}
+
+pub(crate) fn yaml_path_parts(path: &str) -> Option<Vec<YamlPathPart>> {
+    let mut result = Vec::new();
+    let mut remaining = path;
+    while !remaining.is_empty() {
+        if let Some(rest) = remaining.strip_prefix('.') {
+            remaining = rest;
+        } else if let Some(rest) = remaining.strip_prefix('[') {
+            if rest.starts_with('"') {
+                let mut stream = serde_json::Deserializer::from_str(rest).into_iter::<String>();
+                let key = stream.next()?.ok()?;
+                remaining = rest.get(stream.byte_offset()..)?.strip_prefix(']')?;
+                result.push(YamlPathPart::Key(key));
+            } else {
+                let (index, rest) = rest.split_once(']')?;
+                result.push(YamlPathPart::Index(index.parse().ok()?));
+                remaining = rest;
+            }
+        } else {
+            let end = remaining.find(['.', '[']).unwrap_or(remaining.len());
+            result.push(YamlPathPart::Key(remaining[..end].to_string()));
+            remaining = &remaining[end..];
+        }
+    }
+    Some(result)
+}
+
+pub(crate) fn edit_node_at_path(document: &EditDocument, path: &str) -> Option<YamlNode> {
+    let mut current = YamlNode::Mapping(document.as_mapping()?);
+    for part in yaml_path_parts(path)? {
+        current = match part {
+            YamlPathPart::Key(key) => current.as_mapping()?.get(key.as_str())?,
+            YamlPathPart::Index(index) => current.as_sequence()?.get(index)?,
+        };
+    }
+    Some(current)
+}
+
+pub(crate) fn value_at_path<'a>(document: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = document;
+    for part in yaml_path_parts(path)? {
+        current = match part {
+            YamlPathPart::Key(key) => current.as_mapping()?.get(Value::String(key))?,
+            YamlPathPart::Index(index) => current.as_sequence()?.get(index)?,
+        };
+    }
+    Some(current)
+}
+
+pub(crate) fn value_at_path_mut<'a>(document: &'a mut Value, path: &str) -> Option<&'a mut Value> {
+    let mut current = document;
+    for part in yaml_path_parts(path)? {
+        current = match part {
+            YamlPathPart::Key(key) => current.as_mapping_mut()?.get_mut(Value::String(key))?,
+            YamlPathPart::Index(index) => current.as_sequence_mut()?.get_mut(index)?,
+        };
+    }
+    Some(current)
+}
+
+fn preserve_numeric_text(value: &mut Value, node: &YamlNode) {
+    match value {
+        Value::Number(_) => {
+            if let Some(scalar) = node.as_scalar() {
+                *value = Value::String(scalar.as_string());
+            }
+        }
+        Value::Mapping(mapping) => {
+            if let Some(edit_mapping) = node.as_mapping() {
+                for (key, child) in mapping {
+                    if let Some(key) = key.as_str()
+                        && let Some(edit_child) = edit_mapping.get(key)
+                    {
+                        preserve_numeric_text(child, &edit_child);
+                    }
+                }
+            }
+        }
+        Value::Sequence(items) => {
+            if let Some(sequence) = node.as_sequence() {
+                for (index, child) in items.iter_mut().enumerate() {
+                    if let Some(edit_child) = sequence.get(index) {
+                        preserve_numeric_text(child, &edit_child);
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }

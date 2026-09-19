@@ -3,17 +3,18 @@
 mod common;
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
 use std::io::Cursor;
 
 use common::{
-    ResponseSpec, StaticResolverFactory, TestHttpServer, copy_fixture, fixture_root, write_file,
+    ResponseSpec, StaticResolverFactory, TestHttpServer, TestResolvers, copy_fixture, fixture_root,
+    write_file,
 };
-use fluxrepo_update::cli::{ResolverFactory, run_with_args};
+use fluxrepo_update::cli::run_with_args;
 use fluxrepo_update::resolvers::{
     ChartVersionResolver, ImageVersionResolver, RepositoryChartResolver, StaticImageVersionResolver,
 };
-use fluxrepo_update::updater::PlanOptions;
 use serde_json::Value;
 
 #[test]
@@ -312,8 +313,8 @@ fn update_helm_json_plan_includes_stable_apply_ids() {
     assert!(!planned.is_empty());
     for item in planned {
         assert!(
-            item["id"].as_str().is_some_and(|id| id.starts_with("v1:")),
-            "planned item should include a stable v1 apply id: {item}"
+            item["id"].as_str().is_some_and(|id| id.starts_with("v2:")),
+            "planned item should include a stable v2 apply id: {item}"
         );
     }
 }
@@ -362,7 +363,7 @@ spec:
     let factory = RepositoryResolverFactory;
 
     let (code, stdout, stderr) = run_cli_with_any_factory(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             repo_root.to_str().expect("repo path"),
@@ -412,50 +413,6 @@ fn update_helm_json_plan_apply_ids_are_unique() {
         let id = item["id"].as_str().expect("planned item id");
         assert!(ids.insert(id.to_string()), "duplicate apply id: {id}");
     }
-}
-
-#[test]
-fn update_helm_non_interactive_write_applies_selected_apply_id_only() {
-    let (_temp, repo_root) = copy_fixture();
-    let factory = paperless_update_factory();
-    let plan = json_plan(&repo_root, &factory);
-    let sonarr_id = planned_id_for_path(&plan, "apps/base/sonarr/deployment.yaml");
-    let args = vec![
-        "fluxrepo-update".to_string(),
-        "update-helm".to_string(),
-        repo_root.to_str().expect("repo path").to_string(),
-        "--json".to_string(),
-        "--write".to_string(),
-        "--non-interactive".to_string(),
-        "--apply-id".to_string(),
-        sonarr_id,
-    ];
-
-    let (code, stdout, _) = run_cli_owned(args, "", &factory);
-
-    assert_eq!(code, 20);
-    let payload: Value = serde_json::from_str(&stdout).expect("json output");
-    assert_eq!(payload["mode"], "apply");
-    assert_eq!(payload["summary"]["applied_count"], 1);
-    assert_eq!(
-        payload["planned"].as_array().expect("planned array").len(),
-        1
-    );
-    assert!(
-        fs::read_to_string(repo_root.join("apps/base/sonarr/deployment.yaml"))
-            .expect("read sonarr")
-            .contains("linuxserver/sonarr:version-4.0.17.3000")
-    );
-    assert!(
-        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
-            .expect("read base")
-            .contains("12.0.0")
-    );
-    assert!(
-        fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
-            .expect("read patch")
-            .contains("11.29.10")
-    );
 }
 
 #[test]
@@ -547,88 +504,6 @@ fn update_helm_non_interactive_write_rejects_unknown_apply_id_without_writing() 
 }
 
 #[test]
-fn update_helm_non_interactive_write_rejects_mixed_apply_ids_without_writing() {
-    let (_temp, repo_root) = copy_fixture();
-    let factory = paperless_update_factory();
-    let plan = json_plan(&repo_root, &factory);
-    let sonarr_id = planned_id_for_path(&plan, "apps/base/sonarr/deployment.yaml");
-    let args = vec![
-        "fluxrepo-update".to_string(),
-        "update-helm".to_string(),
-        repo_root.to_str().expect("repo path").to_string(),
-        "--json".to_string(),
-        "--write".to_string(),
-        "--non-interactive".to_string(),
-        "--apply-id".to_string(),
-        sonarr_id,
-        "--apply-id".to_string(),
-        "v1:missing".to_string(),
-    ];
-
-    let (code, stdout, stderr) = run_cli_owned(args, "", &factory);
-    let output = json_error_output(&stdout, &stderr);
-    let payload: Value = serde_json::from_str(output).expect("json error output");
-
-    assert_eq!(code, 2);
-    assert_eq!(stdout, "");
-    assert_eq!(payload["error"], "invalid_arguments");
-    assert_eq!(payload["exit_code"], 2);
-    assert!(
-        payload["message"]
-            .as_str()
-            .expect("message")
-            .contains("Unknown apply id: v1:missing")
-    );
-    assert!(
-        fs::read_to_string(repo_root.join("apps/base/sonarr/deployment.yaml"))
-            .expect("read sonarr")
-            .contains("linuxserver/sonarr:version-4.0.16.2944")
-    );
-    assert!(
-        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
-            .expect("read base")
-            .contains("12.0.0")
-    );
-}
-
-#[test]
-fn update_helm_non_interactive_write_rejects_stale_apply_id_when_no_updates_are_planned() {
-    let (_temp, repo_root) = copy_fixture();
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "11.29.10".to_string(),
-        )]),
-        HashMap::new(),
-    );
-    let args = vec![
-        "fluxrepo-update".to_string(),
-        "update-helm".to_string(),
-        repo_root.to_str().expect("repo path").to_string(),
-        "--json".to_string(),
-        "--write".to_string(),
-        "--non-interactive".to_string(),
-        "--apply-id".to_string(),
-        "v1:stale".to_string(),
-    ];
-
-    let (code, stdout, stderr) = run_cli_owned(args, "", &factory);
-    let output = json_error_output(&stdout, &stderr);
-    let payload: Value = serde_json::from_str(output).expect("json error output");
-
-    assert_eq!(code, 2);
-    assert_eq!(stdout, "");
-    assert_eq!(payload["error"], "invalid_arguments");
-    assert_eq!(payload["exit_code"], 2);
-    assert!(
-        payload["message"]
-            .as_str()
-            .expect("message")
-            .contains("Unknown apply id: v1:stale")
-    );
-}
-
-#[test]
 fn update_helm_apply_id_requires_write() {
     let (_temp, repo_root) = copy_fixture();
     let factory = paperless_update_factory();
@@ -661,75 +536,6 @@ fn update_helm_apply_id_requires_write() {
 }
 
 #[test]
-fn update_helm_interactive_mode_applies_selected_updates_only() {
-    let (_temp, repo_root) = copy_fixture();
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "12.1.0".to_string(),
-        )]),
-        HashMap::new(),
-    );
-
-    let (code, _, stderr) = run_cli(
-        &[
-            "fluxrepo-update",
-            "update-helm",
-            repo_root.to_str().expect("repo path"),
-        ],
-        "y\n",
-        &factory,
-    );
-
-    assert_eq!(code, 20);
-    assert!(stderr.contains("[y/N] y\n"));
-    assert!(
-        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
-            .expect("read base")
-            .contains("12.1.0")
-    );
-    assert!(
-        fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
-            .expect("read patch")
-            .contains("11.29.10")
-    );
-}
-
-#[test]
-fn update_helm_interactive_mode_accepts_yes_no_without_return() {
-    let (_temp, repo_root) = copy_fixture();
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "12.1.0".to_string(),
-        )]),
-        HashMap::new(),
-    );
-
-    let (code, _, _) = run_cli(
-        &[
-            "fluxrepo-update",
-            "update-helm",
-            repo_root.to_str().expect("repo path"),
-        ],
-        "yn",
-        &factory,
-    );
-
-    assert_eq!(code, 20);
-    assert!(
-        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
-            .expect("read base")
-            .contains("12.1.0")
-    );
-    assert!(
-        fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
-            .expect("read patch")
-            .contains("11.29.10")
-    );
-}
-
-#[test]
 fn update_helm_interactive_prompt_includes_update_details() {
     let (_temp, repo_root) = copy_fixture();
     let factory = StaticResolverFactory::new(
@@ -752,9 +558,75 @@ fn update_helm_interactive_prompt_includes_update_details() {
 
     assert_eq!(code, 0);
     assert!(stderr.contains("Update apps/base/paperless-ngx/release.yaml"));
-    assert!(stderr.contains("chart"));
+    for detail in [
+        "HelmRelease paperless-ngx",
+        "truecharts/paperless-ngx",
+        "spec.chart.spec.version",
+    ] {
+        assert!(stderr.contains(detail), "missing prompt detail: {detail}");
+    }
     assert!(stderr.contains("12.0.0 -> 12.1.0"));
     assert!(stderr.contains("[y/N] n\n"));
+}
+
+#[test]
+fn update_helm_prompts_identify_each_image_before_approval() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("pods.yaml");
+    let original = "kind: Pod\nmetadata: {name: demo}\nspec:\n  containers:\n    - image: example/one:1.0.0\n    - image: example/two:1.0.0\n---\nkind: Pod\nmetadata: {name: demo}\nspec:\n  containers:\n    - image: example/three:1.0.0\n";
+    write_file(&path, original);
+    let factory = StaticResolverFactory::new(
+        HashMap::new(),
+        ["one", "two", "three"]
+            .into_iter()
+            .map(|name| {
+                (
+                    format!("example/{name}:1.0.0"),
+                    format!("example/{name}:2.0.0"),
+                )
+            })
+            .collect(),
+    );
+
+    let (code, _, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().expect("repo path"),
+        ],
+        "nyn",
+        &factory,
+    );
+
+    assert_eq!(code, 20);
+    let prompts = stderr
+        .lines()
+        .filter(|line| line.contains("[y/N]"))
+        .collect::<Vec<_>>();
+    assert_eq!(prompts.len(), 3);
+    for (prompt, (document, index, image)) in
+        prompts
+            .iter()
+            .zip([(1, 0, "one"), (1, 1, "two"), (2, 0, "three")])
+    {
+        let before_approval = prompt.split("[y/N]").next().expect("prompt details");
+        for detail in [
+            "Pod demo".to_string(),
+            format!("document {document}"),
+            format!("spec.containers[{index}].image"),
+            format!("example/{image}:1.0.0"),
+            format!("example/{image}:2.0.0"),
+        ] {
+            assert!(
+                before_approval.contains(&detail),
+                "missing prompt detail {detail}: {before_approval}"
+            );
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(path).expect("read pods"),
+        original.replace("example/two:1.0.0", "example/two:2.0.0")
+    );
 }
 
 #[test]
@@ -790,40 +662,6 @@ fn update_helm_interactive_mode_defaults_empty_answer_to_no() {
         fs::read_to_string(repo_root.join("apps/production/paperless/release-patch.yaml"))
             .expect("read patch")
             .contains("11.29.10")
-    );
-}
-
-#[test]
-fn update_helm_non_interactive_plans_without_writing() {
-    let (_temp, repo_root) = copy_fixture();
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "12.1.0".to_string(),
-        )]),
-        HashMap::new(),
-    );
-
-    let (code, stdout, _) = run_cli(
-        &[
-            "fluxrepo-update",
-            "update-helm",
-            repo_root.to_str().expect("repo path"),
-            "--json",
-            "--non-interactive",
-        ],
-        "",
-        &factory,
-    );
-
-    assert_eq!(code, 10);
-    let payload: Value = serde_json::from_str(&stdout).expect("json output");
-    assert_eq!(payload["mode"], "plan");
-    assert_eq!(payload["summary"]["applied_count"], 0);
-    assert!(
-        fs::read_to_string(repo_root.join("apps/base/paperless-ngx/release.yaml"))
-            .expect("read base")
-            .contains("12.0.0")
     );
 }
 
@@ -931,6 +769,33 @@ fn update_helm_returns_zero_when_no_updates_needed() {
 }
 
 #[test]
+fn update_helm_does_not_claim_skipped_targets_are_current() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_file(
+        &temp.path().join("pod.yaml"),
+        "kind: Pod\nmetadata: {name: demo}\nspec: {containers: [{image: example/app:latest}]}\n",
+    );
+
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().expect("repo path"),
+            "--non-interactive",
+        ],
+        "",
+        &StaticResolverFactory::default(),
+    );
+
+    assert_eq!(code, 0);
+    assert!(stdout.is_empty());
+    assert!(!stderr.contains("No updates required"));
+    for detail in ["No updates planned", "1 target", "skipped"] {
+        assert!(stderr.contains(detail), "missing summary detail: {detail}");
+    }
+}
+
+#[test]
 fn update_helm_non_json_plan_output_includes_skip_reasons_and_plan_hint() {
     let factory = StaticResolverFactory::new(
         HashMap::from([(
@@ -1006,7 +871,7 @@ fn paperless_update_factory() -> StaticResolverFactory {
 
 struct RepositoryResolverFactory;
 
-impl ResolverFactory for RepositoryResolverFactory {
+impl TestResolvers for RepositoryResolverFactory {
     fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
         Box::new(RepositoryChartResolver::default())
     }
@@ -1017,7 +882,7 @@ impl ResolverFactory for RepositoryResolverFactory {
 }
 
 fn run_cli(args: &[&str], input: &str, factory: &StaticResolverFactory) -> (u8, String, String) {
-    run_cli_with_options(args, input, factory, PlanOptions { max_workers: 1 })
+    run_cli_with_any_factory(args, input, factory)
 }
 
 fn run_cli_owned(
@@ -1025,30 +890,18 @@ fn run_cli_owned(
     input: &str,
     factory: &StaticResolverFactory,
 ) -> (u8, String, String) {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let code = run_with_args(
-        args,
-        Cursor::new(input.as_bytes()),
-        &mut stdout,
-        &mut stderr,
-        factory,
-        PlanOptions { max_workers: 1 },
-    )
-    .expect("run cli");
-    (
-        code,
-        String::from_utf8(stdout).expect("utf8 stdout"),
-        String::from_utf8(stderr).expect("utf8 stderr"),
-    )
+    run_cli_with_any_factory(args, input, factory)
 }
 
-fn run_cli_with_options(
-    args: &[&str],
+fn run_cli_with_any_factory<I, T>(
+    args: I,
     input: &str,
-    factory: &StaticResolverFactory,
-    plan_options: PlanOptions,
-) -> (u8, String, String) {
+    factory: &impl TestResolvers,
+) -> (u8, String, String)
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let code = run_with_args(
@@ -1056,31 +909,8 @@ fn run_cli_with_options(
         Cursor::new(input.as_bytes()),
         &mut stdout,
         &mut stderr,
-        factory,
-        plan_options,
-    )
-    .expect("run cli");
-    (
-        code,
-        String::from_utf8(stdout).expect("utf8 stdout"),
-        String::from_utf8(stderr).expect("utf8 stderr"),
-    )
-}
-
-fn run_cli_with_any_factory(
-    args: &[&str],
-    input: &str,
-    factory: &impl ResolverFactory,
-) -> (u8, String, String) {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let code = run_with_args(
-        args,
-        Cursor::new(input.as_bytes()),
-        &mut stdout,
-        &mut stderr,
-        factory,
-        PlanOptions { max_workers: 1 },
+        factory.chart_resolver().as_ref(),
+        factory.image_resolver().as_ref(),
     )
     .expect("run cli");
     (

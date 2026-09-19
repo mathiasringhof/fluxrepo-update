@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
-use std::fmt;
 use std::fs;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -8,19 +8,21 @@ use anyhow::{Context, Result, anyhow};
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
 use serde_json::{Value as JsonValue, json};
-use yaml_edit::path::YamlPath;
 use yaml_edit::{Document as EditDocument, Scalar as EditScalar, ScalarValue, YamlFile};
 
+use crate::scanner::{edit_node_at_path, parse_yaml_documents, value_at_path, value_at_path_mut};
+
 use crate::models::{
-    HelmReleaseTarget, ImageBinding, ImageBindingValueKind, Inventory, TargetKind,
+    HelmReleaseTarget, ImageBinding, ImageBindingValueKind, Inventory, ResourceId, TargetKind,
 };
 use crate::resolvers::{
-    ChartVersionResolver, ImageVersionResolver, ResolverError, ResolverErrorCode, is_newer_version,
-    parse_image_reference,
+    ChartVersionResolver, ImageVersionResolver, ResolverError, ResolverErrorCode,
+    is_newer_image_tag, is_newer_version, parse_image_reference,
 };
 
 #[derive(Debug, Clone)]
 pub struct PlannedChartUpdate {
+    pub manifest_identity: Option<ManifestIdentity>,
     pub path: PathBuf,
     pub document_index: usize,
     pub target_name: String,
@@ -28,11 +30,11 @@ pub struct PlannedChartUpdate {
     pub repo_name: String,
     pub current_version: String,
     pub latest_version: String,
-    pub inherited_source: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct PlannedImageUpdate {
+    pub manifest_identity: Option<ManifestIdentity>,
     pub path: PathBuf,
     pub document_index: usize,
     pub target_name: String,
@@ -45,12 +47,106 @@ pub struct PlannedImageUpdate {
 }
 
 #[derive(Debug, Clone)]
+pub struct ManifestIdentity {
+    pub resource_id: ResourceId,
+    fields: Vec<(String, Option<yaml_serde::Value>)>,
+    source: Option<Box<SourceIdentity>>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceIdentity {
+    path: PathBuf,
+    document_index: usize,
+    document: yaml_serde::Value,
+}
+
+impl ManifestIdentity {
+    fn selection_context(&self, repo_root: &Path) -> JsonValue {
+        let fields = self
+            .fields
+            .iter()
+            .map(|(path, value)| {
+                let value = value.as_ref().map_or_else(
+                    || json!({"present": false}),
+                    |value| json!({"present": true, "value": canonical_yaml_value(value)}),
+                );
+                (path.clone(), value)
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let source = self.source.as_ref().map(|source| {
+            json!({
+                "path": relative_identity_path(&source.path, repo_root),
+                "document_index": source.document_index,
+                "document": canonical_yaml_value(&source.document),
+            })
+        });
+        json!({"fields": fields, "source": source})
+    }
+
+    fn capture(
+        inventory: &Inventory,
+        path: &Path,
+        document_index: usize,
+        resource_id: &ResourceId,
+        paths: &[String],
+    ) -> Option<Self> {
+        let document = inventory
+            .manifest_documents
+            .get(&(path.to_path_buf(), document_index))?;
+        let fields = ["kind", "metadata.name", "metadata.namespace"]
+            .into_iter()
+            .map(str::to_string)
+            .chain(paths.iter().cloned())
+            .map(|path| {
+                let value = value_at_path(document, &path).cloned();
+                (path, value)
+            })
+            .collect();
+        Some(Self {
+            resource_id: resource_id.clone(),
+            fields,
+            source: None,
+        })
+    }
+
+    fn verify(&self, document: &yaml_serde::Value) -> Result<()> {
+        for (path, expected) in &self.fields {
+            if value_at_path(document, path) != expected.as_ref() {
+                return Err(anyhow!("target identity at {path} changed after planning"));
+            }
+        }
+        if let Some(source) = &self.source {
+            let text = fs::read_to_string(&source.path)
+                .with_context(|| format!("failed to recheck source {}", source.path.display()))?;
+            let documents = parse_yaml_documents(&text)?;
+            if documents.get(source.document_index) != Some(&source.document) {
+                return Err(anyhow!(
+                    "chart source {} changed after planning",
+                    source.path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum PlannedUpdate {
     Chart(PlannedChartUpdate),
     Image(PlannedImageUpdate),
 }
 
 impl PlannedUpdate {
+    pub(crate) fn has_original_identity(&self) -> bool {
+        match self {
+            Self::Chart(update) => update
+                .manifest_identity
+                .as_ref()
+                .is_some_and(|identity| identity.source.is_some()),
+            Self::Image(update) => update.manifest_identity.is_some(),
+        }
+    }
+
     pub fn path(&self) -> &Path {
         match self {
             Self::Chart(update) => &update.path,
@@ -98,12 +194,7 @@ impl PlannedUpdate {
     }
 
     pub fn selection_id(&self, repo_root: &Path) -> String {
-        let path = self
-            .path()
-            .strip_prefix(repo_root)
-            .unwrap_or(self.path())
-            .to_string_lossy()
-            .to_string();
+        let path = relative_identity_path(self.path(), repo_root);
         let mut parts = vec![
             self.target_kind().to_string(),
             path,
@@ -130,8 +221,20 @@ impl PlannedUpdate {
                 ]);
             }
         }
+        let identity = match self {
+            Self::Chart(update) => &update.manifest_identity,
+            Self::Image(update) => &update.manifest_identity,
+        };
+        parts.push(
+            identity
+                .as_ref()
+                .map_or(JsonValue::Null, |identity| {
+                    identity.selection_context(repo_root)
+                })
+                .to_string(),
+        );
         format!(
-            "v1:{}",
+            "v2:{}",
             parts
                 .iter()
                 .map(|part| encode_selection_id_part(part))
@@ -139,41 +242,43 @@ impl PlannedUpdate {
                 .join(":")
         )
     }
+}
 
-    fn to_json_value(&self, repo_root: &Path) -> JsonValue {
-        let path = self
-            .path()
-            .strip_prefix(repo_root)
-            .unwrap_or(self.path())
-            .to_string_lossy()
-            .to_string();
-        match self {
-            Self::Chart(update) => json!({
-                "id": self.selection_id(repo_root),
-                "path": path,
-                "document_index": update.document_index,
-                "target_kind": "HelmRelease",
-                "target_name": update.target_name,
-                "yaml_path": "spec.chart.spec.version",
-                "chart_name": update.chart_name,
-                "repo_name": update.repo_name,
-                "current_version": update.current_version,
-                "latest_version": update.latest_version,
-                "inherited_source": update.inherited_source,
-            }),
-            Self::Image(update) => json!({
-                "id": self.selection_id(repo_root),
-                "path": path,
-                "document_index": update.document_index,
-                "target_kind": "ImageBinding",
-                "target_name": update.target_name,
-                "yaml_path": update.yaml_path,
-                "current_image": update.current_image,
-                "latest_image": update.latest_image,
-                "current_version": update.current_version,
-                "latest_version": update.latest_version,
-                "inherited_source": false,
-            }),
+fn relative_identity_path(path: &Path, repo_root: &Path) -> String {
+    if let Ok(relative) = path.strip_prefix(repo_root) {
+        return relative.to_string_lossy().into_owned();
+    }
+    repo_root
+        .canonicalize()
+        .ok()
+        .and_then(|root| {
+            path.strip_prefix(root)
+                .ok()
+                .map(|relative| relative.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+fn canonical_yaml_value(value: &yaml_serde::Value) -> JsonValue {
+    use yaml_serde::Value;
+    match value {
+        Value::Null => JsonValue::Null,
+        Value::Bool(value) => json!(value),
+        Value::Number(value) => json!({"number": value.to_string()}),
+        Value::String(value) => json!(value),
+        Value::Sequence(values) => {
+            JsonValue::Array(values.iter().map(canonical_yaml_value).collect())
+        }
+        Value::Mapping(mapping) => {
+            let mut entries = mapping
+                .iter()
+                .map(|(key, value)| (canonical_yaml_value(key), canonical_yaml_value(value)))
+                .collect::<Vec<_>>();
+            entries.sort_by_cached_key(|(key, _)| key.to_string());
+            json!({"mapping": entries})
+        }
+        Value::Tagged(value) => {
+            json!({"tag": value.tag.to_string(), "value": canonical_yaml_value(&value.value)})
         }
     }
 }
@@ -207,30 +312,6 @@ fn nibble_to_hex(value: u8) -> char {
 pub struct UpdateReport {
     pub planned: Vec<PlannedUpdate>,
     pub skipped: Vec<SkippedUpdate>,
-}
-
-impl UpdateReport {
-    pub fn to_json_value(
-        &self,
-        repo_root: &Path,
-        mode: &str,
-        non_interactive: bool,
-        applied_count: usize,
-        changed_file_count: usize,
-    ) -> JsonValue {
-        json!({
-            "mode": mode,
-            "non_interactive": non_interactive,
-            "summary": {
-                "planned_count": self.planned.len(),
-                "applied_count": applied_count,
-                "skipped_count": self.skipped.len(),
-                "changed_file_count": changed_file_count,
-            },
-            "planned": self.planned.iter().map(|item| item.to_json_value(repo_root)).collect::<Vec<_>>(),
-            "skipped": self.skipped.iter().map(|item| item.to_json_value(repo_root)).collect::<Vec<_>>(),
-        })
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,7 +429,7 @@ impl SkippedUpdate {
         }
     }
 
-    fn to_json_value(&self, repo_root: &Path) -> JsonValue {
+    pub fn selection_id(&self, repo_root: &Path) -> String {
         let path = self
             .path
             .as_ref()
@@ -356,23 +437,19 @@ impl SkippedUpdate {
                 path.strip_prefix(repo_root)
                     .unwrap_or(path)
                     .to_string_lossy()
-                    .to_string()
+                    .into_owned()
             })
             .unwrap_or_default();
-        json!({
-            "id": format!(
-                "v1:{}:{}:{}",
-                encode_selection_id_part(&path),
-                encode_selection_id_part(self.identity_suffix.as_deref().unwrap_or("unresolved")),
-                self.reason_code.as_str()
-            ),
-            "path": path,
-            "yaml_path": self.yaml_path,
-            "reason": self.reason,
-            "reason_code": self.reason_code.as_str(),
-            "retryable": self.retryable,
-            "source_url": self.source_url,
-        })
+        format!(
+            "v1:{}:{}:{}",
+            encode_selection_id_part(&path),
+            encode_selection_id_part(self.identity_suffix.as_deref().unwrap_or("unresolved")),
+            self.reason_code.as_str()
+        )
+    }
+
+    pub fn yaml_path(&self) -> Option<&str> {
+        self.yaml_path.as_deref()
     }
 }
 
@@ -416,6 +493,7 @@ impl SkipReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkipReasonCode {
     MissingHelmRepository,
+    AmbiguousHelmRepository,
     MissingChartIdentity,
     UnsupportedRepositoryType,
     ChartNotFound,
@@ -434,9 +512,10 @@ pub enum SkipReasonCode {
 }
 
 impl SkipReasonCode {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::MissingHelmRepository => "missing_helm_repository",
+            Self::AmbiguousHelmRepository => "ambiguous_helm_repository",
             Self::MissingChartIdentity => "missing_chart_identity",
             Self::UnsupportedRepositoryType => "unsupported_repository_type",
             Self::ChartNotFound => "chart_not_found",
@@ -472,15 +551,6 @@ impl From<ResolverErrorCode> for SkipReasonCode {
             ResolverErrorCode::TemplatedImageReference => Self::TemplatedImageReference,
             ResolverErrorCode::UnparseableImageReference => Self::UnparseableImageReference,
             ResolverErrorCode::Unclassified => Self::Unclassified,
-        }
-    }
-}
-
-impl fmt::Display for SkippedUpdate {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.path {
-            Some(path) => write!(formatter, "{}: {}", path.display(), self.reason),
-            None => formatter.write_str(&self.reason),
         }
     }
 }
@@ -693,9 +763,10 @@ fn resolve_task(
             *index,
             ResolutionOutcome::Skipped(SkippedUpdate::unresolved_chart(target)),
         ),
-        ResolutionTask::Image(index, target) => {
-            (*index, resolve_image_binding(target, image_resolver))
-        }
+        ResolutionTask::Image(index, target) => (
+            *index,
+            resolve_image_binding(inventory, target, image_resolver),
+        ),
     }
 }
 
@@ -705,6 +776,31 @@ fn resolve_chart_target(
     resolver: &dyn ChartVersionResolver,
 ) -> ResolutionOutcome {
     let repo_name = target.repo_name.as_deref().unwrap_or_default();
+    if let Some(sources) = inventory.ambiguous_repositories.get(repo_name) {
+        return ResolutionOutcome::Skipped(
+            SkippedUpdate::with_reason(
+                Some(target.path.clone()),
+                SkipReason::new(
+                    format!(
+                        "ambiguous HelmRepository {repo_name}: {} manifests share this name; inspect inventory --json for source locations",
+                        sources.len()
+                    ),
+                    SkipReasonCode::AmbiguousHelmRepository,
+                    false,
+                    None,
+                ),
+            )
+            .with_target_identity(
+                format!(
+                    "HelmRelease:{}:{}:{}",
+                    target.document_index,
+                    target.resource_id.name,
+                    target.current_version.as_deref().unwrap_or_default()
+                ),
+                "spec.chart.spec.version",
+            ),
+        );
+    }
     let Some(repository) = inventory.repositories.get(repo_name) else {
         return ResolutionOutcome::Skipped(
             SkippedUpdate::missing_helm_repository(Some(target.path.clone()), repo_name)
@@ -719,6 +815,31 @@ fn resolve_chart_target(
                 ),
         );
     };
+
+    let expected_namespace = inventory
+        .manifest_documents
+        .get(&(target.path.clone(), target.document_index))
+        .and_then(|document| value_at_path(document, "spec.chart.spec.sourceRef.namespace"))
+        .and_then(yaml_serde::Value::as_str)
+        .or(target.resource_id.namespace.as_deref());
+    if let (Some(expected), Some(found)) = (expected_namespace, repository.namespace.as_deref())
+        && expected != found
+    {
+        return ResolutionOutcome::Skipped(
+            SkippedUpdate::with_reason(
+                Some(target.path.clone()),
+                SkipReason::new(
+                    format!("HelmRepository namespace mismatch: expected {expected}/{repo_name}, found {found}/{repo_name}"),
+                    SkipReasonCode::MissingHelmRepository,
+                    false,
+                    None,
+                ),
+            ).with_target_identity(
+                format!("HelmRelease:{}:{}:{}", target.document_index, target.resource_id.name, target.current_version.as_deref().unwrap_or_default()),
+                "spec.chart.spec.version",
+            ),
+        );
+    }
 
     let latest_version = match resolver.resolve(
         repository,
@@ -737,7 +858,30 @@ fn resolve_chart_target(
         return ResolutionOutcome::Noop;
     }
 
+    let mut manifest_identity = ManifestIdentity::capture(
+        inventory,
+        &target.path,
+        target.document_index,
+        &target.resource_id,
+        &[
+            "spec.chart.spec.chart".into(),
+            "spec.chart.spec.sourceRef".into(),
+        ],
+    );
+    if let Some(identity) = &mut manifest_identity {
+        identity.source = inventory
+            .manifest_documents
+            .get(&(repository.path.clone(), repository.document_index))
+            .map(|document| {
+                Box::new(SourceIdentity {
+                    path: repository.path.clone(),
+                    document_index: repository.document_index,
+                    document: document.clone(),
+                })
+            });
+    }
     ResolutionOutcome::Planned(PlannedUpdate::Chart(PlannedChartUpdate {
+        manifest_identity,
         path: target.path.clone(),
         document_index: target.document_index,
         target_name: target.resource_id.name.clone(),
@@ -745,11 +889,11 @@ fn resolve_chart_target(
         repo_name: target.repo_name.clone().unwrap_or_default(),
         current_version,
         latest_version,
-        inherited_source: target.source_is_inherited,
     }))
 }
 
 fn resolve_image_binding(
+    inventory: &Inventory,
     target: &ImageBinding,
     resolver: &dyn ImageVersionResolver,
 ) -> ResolutionOutcome {
@@ -791,11 +935,35 @@ fn resolve_image_binding(
             ),
         ));
     };
-    if !is_newer_version(&current_version, &latest_version) {
+    if !is_newer_image_tag(&current_version, &latest_version) {
         return ResolutionOutcome::Noop;
     }
-
+    let identity_paths = if target.value_kind == ImageBindingValueKind::Tag {
+        let parent = target
+            .yaml_path
+            .strip_suffix(".tag")
+            .expect("mapping tag path");
+        ["repository", "registry", "tag", "digest", "sha", "sha256"]
+            .into_iter()
+            .map(|key| format!("{parent}.{key}"))
+            .collect::<Vec<_>>()
+    } else {
+        let mut paths = vec![target.yaml_path.clone()];
+        if target.resource_id.kind != "HelmRelease"
+            && let Some(parent) = target.yaml_path.strip_suffix(".image")
+        {
+            paths.push(format!("{parent}.name"));
+        }
+        paths
+    };
     ResolutionOutcome::Planned(PlannedUpdate::Image(PlannedImageUpdate {
+        manifest_identity: ManifestIdentity::capture(
+            inventory,
+            &target.path,
+            target.document_index,
+            &target.resource_id,
+            &identity_paths,
+        ),
         path: target.path.clone(),
         document_index: target.document_index,
         target_name: target.resource_id.name.clone(),
@@ -808,25 +976,33 @@ fn resolve_image_binding(
     }))
 }
 
+#[cfg(test)]
 pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
+    apply_planned_updates(&report.planned).map(|paths| paths.len())
+}
+
+pub(crate) fn apply_planned_updates<'a>(
+    updates: impl IntoIterator<Item = &'a PlannedUpdate>,
+) -> Result<Vec<PathBuf>> {
     let mut updates_by_path: BTreeMap<PathBuf, Vec<&PlannedUpdate>> = BTreeMap::new();
-    for update in &report.planned {
+    for update in updates {
         updates_by_path
             .entry(update.path().to_path_buf())
             .or_default()
             .push(update);
     }
-
     let mut prepared_files = Vec::with_capacity(updates_by_path.len());
     for (path, updates) in updates_by_path {
-        let text = fs::read_to_string(&path).with_context(|| {
+        let original = fs::read_to_string(&path).with_context(|| {
             format!("failed to read {} while preparing updates", path.display())
         })?;
-        let yaml_file: YamlFile = text.parse().with_context(|| {
+        let yaml_file: YamlFile = original.parse().with_context(|| {
             format!("failed to parse {} while preparing updates", path.display())
         })?;
         let documents = yaml_file.documents().collect::<Vec<_>>();
-
+        let semantic_documents = parse_yaml_documents(&original)?;
+        let mut expected_documents = semantic_documents.clone();
+        let mut edits = Vec::new();
         for update in updates {
             let document = documents.get(update.document_index()).ok_or_else(|| {
                 anyhow!(
@@ -835,50 +1011,82 @@ pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
                     path.display()
                 )
             })?;
-            match update {
-                PlannedUpdate::Chart(chart_update) => {
+            let (yaml_path, expected, replacement, identity) = match update {
+                PlannedUpdate::Chart(chart) => {
                     ensure_editable_chart_spec(document)?;
-                    set_checked_yaml_scalar_value(
-                        document,
+                    (
                         "spec.chart.spec.version",
-                        &chart_update.current_version,
-                        &chart_update.latest_version,
-                    )?;
+                        &chart.current_version,
+                        &chart.latest_version,
+                        &chart.manifest_identity,
+                    )
                 }
-                PlannedUpdate::Image(image_update) => {
-                    let (expected, replacement) = match image_update.value_kind {
+                PlannedUpdate::Image(image) => {
+                    let (expected, replacement) = match image.value_kind {
                         ImageBindingValueKind::ImageReference => {
-                            (&image_update.current_image, &image_update.latest_image)
+                            (&image.current_image, &image.latest_image)
                         }
                         ImageBindingValueKind::Tag => {
-                            (&image_update.current_version, &image_update.latest_version)
+                            (&image.current_version, &image.latest_version)
                         }
                         ImageBindingValueKind::UnsupportedSchema => {
                             return Err(anyhow!("unsupported image schema cannot be applied"));
                         }
                     };
-                    set_checked_yaml_scalar_value(
-                        document,
-                        &image_update.yaml_path,
+                    (
+                        image.yaml_path.as_str(),
                         expected,
                         replacement,
-                    )?;
+                        &image.manifest_identity,
+                    )
                 }
+            };
+            let semantic_document = semantic_documents
+                .get(update.document_index())
+                .ok_or_else(|| anyhow!("semantic document missing"))?;
+            if let Some(identity) = identity {
+                identity.verify(semantic_document)?;
             }
+            edits.push(checked_scalar_edit(
+                document,
+                yaml_path,
+                expected,
+                replacement,
+            )?);
+            let expected_document = expected_documents
+                .get_mut(update.document_index())
+                .ok_or_else(|| anyhow!("semantic document missing"))?;
+            let expected_node =
+                value_at_path_mut(expected_document, yaml_path).ok_or_else(|| {
+                    anyhow!("missing YAML path {yaml_path}; target changed after planning")
+                })?;
+            *expected_node = yaml_serde::Value::String(replacement.clone());
         }
-
-        prepared_files.push((path, yaml_file.to_string()));
-    }
-
-    for (written_count, (path, text)) in prepared_files.iter().enumerate() {
-        fs::write(path, text).with_context(|| {
-            format!(
-                "failed to write {} after {written_count} file(s) were applied; inspect the working tree with Git",
+        edits.sort_by_key(|edit| edit.range.start);
+        if edits
+            .windows(2)
+            .any(|pair| pair[0].range.end > pair[1].range.start)
+        {
+            return Err(anyhow!("overlapping YAML updates in {}", path.display()));
+        }
+        let mut text = original;
+        for edit in edits.into_iter().rev() {
+            text.replace_range(edit.range, &edit.replacement);
+        }
+        let actual_documents = parse_yaml_documents(&text)
+            .with_context(|| format!("invalid YAML after preparing {}", path.display()))?;
+        if actual_documents != expected_documents {
+            return Err(anyhow!(
+                "prepared YAML does not match the approved changes in {}",
                 path.display()
-            )
-        })?;
+            ));
+        }
+        prepared_files.push((path, text));
     }
-    Ok(prepared_files.len())
+    for (written_count, (path, text)) in prepared_files.iter().enumerate() {
+        fs::write(path, text).with_context(|| format!("failed to write {} after {written_count} file(s) were applied; inspect the working tree with Git", path.display()))?;
+    }
+    Ok(prepared_files.into_iter().map(|(path, _)| path).collect())
 }
 
 fn ensure_editable_chart_spec(document: &EditDocument) -> Result<()> {
@@ -887,7 +1095,7 @@ fn ensure_editable_chart_spec(document: &EditDocument) -> Result<()> {
         .ok_or_else(|| anyhow!("HelmRelease document must be a YAML mapping"))?;
 
     for path in ["spec", "spec.chart", "spec.chart.spec"] {
-        let Some(node) = document.get_path(path) else {
+        let Some(node) = edit_node_at_path(document, path) else {
             continue;
         };
         if node.as_mapping().is_none() {
@@ -899,14 +1107,18 @@ fn ensure_editable_chart_spec(document: &EditDocument) -> Result<()> {
     Ok(())
 }
 
-fn set_checked_yaml_scalar_value(
+struct ScalarEdit {
+    range: Range<usize>,
+    replacement: String,
+}
+
+fn checked_scalar_edit(
     document: &EditDocument,
     yaml_path: &str,
     expected: &str,
     value: &str,
-) -> Result<()> {
-    let node = document
-        .get_path(yaml_path)
+) -> Result<ScalarEdit> {
+    let node = edit_node_at_path(document, yaml_path)
         .ok_or_else(|| anyhow!("missing YAML path {yaml_path}; target changed after planning"))?;
     let scalar = node
         .as_scalar()
@@ -917,21 +1129,32 @@ fn set_checked_yaml_scalar_value(
             "YAML scalar at {yaml_path} changed after planning: expected {expected:?}, found {actual:?}"
         ));
     }
-    set_scalar_preserving_style(scalar, value);
-    Ok(())
+    let range = scalar.byte_range();
+    Ok(ScalarEdit {
+        range: range.start as usize..range.end as usize,
+        replacement: render_scalar_preserving_style(scalar, value)?,
+    })
 }
 
-fn set_scalar_preserving_style(scalar: &EditScalar, value: &str) {
-    let rendered = match scalar.value().as_str() {
+fn render_scalar_preserving_style(scalar: &EditScalar, value: &str) -> Result<String> {
+    let raw = scalar.value();
+    Ok(match raw.as_str() {
         text if text.starts_with('"') && text.ends_with('"') => {
             ScalarValue::double_quoted(value).to_string()
         }
         text if text.starts_with('\'') && text.ends_with('\'') => {
             ScalarValue::single_quoted(value).to_string()
         }
+        text if text.starts_with('|') || text.starts_with('>') => {
+            let (header, body) = text
+                .split_once('\n')
+                .ok_or_else(|| anyhow!("block scalar has no content line"))?;
+            let indent = &body[..body.len() - body.trim_start_matches(' ').len()];
+            let trailing = &body[body.trim_end_matches(char::is_whitespace).len()..];
+            format!("{header}\n{indent}{value}{trailing}")
+        }
         _ => value.to_string(),
-    };
-    scalar.set_value(&rendered);
+    })
 }
 
 #[cfg(test)]
@@ -946,7 +1169,7 @@ mod tests {
         );
 
         assert_eq!(
-            skipped.to_json_value(Path::new("/repo")),
+            crate::cli::skip_json(&skipped, Path::new("/repo")),
             json!({
                 "id": "v1:apps%2Fdemo.yaml:unresolved:unclassified",
                 "path": "apps/demo.yaml",

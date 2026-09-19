@@ -55,7 +55,8 @@ cargo run -- inventory /path/to/flux-repo --json
 ```
 
 JSON inventory includes discovered `HelmRepository` sources, update targets, image
-references, unresolved targets, and skipped generated manifests.
+references, unresolved targets, and skipped generated manifests. Repeated source names
+are grouped as ambiguous; affected charts are skipped instead of choosing a source.
 
 Preview available updates without changing files:
 
@@ -82,7 +83,8 @@ cargo run -- update-helm /path/to/flux-repo --write --non-interactive
 ```
 
 Apply mode updates the targeted YAML scalar values in place, preserving surrounding
-formatting, comments, quote style, and multi-document separators where possible.
+formatting, comments, quote and block-scalar styles, and multi-document separators.
+It checks target and source identity and validates every selected edit before writing.
 
 Apply selected planned updates non-interactively:
 
@@ -90,6 +92,9 @@ Apply selected planned updates non-interactively:
 cargo run -- update-helm /path/to/flux-repo --json --non-interactive
 cargo run -- update-helm /path/to/flux-repo --write --non-interactive --apply-id '<id-from-plan>'
 ```
+
+Planned IDs now start with `v2:` and bind the reviewed resource, source, and image
+identity as well as versions. Rerun the preview to replace older `v1:` planned IDs.
 
 The tests include `tests/fixtures/kubeflux/`, a small fixture distilled from a real Flux
 repository. It is used for fixture-backed tests and local examples:
@@ -151,11 +156,17 @@ See [docs/output.md](docs/output.md) for the JSON success and error shapes.
 
 ## Current Coverage
 
-The scanner accepts `.yaml` and `.yml`, excludes hidden/cache paths and generated
+The scanner accepts `.yaml` and `.yml`, excludes hidden/cache directories and generated
 `flux-system/gotk-*` files, and treats every manifest independently. Resolution is
 best-effort: unresolved targets retain stable IDs and reason codes while other updates
 remain available. Latest stable selection supports semantic, calendar, and numeric versions,
-can cross major versions, excludes prereleases, and never proposes a downgrade.
+can cross major versions, excludes prereleases, and never proposes a downgrade. Image
+variant suffixes are preserved, and OCI chart build metadata is normalized correctly.
+
+The tool does not evaluate effective Kustomize overlays, update `chartRef`/`OCIRepository`
+versions, or prove that an upgrade is compatible with your chart values or cluster.
+Inspect skipped targets even when the command exits successfully; they were not checked
+completely. See [coverage](docs/coverage.md) for scope and recovery limits.
 
 ## Docs
 

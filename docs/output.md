@@ -20,13 +20,17 @@ When stderr is a terminal, `update-helm` colors paths cyan, current versions yel
 latest versions green, and shows a compact resolving progress indicator. `--json` disables
 all human status, color, and progress output.
 
+Interactive approval includes the relative file, document number, resource, exact field,
+and chart/source or full image change. A plan containing only skipped targets reports
+that incomplete result instead of saying that no updates are required.
+
 ## `inventory --json`
 
 Top-level summary fields:
 
 - `repo_root`: absolute path to the scanned repository
-- `repository_count`: number of `HelmRepository` resources found
-- `chart_target_count`: number of `HelmRelease` resources that can be updated directly
+- `repository_count`: total discovered `HelmRepository` resources, including ambiguous sources
+- `chart_target_count`: releases with enough local chart identity to attempt resolution
 - `image_binding_count`: number of explicit workload or Helm-values image bindings
 - `helmreleases_without_chart_version_count`: number of `HelmRelease` resources that do
   not expose `spec.chart.spec.version`
@@ -37,17 +41,25 @@ Top-level summary fields:
 
 ### `repositories`
 
-Each item describes a `HelmRepository` source:
+Each item describes a `HelmRepository` whose name is unique in the scanned tree:
 
 - `path`: relative file path
 - `document_index`: document position inside a multi-document YAML file
 - `name`: `metadata.name`
+- `namespace`: `metadata.namespace`, or `null` when omitted
 - `url`: `spec.url`
 - `repo_type`: `spec.type`, or `default` when omitted
 
+### `ambiguous_repositories`
+
+An array of groups with `name` and `sources`. Each `sources` item has the same fields
+as a `repositories` item. All sources with a repeated name appear here, including names
+repeated across namespaces; none is silently chosen. `repository_count` includes every
+source in both arrays. Affected chart targets produce `ambiguous_helm_repository` skips.
+
 ### `chart_targets`
 
-Each item describes a `HelmRelease` that can be updated:
+Each item describes a `HelmRelease` with enough manifest-local identity to attempt resolution:
 
 - `path`: relative file path
 - `document_index`: document position inside a multi-document YAML file
@@ -70,6 +82,9 @@ Each item describes an explicit workload or Helm-values image binding:
 - `yaml_path`: exact image field inside the YAML document
 - `image`: current image reference
 
+Paths quote literal mapping keys when needed: `spec.values["a.b"].image` selects the
+key `a.b`, while `spec.values.a.b.image` selects nested keys. `[0]` denotes a sequence item.
+
 ### `helmreleases_without_chart_version`
 
 These are `HelmRelease` resources that do not expose `spec.chart.spec.version`. In this
@@ -81,8 +96,8 @@ repository they are usually values-only overlays such as:
 This category can also include manifests that still name a chart and repository but omit
 the chart version, such as `apps/production/minecraft-bedrock/release.yaml`.
 
-They are inventoried because they matter for understanding the repo, but they are not
-edited by `update-helm`.
+Their chart versions are not edited. Supported explicit image bindings under their
+`spec.values` can still appear in the update plan.
 
 ### `unresolved_chart_targets`
 
@@ -96,15 +111,19 @@ Top-level fields:
 - `mode`: `plan` or `apply`
 - `non_interactive`: whether prompts were disabled
 - `summary`: counts for planned, applied, skipped, and changed files
-- `planned`: planned or applied chart updates
+- `planned`: planned or applied chart and image updates
 - `skipped`: targets that could not be resolved
 
 ### `summary`
 
-- `planned_count`: number of updates that were available
+- `planned_count`: number of items in `planned`
 - `applied_count`: number of updates actually written
 - `skipped_count`: number of targets skipped during version resolution
 - `changed_file_count`: number of files written during apply mode
+
+Plan mode includes all proposed updates. Apply mode retains the existing output
+contract: `planned` and `planned_count` describe the applied subset, so unapproved
+updates are omitted. Skipped resolution targets are reported in both modes.
 
 ### `planned`
 
@@ -127,10 +146,14 @@ Each item includes:
 `inherited_source` is retained for compatibility and is always `false`.
 
 Use `planned[].id` with repeated `--apply-id` flags to apply selected updates in
-`--write --non-interactive` mode. IDs include the planned target and current/latest versions,
-so stale IDs are rejected instead of silently applying a different plan item.
-Apply also rechecks the targeted YAML scalar immediately before preparing writes and fails
-closed if it changed or disappeared after planning.
+`--write --non-interactive` mode. Treat these IDs as opaque. Current planned IDs start
+with `v2:` and bind the current/latest versions, resource kind/name/namespace, and the
+relevant chart source, image mapping, or workload container identity. Older `v1:` planned
+IDs must be replaced by rerunning the preview. IDs for `skipped` targets are separate.
+
+Apply rechecks the targeted scalar and reviewed identity, including the chart source
+manifest where applicable. It validates all selected files before writing and rejects
+prepared YAML whose meaning differs beyond the approved values.
 
 ### `skipped`
 
@@ -141,7 +164,9 @@ Each item includes:
 - `yaml_path`: exact explicit version field when known
 - `reason`: human-readable explanation, intended for display
 - `reason_code`: stable snake_case code for automation
-- `retryable`: `true` when retrying later may succeed, such as request/network failures
+- `retryable`: whether another attempt may succeed; network failures, HTTP 408/429,
+  and server errors are retryable, while permanent HTTP 4xx errors and pagination
+  cycles are not
 - `source_url`: failing metadata URL when known, otherwise `null`
 
 `reason_code` and `retryable` are intended for agents and scripts; use `reason` for
@@ -150,6 +175,7 @@ human-facing logs.
 Current reason codes include:
 
 - `missing_helm_repository`
+- `ambiguous_helm_repository`
 - `missing_chart_identity`
 - `unsupported_repository_type`
 - `chart_not_found`
@@ -164,6 +190,9 @@ Current reason codes include:
 - `templated_image_reference`
 - `unparseable_image_reference`
 - `unclassified`
+
+An empty `planned` array with nonempty `skipped` means resolution was incomplete.
+Inspect skips even when the exit code is `0`.
 
 ## JSON Errors
 

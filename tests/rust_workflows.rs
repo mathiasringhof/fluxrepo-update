@@ -6,9 +6,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
 
-use common::{ResponseSpec, StaticResolverFactory, TestHttpServer, copy_fixture, write_file};
-use fluxrepo_update::cli::{DefaultResolverFactory, run_with_args};
-use fluxrepo_update::updater::PlanOptions;
+use common::{
+    DefaultResolverFactory, ResponseSpec, StaticResolverFactory, TestHttpServer, TestResolvers,
+    copy_fixture, write_file,
+};
+use fluxrepo_update::cli::run_with_args;
 use serde_json::Value;
 
 #[test]
@@ -312,6 +314,130 @@ fn inventory_workflow_reports_malformed_yaml_as_json_error() {
 }
 
 #[test]
+fn inventory_workflow_reports_ambiguous_repository_sources_without_choosing_one() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_ambiguous_source_fixture(temp.path(), "other");
+
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "inventory",
+            temp.path().to_str().expect("repo path"),
+            "--json",
+        ],
+        &StaticResolverFactory::default(),
+    );
+
+    assert_eq!(code, 0, "{stderr}");
+    let inventory: Value = serde_json::from_str(&stdout).expect("inventory JSON");
+    assert!(
+        inventory["ambiguous_repositories"].is_array(),
+        "repository collisions must be visible instead of choosing the last source: {inventory}"
+    );
+    let collisions = inventory["ambiguous_repositories"].as_array().unwrap();
+    assert_eq!(collisions.len(), 1);
+    assert_eq!(collisions[0]["name"], "shared");
+    let sources = collisions[0]["sources"]
+        .as_array()
+        .expect("colliding sources");
+    assert_eq!(sources.len(), 2);
+    for (source, (path, namespace, url)) in sources.iter().zip([
+        ("a-source.yaml", "apps", "https://expected.example/charts"),
+        ("z-source.yaml", "other", "https://wrong.example/charts"),
+    ]) {
+        assert_eq!(source["path"], path);
+        assert_eq!(source["namespace"], namespace);
+        assert_eq!(source["url"], url);
+        assert_eq!(source["document_index"], 0);
+    }
+    assert!(
+        inventory["repositories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|source| source["name"] != "shared")
+    );
+}
+
+#[test]
+fn update_workflow_skips_ambiguous_chart_sources_and_applies_independent_images() {
+    for duplicate_namespace in ["other", "apps"] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        write_ambiguous_source_fixture(temp.path(), duplicate_namespace);
+        let release_path = temp.path().join("release.yaml");
+        let original_release = fs::read_to_string(&release_path).expect("read release");
+        let factory = StaticResolverFactory::new(
+            HashMap::from([(
+                ("shared".to_string(), "demo".to_string()),
+                "9.9.9".to_string(),
+            )]),
+            HashMap::from([(
+                "example/safe:1.0.0".to_string(),
+                "example/safe:2.0.0".to_string(),
+            )]),
+        );
+
+        let (code, stdout, stderr) = run_cli(
+            &[
+                "fluxrepo-update",
+                "update-helm",
+                temp.path().to_str().expect("repo path"),
+                "--json",
+                "--write",
+                "--non-interactive",
+            ],
+            &factory,
+        );
+
+        assert_eq!(code, 20, "{stderr}");
+        let report: Value = serde_json::from_str(&stdout).expect("update JSON");
+        assert_eq!(
+            report["summary"]["planned_count"], 1,
+            "ambiguous chart source must not yield a planned update: {report}"
+        );
+        assert_eq!(report["summary"]["applied_count"], 1);
+        assert_eq!(report["summary"]["skipped_count"], 1);
+        assert_eq!(report["skipped"][0]["path"], "release.yaml");
+        assert_eq!(
+            report["skipped"][0]["reason_code"],
+            "ambiguous_helm_repository"
+        );
+        assert_eq!(report["skipped"][0]["retryable"], false);
+        assert!(!report["skipped"][0]["id"].as_str().unwrap().is_empty());
+        assert_eq!(
+            fs::read_to_string(&release_path).expect("read unchanged release"),
+            original_release
+        );
+        assert!(
+            fs::read_to_string(temp.path().join("pod.yaml"))
+                .expect("read updated pod")
+                .contains("example/safe:2.0.0")
+        );
+    }
+}
+
+fn write_ambiguous_source_fixture(repo_root: &std::path::Path, duplicate_namespace: &str) {
+    write_file(
+        &repo_root.join("a-source.yaml"),
+        "kind: HelmRepository\nmetadata: {name: shared, namespace: apps}\nspec: {url: https://expected.example/charts}\n",
+    );
+    write_file(
+        &repo_root.join("z-source.yaml"),
+        &format!(
+            "kind: HelmRepository\nmetadata: {{name: shared, namespace: {duplicate_namespace}}}\nspec: {{url: https://wrong.example/charts}}\n"
+        ),
+    );
+    write_file(
+        &repo_root.join("release.yaml"),
+        "kind: HelmRelease\nmetadata: {name: demo, namespace: apps}\nspec:\n  chart:\n    spec:\n      chart: demo\n      version: 1.0.0\n      sourceRef: {kind: HelmRepository, name: shared, namespace: apps}\n",
+    );
+    write_file(
+        &repo_root.join("pod.yaml"),
+        "kind: Pod\nmetadata: {name: independent}\nspec: {containers: [{image: example/safe:1.0.0}]}\n",
+    );
+}
+
+#[test]
 fn update_helm_workflow_reports_conservative_helm_value_skips() {
     let temp = tempfile::tempdir().expect("temp dir");
     let repo_root = temp.path().join("repo");
@@ -515,10 +641,7 @@ fn update_helm_write_workflow_keeps_unsupported_and_generated_files_untouched() 
     );
 }
 
-fn run_cli(
-    args: &[&str],
-    factory: &impl fluxrepo_update::cli::ResolverFactory,
-) -> (u8, String, String) {
+fn run_cli(args: &[&str], factory: &impl TestResolvers) -> (u8, String, String) {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let code = run_with_args(
@@ -526,8 +649,8 @@ fn run_cli(
         Cursor::new([].as_slice()),
         &mut stdout,
         &mut stderr,
-        factory,
-        PlanOptions { max_workers: 1 },
+        factory.chart_resolver().as_ref(),
+        factory.image_resolver().as_ref(),
     )
     .expect("run cli");
     (

@@ -1,5 +1,6 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
+#[path = "../../tests/common/mod.rs"]
 mod common;
 
 use std::collections::HashMap;
@@ -9,6 +10,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use crate::update_run::implementation::{
+    PlanOptions, PlannedChartUpdate, PlannedImageUpdate, PlannedUpdate, SkippedUpdate,
+    UpdateReport, apply_updates, plan_updates, plan_updates_with_options,
+    plan_updates_with_progress,
+};
 use common::{ResponseSpec, TestHttpServer, copy_fixture, write_file};
 use fluxrepo_update::models::{
     HelmRepository, ImageBinding, ImageBindingValueKind, Inventory, RepoType, ResourceId,
@@ -18,11 +24,6 @@ use fluxrepo_update::resolvers::{
     StaticVersionResolver,
 };
 use fluxrepo_update::scanner::scan_repo;
-use fluxrepo_update::updater::{
-    PlanOptions, PlannedChartUpdate, PlannedImageUpdate, PlannedUpdate, SkippedUpdate,
-    UpdateReport, apply_updates, plan_updates, plan_updates_with_options,
-    plan_updates_with_progress,
-};
 
 #[test]
 fn plans_and_applies_chart_and_deployment_updates() {
@@ -204,6 +205,7 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
     inventory.repositories.insert(
         "unused".to_string(),
         HelmRepository {
+            namespace: None,
             name: "unused".to_string(),
             url: "https://charts.example.test".to_string(),
             repo_type: RepoType::Default,
@@ -260,7 +262,7 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
         Some(PathBuf::from("/repo/release.yaml"))
     );
 
-    let payload = report.to_json_value(Path::new("/repo"), "plan", true, 0, 0);
+    let payload = crate::cli::plan_payload(&report);
     assert_eq!(
         payload["skipped"][0]["reason"],
         "missing HelmRepository missing-repo"
@@ -298,7 +300,7 @@ fn planning_reports_manifest_local_chart_versions_without_identity_as_unresolved
         &StaticVersionResolver::new(HashMap::new()),
         &StaticImageVersionResolver::new(HashMap::new()),
     );
-    let payload = report.to_json_value(Path::new("/repo"), "plan", true, 0, 0);
+    let payload = crate::cli::plan_payload(&report);
 
     assert_eq!(payload["summary"]["skipped_count"], 1);
     assert_eq!(
@@ -323,6 +325,7 @@ fn update_report_serializes_retryable_chart_request_skip_with_source_url() {
     inventory.repositories.insert(
         "demo-repo".to_string(),
         HelmRepository {
+            namespace: None,
             name: "demo-repo".to_string(),
             url: server.base_url.clone(),
             repo_type: RepoType::Default,
@@ -352,7 +355,7 @@ fn update_report_serializes_retryable_chart_request_skip_with_source_url() {
         &RepositoryChartResolver::default(),
         &StaticImageVersionResolver::new(HashMap::new()),
     );
-    let payload = report.to_json_value(Path::new("/repo"), "plan", true, 0, 0);
+    let payload = crate::cli::plan_payload(&report);
 
     assert_eq!(payload["skipped"][0]["path"], "release.yaml");
     assert_eq!(payload["skipped"][0]["reason_code"], "chart_request_failed");
@@ -381,7 +384,7 @@ fn update_report_serializes_permanent_image_skip_codes() {
         &StaticVersionResolver::new(HashMap::new()),
         &fluxrepo_update::resolvers::RegistryImageResolver::default(),
     );
-    let payload = report.to_json_value(Path::new("/repo"), "plan", true, 0, 0);
+    let payload = crate::cli::plan_payload(&report);
     let skipped = payload["skipped"].as_array().expect("skipped array");
 
     let compact = skipped
@@ -544,8 +547,8 @@ fn sequential_and_concurrent_plans_have_identical_order_ids_and_reasons() {
     );
 
     assert_eq!(
-        sequential.to_json_value(Path::new("/repo"), "plan", true, 0, 0),
-        concurrent.to_json_value(Path::new("/repo"), "plan", true, 0, 0)
+        crate::cli::plan_payload(&sequential),
+        crate::cli::plan_payload(&concurrent)
     );
 }
 
@@ -638,7 +641,7 @@ fn update_report_serializes_non_repo_path_skip_reason() {
         skipped: vec![SkippedUpdate::new(None, "network timeout")],
     };
 
-    let payload = report.to_json_value(Path::new("/repo"), "plan", true, 0, 0);
+    let payload = crate::cli::plan_payload(&report);
 
     assert_eq!(
         payload["skipped"],
@@ -661,6 +664,7 @@ fn apply_updates_rejects_non_mapping_helmrelease_documents() {
     write_file(&path, "- not\n- a\n- mapping\n");
     let report = UpdateReport {
         planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
+            manifest_identity: None,
             path,
             document_index: 0,
             target_name: "demo".to_string(),
@@ -668,7 +672,6 @@ fn apply_updates_rejects_non_mapping_helmrelease_documents() {
             repo_name: "demo".to_string(),
             current_version: "1.0.0".to_string(),
             latest_version: "1.0.1".to_string(),
-            inherited_source: false,
         })],
         skipped: Vec::new(),
     };
@@ -690,6 +693,7 @@ fn apply_updates_rejects_a_chart_scalar_changed_after_planning() {
     write_file(&path, changed);
     let report = UpdateReport {
         planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
+            manifest_identity: None,
             path: path.clone(),
             document_index: 0,
             target_name: "demo".to_string(),
@@ -697,7 +701,6 @@ fn apply_updates_rejects_a_chart_scalar_changed_after_planning() {
             repo_name: "demo".to_string(),
             current_version: "1.0.0".to_string(),
             latest_version: "2.0.0".to_string(),
-            inherited_source: false,
         })],
         skipped: Vec::new(),
     };
@@ -716,6 +719,7 @@ fn apply_updates_rejects_an_image_scalar_changed_after_planning() {
     write_file(&path, changed);
     let report = UpdateReport {
         planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
+            manifest_identity: None,
             path: path.clone(),
             document_index: 0,
             target_name: "demo".to_string(),
@@ -745,6 +749,7 @@ fn apply_updates_prepares_every_file_before_writing_any_file() {
     write_file(&second_path, manifest);
     let update = |path: PathBuf, yaml_path: &str| {
         PlannedUpdate::Image(PlannedImageUpdate {
+            manifest_identity: None,
             path,
             document_index: 0,
             target_name: "demo".to_string(),
@@ -788,6 +793,7 @@ fn apply_updates_reports_partial_application_after_a_later_write_failure() {
         .expect("make second file read-only");
     let update = |path: PathBuf| {
         PlannedUpdate::Image(PlannedImageUpdate {
+            manifest_identity: None,
             path,
             document_index: 0,
             target_name: "demo".to_string(),
@@ -838,6 +844,7 @@ spec:
     );
     let report = UpdateReport {
         planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
+            manifest_identity: None,
             path: path.clone(),
             document_index: 0,
             target_name: "demo".to_string(),
@@ -881,6 +888,7 @@ spec:
     write_file(&path, original);
     let report = UpdateReport {
         planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
+            manifest_identity: None,
             path: path.clone(),
             document_index: 0,
             target_name: "demo".to_string(),
@@ -888,7 +896,6 @@ spec:
             repo_name: "demo".to_string(),
             current_version: "1.0.0".to_string(),
             latest_version: "1.0.1".to_string(),
-            inherited_source: false,
         })],
         skipped: Vec::new(),
     };
@@ -926,6 +933,7 @@ metadata:
     write_file(&path, original);
     let report = UpdateReport {
         planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
+            manifest_identity: None,
             path: path.clone(),
             document_index: 0,
             target_name: "demo".to_string(),
@@ -958,6 +966,7 @@ fn apply_updates_preserves_crlf_line_endings_around_scalar_changes() {
     write_file(&path, original);
     let report = UpdateReport {
         planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
+            manifest_identity: None,
             path: path.clone(),
             document_index: 0,
             target_name: "demo".to_string(),
@@ -965,7 +974,6 @@ fn apply_updates_preserves_crlf_line_endings_around_scalar_changes() {
             repo_name: "demo".to_string(),
             current_version: "1.0.0".to_string(),
             latest_version: "1.0.1".to_string(),
-            inherited_source: false,
         })],
         skipped: Vec::new(),
     };
@@ -994,6 +1002,7 @@ spec:
     write_file(&path, original);
     let report = UpdateReport {
         planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
+            manifest_identity: None,
             path: path.clone(),
             document_index: 0,
             target_name: "demo".to_string(),
@@ -1001,7 +1010,6 @@ spec:
             repo_name: "demo".to_string(),
             current_version: "1.0.0".to_string(),
             latest_version: "1.0.1".to_string(),
-            inherited_source: false,
         })],
         skipped: Vec::new(),
     };
@@ -1027,4 +1035,364 @@ fn image_binding(path: &str, name: &str, image: &str) -> ImageBinding {
         image: image.to_string(),
         value_kind: ImageBindingValueKind::ImageReference,
     }
+}
+
+#[test]
+fn apply_updates_selects_literal_mapping_keys_without_path_aliases() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("release.yaml");
+    let original = r#"kind: HelmRelease
+metadata: {name: demo}
+spec:
+  values:
+    'a.b': {image: 'example/demo:1.0.0'}
+    a: {b: {image: 'example/demo:1.0.0'}}
+    'items[0]': {image: 'example/demo:1.0.0'}
+    '': {image: 'example/demo:1.0.0'}
+    '0': {image: 'example/demo:1.0.0'}
+    'a\b': {image: 'example/demo:1.0.0'}
+"#;
+    write_file(&path, original);
+    let mut report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
+    assert_eq!(report.planned.len(), 6);
+    let literal = report.planned.iter().position(|item| matches!(item, PlannedUpdate::Image(image) if image.yaml_path == "spec.values[\"a.b\"].image")).expect("unambiguous literal key path");
+    report.planned = vec![report.planned.remove(literal)];
+    apply_updates(&report).expect("update selected literal key");
+    assert_eq!(
+        fs::read_to_string(&path).expect("read"),
+        original.replace(
+            "'a.b': {image: 'example/demo:1.0.0'}",
+            "'a.b': {image: 'example/demo:2.0.0'}"
+        )
+    );
+    let report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
+    apply_updates(&report).expect("update remaining special keys");
+    assert!(
+        scan_repo(temp.path())
+            .expect("scan")
+            .image_bindings
+            .iter()
+            .all(|binding| binding.image == "example/demo:2.0.0")
+    );
+}
+
+#[test]
+fn apply_updates_preserves_valid_block_scalar_images() {
+    for style in ["|-", ">-", "|2-", ">2-"] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("pod.yaml");
+        let original = format!(
+            "kind: Pod\nmetadata: {{name: demo}}\nspec:\n  containers:\n    - image: {style}\n        example/demo:1.0.0\n      name: app\n"
+        );
+        write_file(&path, &original);
+        let report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
+        assert_eq!(report.planned.len(), 1, "{style}");
+        apply_updates(&report).expect("apply block scalar");
+        assert_eq!(
+            scan_repo(temp.path()).expect("rescan").image_bindings[0].image,
+            "example/demo:2.0.0",
+            "{style}"
+        );
+        assert_eq!(
+            fs::read_to_string(path).expect("read"),
+            original.replace("example/demo:1.0.0", "example/demo:2.0.0")
+        );
+    }
+}
+
+#[test]
+fn apply_updates_preserves_numeric_tag_spelling() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("release.yaml");
+    write_file(
+        &path,
+        "kind: HelmRelease\nmetadata: {name: demo}\nspec:\n  values:\n    image: {repository: example/demo, tag: 3.20}\n",
+    );
+    let report = plan_test_images(temp.path(), "example/demo:3.20", "example/demo:3.21");
+    assert_eq!(report.planned.len(), 1);
+    apply_updates(&report).expect("numeric tag spelling must match plan");
+    assert_eq!(
+        scan_repo(temp.path()).expect("scan").image_bindings[0].image,
+        "example/demo:3.21"
+    );
+}
+
+#[test]
+fn apply_updates_rejects_changed_image_identity() {
+    for (old, new) in [
+        ("repository: example/demo", "repository: example/other"),
+        ("namespace: one", "namespace: two"),
+        ("name: demo", "name: other"),
+        ("registry: registry.example", "registry: another.example"),
+        ("tag: 1.0.0", "tag: 1.0.0, digest: sha256:abc"),
+    ] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("release.yaml");
+        let original = "kind: HelmRelease\nmetadata: {name: demo, namespace: one}\nspec:\n  values:\n    image: {registry: registry.example, repository: example/demo, tag: 1.0.0}\n";
+        write_file(&path, original);
+        let report = plan_test_images(
+            temp.path(),
+            "registry.example/example/demo:1.0.0",
+            "registry.example/example/demo:2.0.0",
+        );
+        assert_eq!(report.planned.len(), 1);
+        let changed = original.replace(old, new);
+        write_file(&path, &changed);
+        apply_updates(&report).expect_err("identity changed after planning");
+        assert_eq!(fs::read_to_string(&path).expect("read"), changed);
+    }
+}
+
+#[test]
+fn apply_updates_rejects_changed_chart_and_source_identity() {
+    for (old, new) in [
+        ("chart: demo", "chart: other"),
+        ("namespace: one", "namespace: two"),
+        ("name: demo", "name: other"),
+        ("url: https://old.example", "url: https://new.example"),
+        (
+            "kind: HelmRepository, name: source",
+            "kind: HelmRepository, name: another",
+        ),
+    ] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("release.yaml");
+        let original = "kind: HelmRepository\nmetadata: {name: source, namespace: one}\nspec: {url: https://old.example}\n---\nkind: HelmRelease\nmetadata: {name: demo, namespace: one}\nspec:\n  chart:\n    spec:\n      chart: demo\n      version: 1.0.0\n      sourceRef: {kind: HelmRepository, name: source}\n";
+        write_file(&path, original);
+        let report = plan_updates(
+            &scan_repo(temp.path()).expect("scan"),
+            &StaticVersionResolver::new(HashMap::from([(
+                ("source".into(), "demo".into()),
+                "2.0.0".into(),
+            )])),
+            &StaticImageVersionResolver::new(HashMap::new()),
+        );
+        assert_eq!(report.planned.len(), 1);
+        let changed = original.replace(old, new);
+        write_file(&path, &changed);
+        apply_updates(&report).expect_err("chart identity changed after planning");
+        assert_eq!(fs::read_to_string(&path).expect("read"), changed);
+    }
+}
+
+fn plan_test_images(root: &Path, current: &str, latest: &str) -> UpdateReport {
+    plan_updates(
+        &scan_repo(root).expect("scan"),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::from([(
+            current.to_string(),
+            latest.to_string(),
+        )])),
+    )
+}
+
+#[test]
+fn selection_ids_reject_changed_chart_source_identity() {
+    for (old, new) in [
+        ("https://old.example", "https://new.example"),
+        ("namespace: one", "namespace: two"),
+    ] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("release.yaml");
+        let original = "kind: HelmRepository\nmetadata: {name: source, namespace: one}\nspec: {url: https://old.example}\n---\nkind: HelmRelease\nmetadata: {name: demo, namespace: one}\nspec:\n  chart:\n    spec:\n      chart: demo\n      version: 1.0.0\n      sourceRef: {kind: HelmRepository, name: source, namespace: one}\n";
+        write_file(&path, original);
+        let resolver = StaticVersionResolver::new(HashMap::from([(
+            ("source".into(), "demo".into()),
+            "2.0.0".into(),
+        )]));
+        let empty = StaticImageVersionResolver::new(HashMap::new());
+        let before = plan_updates(&scan_repo(temp.path()).expect("scan"), &resolver, &empty);
+        assert_eq!(before.planned.len(), 1);
+        write_file(&path, &original.replace(old, new));
+        let after = plan_updates(&scan_repo(temp.path()).expect("rescan"), &resolver, &empty);
+        assert_eq!(after.planned.len(), 1);
+        assert_ne!(
+            before.planned[0].selection_id(temp.path()),
+            after.planned[0].selection_id(temp.path()),
+            "approval must bind source identity for {old}"
+        );
+    }
+}
+
+#[test]
+fn apply_updates_rejects_unapproved_alias_side_effects() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("pod.yaml");
+    let original = "kind: Pod\nmetadata: {name: demo}\nspec:\n  containers:\n    - image: &image example/demo:1.0.0\n      name: app\n      env:\n        - name: EXPECTED_IMAGE\n          value: *image\n";
+    write_file(&path, original);
+    let report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
+    assert_eq!(report.planned.len(), 1);
+    apply_updates(&report).expect_err("anchor mutation would affect unapproved fields");
+    assert_eq!(fs::read_to_string(path).expect("read"), original);
+}
+
+#[test]
+fn apply_updates_preserves_block_comments_and_crlf() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("pod.yaml");
+    let original = "kind: Pod\r\nmetadata: {name: demo}\r\nspec:\r\n  containers:\r\n    - image: |- # retain comment\r\n        example/demo:1.0.0\r\n\r\n      name: app";
+    write_file(&path, original);
+    let report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
+    assert_eq!(report.planned.len(), 1);
+    apply_updates(&report).expect("apply block with comment");
+    assert_eq!(
+        fs::read_to_string(path).expect("read"),
+        original.replace("example/demo:1.0.0", "example/demo:2.0.0")
+    );
+}
+
+#[test]
+fn selection_ids_reject_changed_resource_and_container_identity() {
+    for (old, new) in [
+        ("namespace: one", "namespace: two"),
+        ("name: container-one", "name: container-two"),
+    ] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("pod.yaml");
+        let original = "kind: Pod\nmetadata: {name: demo, namespace: one}\nspec:\n  containers:\n    - image: example/demo:1.0.0\n      name: container-one\n";
+        write_file(&path, original);
+        let before = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
+        assert_eq!(before.planned.len(), 1);
+        write_file(&path, &original.replace(old, new));
+        let after = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
+        assert_eq!(after.planned.len(), 1);
+        assert_ne!(
+            before.planned[0].selection_id(temp.path()),
+            after.planned[0].selection_id(temp.path()),
+            "approval must bind image target identity for {old}"
+        );
+    }
+}
+
+#[test]
+fn selection_ids_are_stable_across_repository_relocation_and_mapping_order() {
+    let first = tempfile::tempdir().expect("first repo");
+    let second = tempfile::tempdir().expect("second repo");
+    let original = "kind: HelmRepository\nmetadata: {name: source, namespace: one}\nspec: {url: https://repo.example, type: default}\n---\nkind: HelmRelease\nmetadata: {name: demo, namespace: one}\nspec:\n  chart:\n    spec:\n      chart: demo\n      version: 1.0.0\n      sourceRef: {kind: HelmRepository, name: source, namespace: one}\n";
+    let reordered = original
+        .replace(
+            "name: source, namespace: one",
+            "namespace: one, name: source",
+        )
+        .replace(
+            "url: https://repo.example, type: default",
+            "type: default, url: https://repo.example",
+        );
+    write_file(&first.path().join("release.yaml"), original);
+    write_file(&second.path().join("release.yaml"), &reordered);
+    let resolver = StaticVersionResolver::new(HashMap::from([(
+        ("source".into(), "demo".into()),
+        "2.0.0".into(),
+    )]));
+    let empty = StaticImageVersionResolver::new(HashMap::new());
+    let before = plan_updates(&scan_repo(first.path()).expect("scan"), &resolver, &empty);
+    let after = plan_updates(&scan_repo(second.path()).expect("scan"), &resolver, &empty);
+    assert_eq!(before.planned.len(), 1);
+    assert_eq!(after.planned.len(), 1);
+    assert_eq!(
+        before.planned[0].selection_id(first.path()),
+        after.planned[0].selection_id(second.path())
+    );
+}
+
+#[test]
+fn planning_rejects_explicit_chart_source_namespace_mismatches() {
+    for (release_namespace, source_namespace, repository_namespace, expected_namespace) in [
+        (
+            Some("release-ns"),
+            None,
+            Some("repository-ns"),
+            "release-ns",
+        ),
+        (
+            Some("release-ns"),
+            Some("explicit-ns"),
+            Some("release-ns"),
+            "explicit-ns",
+        ),
+        (
+            None,
+            Some("explicit-ns"),
+            Some("repository-ns"),
+            "explicit-ns",
+        ),
+    ] {
+        let (_temp, inventory) =
+            chart_namespace_inventory(release_namespace, source_namespace, repository_namespace);
+        let report = plan_updates(
+            &inventory,
+            &StaticVersionResolver::new(HashMap::from([(
+                ("source".into(), "demo".into()),
+                "2.0.0".into(),
+            )])),
+            &StaticImageVersionResolver::new(HashMap::new()),
+        );
+        assert!(
+            report.planned.is_empty(),
+            "mismatched namespaces must not resolve a chart update"
+        );
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(
+            report.skipped[0].reason_code,
+            crate::update_run::SkipReasonCode::MissingHelmRepository
+        );
+        assert!(
+            report.skipped[0]
+                .reason
+                .contains(&format!("{expected_namespace}/source"))
+        );
+        assert!(report.skipped[0].reason.contains(&format!(
+            "{}/source",
+            repository_namespace.expect("known repository namespace")
+        )));
+        assert!(!report.skipped[0].retryable);
+    }
+}
+
+#[test]
+fn planning_accepts_matching_cross_namespace_and_unspecified_chart_sources() {
+    for (release_namespace, source_namespace, repository_namespace) in [
+        (
+            Some("release-ns"),
+            Some("repository-ns"),
+            Some("repository-ns"),
+        ),
+        (Some("same"), None, Some("same")),
+        (None, None, Some("repository-ns")),
+        (Some("release-ns"), None, None),
+        (None, Some("explicit-ns"), None),
+    ] {
+        let (_temp, inventory) =
+            chart_namespace_inventory(release_namespace, source_namespace, repository_namespace);
+        let report = plan_updates(
+            &inventory,
+            &StaticVersionResolver::new(HashMap::from([(
+                ("source".into(), "demo".into()),
+                "2.0.0".into(),
+            )])),
+            &StaticImageVersionResolver::new(HashMap::new()),
+        );
+        assert_eq!(report.planned.len(), 1);
+        assert!(report.skipped.is_empty());
+    }
+}
+
+fn chart_namespace_inventory(
+    release_namespace: Option<&str>,
+    source_namespace: Option<&str>,
+    repository_namespace: Option<&str>,
+) -> (tempfile::TempDir, Inventory) {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let optional_namespace = |namespace: Option<&str>| {
+        namespace.map_or_else(String::new, |namespace| format!(", namespace: {namespace}"))
+    };
+    let original = format!(
+        "kind: HelmRepository\nmetadata: {{name: source{}}}\nspec: {{url: https://repo.example}}\n---\nkind: HelmRelease\nmetadata: {{name: demo{}}}\nspec:\n  chart:\n    spec:\n      chart: demo\n      version: 1.0.0\n      sourceRef: {{kind: HelmRepository, name: source{}}}\n",
+        optional_namespace(repository_namespace),
+        optional_namespace(release_namespace),
+        optional_namespace(source_namespace)
+    );
+    write_file(&temp.path().join("release.yaml"), &original);
+    let inventory = scan_repo(temp.path()).expect("scan");
+    (temp, inventory)
 }

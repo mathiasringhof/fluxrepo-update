@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -51,6 +51,7 @@ pub struct ResourceId {
 #[derive(Debug, Clone)]
 pub struct HelmRepository {
     pub name: String,
+    pub namespace: Option<String>,
     pub url: String,
     pub repo_type: RepoType,
     pub path: PathBuf,
@@ -105,7 +106,9 @@ impl HelmReleaseTarget {
 #[derive(Debug, Clone)]
 pub struct Inventory {
     pub repo_root: PathBuf,
+    pub manifest_documents: HashMap<(PathBuf, usize), yaml_serde::Value>,
     pub repositories: HashMap<String, HelmRepository>,
+    pub ambiguous_repositories: BTreeMap<String, Vec<HelmRepository>>,
     pub chart_targets: Vec<HelmReleaseTarget>,
     pub image_bindings: Vec<ImageBinding>,
     pub helmreleases_without_chart_version: Vec<HelmReleaseTarget>,
@@ -118,13 +121,36 @@ impl Inventory {
     pub fn new(repo_root: PathBuf) -> Self {
         Self {
             repo_root,
+            manifest_documents: HashMap::new(),
             repositories: HashMap::new(),
+            ambiguous_repositories: BTreeMap::new(),
             chart_targets: Vec::new(),
             image_bindings: Vec::new(),
             helmreleases_without_chart_version: Vec::new(),
             unresolved_chart_targets: Vec::new(),
             image_references: Vec::new(),
             skipped_paths: Vec::new(),
+        }
+    }
+
+    pub fn repository_count(&self) -> usize {
+        self.repositories.len()
+            + self
+                .ambiguous_repositories
+                .values()
+                .map(Vec::len)
+                .sum::<usize>()
+    }
+
+    pub(crate) fn add_repository(&mut self, repository: HelmRepository) {
+        if let Some(sources) = self.ambiguous_repositories.get_mut(&repository.name) {
+            sources.push(repository);
+        } else if let Some(previous) = self.repositories.remove(&repository.name) {
+            self.ambiguous_repositories
+                .insert(repository.name.clone(), vec![previous, repository]);
+        } else {
+            self.repositories
+                .insert(repository.name.clone(), repository);
         }
     }
 
@@ -140,19 +166,17 @@ impl Inventory {
 
         json!({
             "repo_root": self.repo_root,
-            "repository_count": self.repositories.len(),
+            "repository_count": self.repository_count(),
             "chart_target_count": self.chart_targets.len(),
             "image_binding_count": self.image_bindings.len(),
             "helmreleases_without_chart_version_count": self.helmreleases_without_chart_version.len(),
             "unresolved_chart_target_count": self.unresolved_chart_targets.len(),
             "image_reference_count": self.image_references.len(),
             "skipped_paths": self.skipped_paths.iter().map(|path| self.relative(path)).collect::<Vec<_>>(),
-            "repositories": repositories.iter().map(|repository| json!({
-                "path": self.relative(&repository.path),
-                "document_index": repository.document_index,
-                "name": repository.name,
-                "url": repository.url,
-                "repo_type": repo_type_json_value(&repository.repo_type),
+            "repositories": repositories.iter().map(|repository| self.repository_json(repository)).collect::<Vec<_>>(),
+            "ambiguous_repositories": self.ambiguous_repositories.iter().map(|(name, sources)| json!({
+                "name": name,
+                "sources": sources.iter().map(|source| self.repository_json(source)).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "chart_targets": self.chart_targets.iter().map(|target| json!({
                 "path": self.relative(&target.path),
@@ -194,6 +218,17 @@ impl Inventory {
                 "yaml_path": image.yaml_path,
                 "image": image.image,
             })).collect::<Vec<_>>(),
+        })
+    }
+
+    fn repository_json(&self, repository: &HelmRepository) -> Value {
+        json!({
+            "path": self.relative(&repository.path),
+            "document_index": repository.document_index,
+            "name": repository.name,
+            "namespace": repository.namespace,
+            "url": repository.url,
+            "repo_type": repo_type_json_value(&repository.repo_type),
         })
     }
 

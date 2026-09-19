@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -9,13 +8,14 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
+use crate::models::TargetKind;
 use crate::resolvers::{
     ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
 };
 use crate::scanner::scan_repo;
-use crate::updater::{
-    PlanOptions, PlannedUpdate, UpdateReport, apply_updates, plan_updates_with_options,
-    plan_updates_with_progress,
+use crate::update_run::{
+    ResolutionProgress, SkippedUpdate, UpdateReview, UpdateRun, UpdateRunMode, UpdateRunOutcome,
+    UpdateRunStatus, UpdateSelectionIdentity,
 };
 
 pub const EXIT_OK: u8 = 0;
@@ -23,21 +23,12 @@ pub const EXIT_STRICT_FAILURE: u8 = 2;
 pub const EXIT_UPDATES_AVAILABLE: u8 = 10;
 pub const EXIT_UPDATES_APPLIED: u8 = 20;
 
-pub trait ResolverFactory {
-    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync>;
-    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync>;
-}
-
-#[derive(Debug, Default)]
-pub struct DefaultResolverFactory;
-
-impl ResolverFactory for DefaultResolverFactory {
-    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
-        Box::new(RepositoryChartResolver::default())
-    }
-
-    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync> {
-        Box::new(RegistryImageResolver::default())
+impl std::fmt::Display for SkippedUpdate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.path {
+            Some(path) => write!(formatter, "{}: {}", path.display(), self.reason),
+            None => formatter.write_str(&self.reason),
+        }
     }
 }
 
@@ -95,8 +86,8 @@ pub fn run() -> Result<u8> {
         interactive_approval::InteractiveApproval::classified(stdin.lock()),
         &mut stdout,
         &mut stderr,
-        &DefaultResolverFactory,
-        PlanOptions::default(),
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
         HumanOutput {
             color: terminal_stderr,
             progress: terminal_stderr,
@@ -104,13 +95,13 @@ pub fn run() -> Result<u8> {
     )
 }
 
-pub fn run_with_args<I, T, R, W, E, F>(
+pub fn run_with_args<I, T, R, W, E>(
     args: I,
     input: R,
     stdout: &mut W,
     stderr: &mut E,
-    resolver_factory: &F,
-    plan_options: PlanOptions,
+    chart_resolver: &(dyn ChartVersionResolver + Sync),
+    image_resolver: &(dyn ImageVersionResolver + Sync),
 ) -> Result<u8>
 where
     I: IntoIterator<Item = T>,
@@ -118,27 +109,26 @@ where
     R: Read,
     W: Write,
     E: Write + Send,
-    F: ResolverFactory + ?Sized,
 {
     run_with_args_and_output(
         args,
         interactive_approval::InteractiveApproval::plain(input),
         stdout,
         stderr,
-        resolver_factory,
-        plan_options,
+        chart_resolver,
+        image_resolver,
         HumanOutput::plain(),
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_with_args_and_output<I, T, W, E, F>(
+fn run_with_args_and_output<I, T, W, E>(
     args: I,
     approval: interactive_approval::InteractiveApproval<'_>,
     stdout: &mut W,
     stderr: &mut E,
-    resolver_factory: &F,
-    plan_options: PlanOptions,
+    chart_resolver: &(dyn ChartVersionResolver + Sync),
+    image_resolver: &(dyn ImageVersionResolver + Sync),
     human_output: HumanOutput,
 ) -> Result<u8>
 where
@@ -146,7 +136,6 @@ where
     T: Into<OsString> + Clone,
     W: Write,
     E: Write + Send,
-    F: ResolverFactory + ?Sized,
 {
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
@@ -161,6 +150,11 @@ where
     };
 
     let json_output = cli.command.json_output();
+    let human_output = if json_output {
+        HumanOutput::plain()
+    } else {
+        human_output
+    };
     let exit_code = match cli.command {
         Commands::Inventory {
             repo_root,
@@ -181,8 +175,8 @@ where
             approval,
             stdout,
             stderr,
-            resolver_factory,
-            plan_options,
+            chart_resolver,
+            image_resolver,
             human_output,
         ),
     };
@@ -232,7 +226,7 @@ fn inventory_command<W: Write>(
             serde_json::to_string_pretty(&inventory.to_json_value())?
         )?;
     } else {
-        writeln!(stdout, "Repositories: {}", inventory.repositories.len())?;
+        writeln!(stdout, "Repositories: {}", inventory.repository_count())?;
         writeln!(stdout, "Chart targets: {}", inventory.chart_targets.len())?;
         writeln!(stdout, "Image bindings: {}", inventory.image_bindings.len())?;
         writeln!(
@@ -260,7 +254,7 @@ fn inventory_command<W: Write>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_helm_command<W, E, F>(
+fn update_helm_command<W, E>(
     repo_root: PathBuf,
     json_output: bool,
     write: bool,
@@ -269,14 +263,13 @@ fn update_helm_command<W, E, F>(
     approval: interactive_approval::InteractiveApproval<'_>,
     stdout: &mut W,
     stderr: &mut E,
-    resolver_factory: &F,
-    plan_options: PlanOptions,
+    chart_resolver: &(dyn ChartVersionResolver + Sync),
+    image_resolver: &(dyn ImageVersionResolver + Sync),
     human_output: HumanOutput,
 ) -> Result<u8>
 where
     W: Write,
     E: Write + Send,
-    F: ResolverFactory + ?Sized,
 {
     let repo_root = repo_root.canonicalize()?;
     if write && !non_interactive {
@@ -306,117 +299,78 @@ where
     if !json_output {
         writeln!(stderr, "Resolving updates for {target_count} targets...")?;
     }
-    let chart_resolver = resolver_factory.chart_resolver();
-    let image_resolver = resolver_factory.image_resolver();
-    let report = if !json_output && human_output.progress && target_count > 0 {
-        let progress = Mutex::new(ProgressRenderer::new(stderr, &repo_root, human_output));
-        let progress_callback = |completed: usize, total: usize, path: &Path| {
-            if let Ok(mut renderer) = progress.lock() {
-                renderer.render(completed, total, path);
-            }
-        };
-        let report = plan_updates_with_progress(
-            &inventory,
-            chart_resolver.as_ref(),
-            image_resolver.as_ref(),
-            plan_options,
-            &progress_callback,
-        );
-        if let Ok(mut renderer) = progress.lock() {
-            renderer.finish();
-        }
-        report
+    let mode = if !non_interactive {
+        UpdateRunMode::ReviewAndApply
+    } else if !write {
+        UpdateRunMode::PlanOnly
+    } else if apply_ids.is_empty() {
+        UpdateRunMode::ApplyAll
     } else {
-        plan_updates_with_options(
-            &inventory,
-            chart_resolver.as_ref(),
-            image_resolver.as_ref(),
-            plan_options,
-        )
+        UpdateRunMode::ApplySelected(apply_ids.into_iter().map(Into::into).collect())
     };
-
-    let report = if write && non_interactive && !apply_ids.is_empty() {
-        match select_updates_by_apply_id(report, &repo_root, &apply_ids) {
-            Ok(report) => report,
-            Err(missing_ids) => {
-                let message = format_unknown_apply_ids(&missing_ids);
-                if json_output {
-                    emit_json_error_message(
-                        stderr,
-                        "invalid_arguments",
-                        &message,
-                        EXIT_STRICT_FAILURE,
-                    )?;
-                } else {
-                    writeln!(stderr, "{message}")?;
-                }
-                return Ok(EXIT_STRICT_FAILURE);
-            }
-        }
-    } else {
-        report
-    };
-
-    if !report.planned.is_empty() && (write || !non_interactive) {
-        let approved_report = if non_interactive {
-            report
-        } else {
-            approval.review(report, stderr, &repo_root, human_output)?
-        };
-        if approved_report.planned.is_empty() {
-            emit_update_output(
-                &approved_report,
-                OutputContext::new(
-                    &repo_root,
-                    json_output,
-                    "apply",
-                    non_interactive,
-                    human_output,
-                ),
-                0,
-                0,
-                stdout,
-                stderr,
-            )?;
-            return Ok(EXIT_OK);
-        }
-        let changed_files = apply_updates(&approved_report)?;
-        emit_update_output(
-            &approved_report,
-            OutputContext::new(
+    let outcome = {
+        let output = Mutex::new(ProgressRenderer::new(stderr, &repo_root, human_output));
+        let mut approval = Some(approval);
+        let mut review = |items: &[UpdateReview<'_>]| {
+            let mut output = output.lock().expect("terminal output lock");
+            output.finish();
+            approval.take().expect("one review per run").review(
+                items,
+                output.stderr,
                 &repo_root,
-                json_output,
-                "apply",
-                non_interactive,
                 human_output,
-            ),
-            approved_report.planned.len(),
-            changed_files,
-            stdout,
-            stderr,
-        )?;
-        return Ok(EXIT_UPDATES_APPLIED);
+            )
+        };
+        let mut progress = |event: ResolutionProgress<'_>| {
+            if let Ok(mut output) = output.lock() {
+                output.render(event.completed, event.total, event.path);
+            }
+        };
+        let result = UpdateRun::new(chart_resolver, image_resolver).execute(
+            &inventory,
+            mode,
+            &mut review,
+            if !json_output && human_output.progress && target_count > 0 {
+                Some(&mut progress)
+            } else {
+                None
+            },
+        );
+        if let Ok(mut output) = output.lock() {
+            output.finish();
+        }
+        result?
+    };
+    if let Some(rejection) = outcome.rejection() {
+        let ids = rejection
+            .unknown_identities()
+            .iter()
+            .map(|id| id.as_str().to_string())
+            .collect::<Vec<_>>();
+        let message = format_unknown_apply_ids(&ids);
+        if json_output {
+            emit_json_error_message(stderr, "invalid_arguments", &message, EXIT_STRICT_FAILURE)?;
+        } else {
+            writeln!(stderr, "{message}")?;
+        }
+        return Ok(EXIT_STRICT_FAILURE);
     }
-
+    let mode = match outcome.status() {
+        UpdateRunStatus::UpdatesApplied | UpdateRunStatus::NoUpdatesApproved => "apply",
+        _ => "plan",
+    };
     emit_update_output(
-        &report,
-        OutputContext::new(
-            &repo_root,
-            json_output,
-            "plan",
-            non_interactive,
-            human_output,
-        ),
-        0,
-        0,
+        &outcome,
+        OutputContext::new(&repo_root, json_output, mode, non_interactive, human_output),
         stdout,
         stderr,
     )?;
-    if report.planned.is_empty() {
-        Ok(EXIT_OK)
-    } else {
-        Ok(EXIT_UPDATES_AVAILABLE)
-    }
+    Ok(match outcome.status() {
+        UpdateRunStatus::UpdatesApplied => EXIT_UPDATES_APPLIED,
+        UpdateRunStatus::UpdatesPlanned => EXIT_UPDATES_AVAILABLE,
+        UpdateRunStatus::RunRejected => EXIT_STRICT_FAILURE,
+        UpdateRunStatus::NoUpdates | UpdateRunStatus::NoUpdatesApproved => EXIT_OK,
+    })
 }
 
 mod interactive_approval {
@@ -429,7 +383,9 @@ mod interactive_approval {
     use anyhow::{Result, anyhow};
     use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
 
-    use super::{AnsiStyle, HumanOutput, PlannedUpdate, UpdateReport, relative_path};
+    use super::{
+        AnsiStyle, HumanOutput, TargetKind, UpdateReview, UpdateSelectionIdentity, relative_path,
+    };
 
     pub(super) struct InteractiveApproval<'a> {
         input: Box<dyn ApprovalInput + 'a>,
@@ -454,13 +410,13 @@ mod interactive_approval {
 
         pub(super) fn review<E: Write>(
             mut self,
-            report: UpdateReport,
+            updates: &[UpdateReview<'_>],
             output: &mut E,
             repo_root: &Path,
             human_output: HumanOutput,
-        ) -> Result<UpdateReport> {
+        ) -> Result<Vec<UpdateSelectionIdentity>> {
             let original = self.input.enter_raw_mode()?;
-            let review_result = self.review_updates(report, output, repo_root, human_output);
+            let review_result = self.review_updates(updates, output, repo_root, human_output);
             let restoration_result = original
                 .as_ref()
                 .map_or(Ok(()), |settings| self.input.restore(settings));
@@ -477,18 +433,14 @@ mod interactive_approval {
 
         fn review_updates<E: Write>(
             &mut self,
-            report: UpdateReport,
+            updates: &[UpdateReview<'_>],
             output: &mut E,
             repo_root: &Path,
             human_output: HumanOutput,
-        ) -> Result<UpdateReport> {
+        ) -> Result<Vec<UpdateSelectionIdentity>> {
             let mut approved = Vec::new();
-            for update in report.planned {
-                write!(
-                    output,
-                    "{}",
-                    render_prompt(&update, repo_root, human_output)
-                )?;
+            for update in updates {
+                write!(output, "{}", render_prompt(update, repo_root, human_output))?;
                 output.flush()?;
                 let mut buffer = [0; 1];
                 let count = self.input.read(&mut buffer)?;
@@ -511,13 +463,10 @@ mod interactive_approval {
                     writeln!(output, "{displayed}")?;
                 }
                 if matches!(choice, 'y' | 'Y') {
-                    approved.push(update);
+                    approved.push(update.identity().clone());
                 }
             }
-            Ok(UpdateReport {
-                planned: approved,
-                skipped: report.skipped,
-            })
+            Ok(approved)
         }
     }
 
@@ -604,18 +553,40 @@ mod interactive_approval {
     }
 
     fn render_prompt(
-        update: &PlannedUpdate,
+        update: &UpdateReview<'_>,
         repo_root: &Path,
         human_output: HumanOutput,
     ) -> String {
         let path = human_output.styled(&relative_path(update.path(), repo_root), AnsiStyle::Cyan);
-        let current = human_output.styled(update.current_version(), AnsiStyle::Yellow);
-        let latest = human_output.styled(update.latest_version(), AnsiStyle::Green);
-        let label = match update {
-            PlannedUpdate::Chart(_) => "chart",
-            PlannedUpdate::Image(_) => "image",
+        let document = update.document_index() + 1;
+        let details = match update.kind() {
+            TargetKind::HelmRelease => {
+                let current = human_output.styled(update.current_version(), AnsiStyle::Yellow);
+                let latest = human_output.styled(update.latest_version(), AnsiStyle::Green);
+                format!(
+                    "HelmRelease {}, {}, chart {}/{} {current} -> {latest}",
+                    update.target_name(),
+                    update.yaml_path(),
+                    update.repo_name().unwrap_or_default(),
+                    update.chart_name().unwrap_or_default()
+                )
+            }
+            TargetKind::ImageBinding => {
+                let current = human_output.styled(
+                    update.current_image().unwrap_or_default(),
+                    AnsiStyle::Yellow,
+                );
+                let latest = human_output
+                    .styled(update.latest_image().unwrap_or_default(), AnsiStyle::Green);
+                format!(
+                    "{} {}, {}, image {current} -> {latest}",
+                    update.resource_kind(),
+                    update.target_name(),
+                    update.yaml_path()
+                )
+            }
         };
-        format!("Update {path} ({label} {current} -> {latest})? [y/N] ")
+        format!("Update {path} (document {document}, {details})? [y/N] ")
     }
 }
 
@@ -625,33 +596,6 @@ fn format_unknown_apply_ids(ids: &[String]) -> String {
     } else {
         format!("Unknown apply ids: {}", ids.join(", "))
     }
-}
-
-fn select_updates_by_apply_id(
-    report: UpdateReport,
-    repo_root: &Path,
-    apply_ids: &[String],
-) -> std::result::Result<UpdateReport, Vec<String>> {
-    if apply_ids.is_empty() {
-        return Ok(report);
-    }
-
-    let mut requested = apply_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let mut approved = Vec::new();
-    for update in report.planned {
-        let id = update.selection_id(repo_root);
-        if requested.remove(&id) {
-            approved.push(update);
-        }
-    }
-    if !requested.is_empty() {
-        return Err(requested.into_iter().collect());
-    }
-
-    Ok(UpdateReport {
-        planned: approved,
-        skipped: report.skipped,
-    })
 }
 
 struct OutputContext<'a> {
@@ -681,40 +625,47 @@ impl<'a> OutputContext<'a> {
 }
 
 fn emit_update_output<W: Write, E: Write>(
-    report: &UpdateReport,
+    outcome: &UpdateRunOutcome,
     context: OutputContext<'_>,
-    applied_count: usize,
-    changed_file_count: usize,
     stdout: &mut W,
     stderr: &mut E,
 ) -> Result<()> {
+    let planned = outcome
+        .plan()
+        .review()
+        .into_iter()
+        .filter(|item| context.mode == "plan" || outcome.applied().contains(item.identity()))
+        .collect::<Vec<_>>();
+    let skipped = outcome.plan().skipped();
+    let applied_count = outcome.applied().len();
+    let changed_file_count = outcome.changed_paths().len();
     if context.json_output {
-        writeln!(
-            stdout,
-            "{}",
-            serde_json::to_string_pretty(&report.to_json_value(
-                context.repo_root,
-                context.mode,
-                context.non_interactive,
-                applied_count,
-                changed_file_count
-            ))?
-        )?;
+        let report = update_output_json(
+            &planned,
+            skipped,
+            &context,
+            applied_count,
+            changed_file_count,
+        );
+        writeln!(stdout, "{}", serde_json::to_string_pretty(&report)?)?;
         return Ok(());
     }
-
-    for item in &report.skipped {
+    for item in skipped {
         writeln!(stderr, "skip: {item}")?;
     }
-    if report.planned.is_empty() {
+    if planned.is_empty() {
         if context.mode == "apply" {
             writeln!(stderr, "No updates were approved.")?;
+        } else if !skipped.is_empty() {
+            let count = skipped.len();
+            let targets = if count == 1 { "target" } else { "targets" };
+            writeln!(stderr, "No updates planned; {count} {targets} skipped.")?;
         } else {
             writeln!(stderr, "No updates required.")?;
         }
         return Ok(());
     }
-    for update in &report.planned {
+    for update in &planned {
         writeln!(
             stderr,
             "{}",
@@ -733,6 +684,68 @@ fn emit_update_output<W: Write, E: Write>(
         )?;
     }
     Ok(())
+}
+
+fn update_output_json(
+    planned: &[UpdateReview<'_>],
+    skipped: &[SkippedUpdate],
+    context: &OutputContext<'_>,
+    applied_count: usize,
+    changed_file_count: usize,
+) -> serde_json::Value {
+    json!({
+        "mode": context.mode, "non_interactive": context.non_interactive,
+        "summary": { "planned_count": planned.len(), "applied_count": applied_count,
+            "skipped_count": skipped.len(), "changed_file_count": changed_file_count },
+        "planned": planned.iter().map(|item| update_json(item, context.repo_root)).collect::<Vec<_>>(),
+        "skipped": skipped.iter().map(|item| skip_json(item, context.repo_root)).collect::<Vec<_>>(),
+    })
+}
+
+pub(crate) fn skip_json(skipped: &SkippedUpdate, repo_root: &Path) -> serde_json::Value {
+    json!({
+        "id": skipped.selection_id(repo_root),
+        "path": skipped.path.as_ref().map(|path| relative_path(path, repo_root)).unwrap_or_default(),
+        "yaml_path": skipped.yaml_path(), "reason": skipped.reason,
+        "reason_code": skipped.reason_code.as_str(), "retryable": skipped.retryable,
+        "source_url": skipped.source_url,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn plan_payload(
+    report: &crate::update_run::implementation::UpdateReport,
+) -> serde_json::Value {
+    let root = Path::new("/repo");
+    let plan = crate::update_run::UpdatePlan::from_report(report.clone(), root);
+    update_output_json(
+        &plan.review(),
+        plan.skipped(),
+        &OutputContext::new(root, true, "plan", true, HumanOutput::plain()),
+        0,
+        0,
+    )
+}
+
+fn update_json(update: &UpdateReview<'_>, repo_root: &Path) -> serde_json::Value {
+    let mut value = json!({
+        "id": update.identity().as_str(), "path": relative_path(update.path(), repo_root),
+        "document_index": update.document_index(), "target_kind": update.kind().as_str(),
+        "target_name": update.target_name(), "yaml_path": update.yaml_path(),
+        "current_version": update.current_version(), "latest_version": update.latest_version(),
+        "inherited_source": false,
+    });
+    match update.kind() {
+        TargetKind::HelmRelease => {
+            value["chart_name"] = json!(update.chart_name());
+            value["repo_name"] = json!(update.repo_name());
+        }
+        TargetKind::ImageBinding => {
+            value["current_image"] = json!(update.current_image());
+            value["latest_image"] = json!(update.latest_image());
+        }
+    }
+    value
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -775,28 +788,23 @@ impl AnsiStyle {
 }
 
 fn render_update_line(
-    update: &PlannedUpdate,
+    update: &UpdateReview<'_>,
     repo_root: &Path,
     human_output: HumanOutput,
 ) -> String {
     let path = human_output.styled(&relative_path(update.path(), repo_root), AnsiStyle::Cyan);
     let current = human_output.styled(update.current_version(), AnsiStyle::Yellow);
     let latest = human_output.styled(update.latest_version(), AnsiStyle::Green);
-
-    match update {
-        PlannedUpdate::Chart(chart_update) => {
-            let mut line = format!(
-                "{path}: HelmRelease {} {} {current} -> {latest}",
-                chart_update.target_name, chart_update.chart_name
-            );
-            if chart_update.inherited_source {
-                line.push_str(" inherited-source");
-            }
-            line
-        }
-        PlannedUpdate::Image(image_update) => format!(
+    match update.kind() {
+        TargetKind::HelmRelease => format!(
+            "{path}: HelmRelease {} {} {current} -> {latest}",
+            update.target_name(),
+            update.chart_name().unwrap_or_default()
+        ),
+        TargetKind::ImageBinding => format!(
             "{path}: ImageBinding {} {} {current} -> {latest}",
-            image_update.target_name, image_update.yaml_path
+            update.target_name(),
+            update.yaml_path()
         ),
     }
 }
@@ -882,11 +890,59 @@ fn ellipsize(text: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::interactive_approval::InteractiveApproval;
-    use super::{HumanOutput, PlannedUpdate, UpdateReport};
-    use crate::updater::{PlannedChartUpdate, SkippedUpdate};
+    use super::{HumanOutput, UpdateSelectionIdentity};
+    use crate::update_run::UpdatePlan;
+    use crate::update_run::implementation::{
+        PlannedChartUpdate, PlannedUpdate, SkippedUpdate, UpdateReport,
+    };
     use std::io::Cursor;
     use std::io::Write as _;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn interactive_json_disables_terminal_color_and_progress() {
+        let charts = crate::resolvers::StaticVersionResolver::new(std::collections::HashMap::new());
+        let images =
+            crate::resolvers::StaticImageVersionResolver::new(std::collections::HashMap::from([(
+                "example/app:1.0.0".to_string(),
+                "example/app:2.0.0".to_string(),
+            )]));
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp.path().join("pod.yaml"),
+            "kind: Pod\nmetadata: {name: demo}\nspec: {containers: [{image: example/app:1.0.0}]}\n",
+        )
+        .expect("write pod");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let code = super::run_with_args_and_output(
+            [
+                "fluxrepo-update",
+                "update-helm",
+                temp.path().to_str().expect("repo path"),
+                "--json",
+            ],
+            InteractiveApproval::plain(Cursor::new(b"n")),
+            &mut stdout,
+            &mut stderr,
+            &charts,
+            &images,
+            HumanOutput {
+                color: true,
+                progress: true,
+            },
+        )
+        .expect("run interactive JSON command");
+
+        assert_eq!(code, 0);
+        let report: serde_json::Value = serde_json::from_slice(&stdout).expect("JSON report");
+        assert_eq!(report["mode"], "apply");
+        let stderr = String::from_utf8(stderr).expect("UTF-8 stderr");
+        assert!(stderr.contains("[y/N]"));
+        assert!(!stderr.contains('\u{1b}'));
+        assert!(!stderr.contains("Resolving"));
+    }
 
     #[test]
     fn plain_approval_filters_planned_updates_and_preserves_skips() {
@@ -902,21 +958,17 @@ mod tests {
 
         let approved = approval
             .review(
-                report,
+                &report.review(),
                 &mut output,
                 Path::new("/repo"),
                 HumanOutput::plain(),
             )
             .expect("review updates");
 
-        assert_eq!(approved.planned.len(), 2);
-        assert_eq!(approved.planned[0].path(), Path::new("/repo/first.yaml"));
-        assert_eq!(approved.planned[1].path(), Path::new("/repo/second.yaml"));
-        assert_eq!(approved.skipped.len(), 1);
-        assert_eq!(
-            approved.skipped[0].path.as_deref(),
-            Some(Path::new("/repo/skipped.yaml"))
-        );
+        assert_eq!(approved.len(), 2);
+        assert_eq!(approved[0], *report.review()[0].identity());
+        assert_eq!(approved[1], *report.review()[1].identity());
+        assert_eq!(report.skipped().len(), 1);
         let output = String::from_utf8(output).expect("utf-8");
         assert_eq!(output.matches("[y/N] y\n").count(), 2);
         assert_eq!(output.matches("[y/N] n\n").count(), 3);
@@ -939,7 +991,7 @@ mod tests {
 
         let error = approval
             .review(
-                report,
+                &report.review(),
                 &mut output,
                 Path::new("/repo"),
                 HumanOutput::plain(),
@@ -967,7 +1019,7 @@ mod tests {
         let (result, output, original, restored) = review_through_pty(b'y');
         let approved = result.expect("review through PTY");
 
-        assert_eq!(approved.planned.len(), 1);
+        assert_eq!(approved.len(), 1);
         assert!(output.ends_with(b"[y/N] y\r\n"));
         assert_eq!(restored.input_modes, original.input_modes);
         assert_eq!(restored.output_modes, original.output_modes);
@@ -1032,7 +1084,7 @@ mod tests {
 
         let error = approval
             .review(
-                report_with_updates(&["first.yaml"]),
+                &report_with_updates(&["first.yaml"]).review(),
                 &mut output,
                 Path::new("/repo"),
                 HumanOutput::plain(),
@@ -1071,7 +1123,7 @@ mod tests {
     fn review_through_pty(
         decision: u8,
     ) -> (
-        anyhow::Result<UpdateReport>,
+        anyhow::Result<Vec<UpdateSelectionIdentity>>,
         Vec<u8>,
         rustix::termios::Termios,
         rustix::termios::Termios,
@@ -1113,7 +1165,7 @@ mod tests {
         });
         let mut output = Vec::new();
         let result = InteractiveApproval::classified(slave).review(
-            report_with_updates(&["first.yaml"]),
+            &report_with_updates(&["first.yaml"]).review(),
             &mut output,
             Path::new("/repo"),
             HumanOutput::plain(),
@@ -1123,8 +1175,8 @@ mod tests {
         (result, output, original, restored)
     }
 
-    fn report_with_updates(paths: &[&str]) -> UpdateReport {
-        UpdateReport {
+    fn report_with_updates(paths: &[&str]) -> UpdatePlan {
+        let report = UpdateReport {
             planned: paths
                 .iter()
                 .map(|path| {
@@ -1136,7 +1188,7 @@ mod tests {
                         repo_name: "repo".to_string(),
                         current_version: "1.0.0".to_string(),
                         latest_version: "2.0.0".to_string(),
-                        inherited_source: false,
+                        manifest_identity: None,
                     })
                 })
                 .collect(),
@@ -1144,6 +1196,7 @@ mod tests {
                 Some(PathBuf::from("/repo/skipped.yaml")),
                 "unresolved",
             )],
-        }
+        };
+        UpdatePlan::from_report(report, Path::new("/repo"))
     }
 }

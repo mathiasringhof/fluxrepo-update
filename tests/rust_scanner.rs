@@ -331,3 +331,30 @@ fn scanner_excludes_yaml_symlinks() {
 
     assert!(inventory.image_bindings.is_empty());
 }
+
+#[test]
+fn scanner_uses_full_identity_for_recursive_image_references() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_file(
+        &temp.path().join("release.yaml"),
+        "kind: HelmRelease\nmetadata: {name: demo}\nspec:\n  values:\n    sharedImage:\n      registry: registry.example\n      repository: example/demo\n      tag: 3.20\n      digest: sha256:abc\n    nested:\n      image: {registry: registry.example, repository: example/sidecar, tag: 1.0.0}\n",
+    );
+    let inventory = scan_repo(temp.path()).expect("scan");
+    assert_eq!(inventory.image_bindings.len(), 2);
+    for binding in &inventory.image_bindings {
+        assert!(
+            inventory
+                .image_references
+                .iter()
+                .any(|reference| reference.image == binding.image),
+            "missing full image reference {}",
+            binding.image
+        );
+    }
+    assert!(
+        inventory
+            .image_references
+            .iter()
+            .any(|reference| reference.image == "registry.example/example/demo:3.20@sha256:abc")
+    );
+}

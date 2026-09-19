@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-use fluxrepo_update::cli::ResolverFactory;
 use fluxrepo_update::resolvers::{
-    ChartVersionResolver, ImageVersionResolver, StaticImageVersionResolver, StaticVersionResolver,
+    ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
+    StaticImageVersionResolver, StaticVersionResolver,
 };
 
 #[derive(Clone, Debug)]
@@ -174,13 +174,30 @@ impl StaticResolverFactory {
     }
 }
 
-impl ResolverFactory for StaticResolverFactory {
+pub trait TestResolvers {
+    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync>;
+    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync>;
+}
+
+impl TestResolvers for StaticResolverFactory {
     fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
         Box::new(StaticVersionResolver::new(self.chart_versions.clone()))
     }
 
     fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync> {
         Box::new(StaticImageVersionResolver::new(self.image_versions.clone()))
+    }
+}
+
+pub struct DefaultResolverFactory;
+
+impl TestResolvers for DefaultResolverFactory {
+    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
+        Box::new(RepositoryChartResolver::default())
+    }
+
+    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync> {
+        Box::new(RegistryImageResolver::default())
     }
 }
 

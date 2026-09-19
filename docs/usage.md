@@ -8,7 +8,9 @@ Use `update-helm` to answer "what version bumps are available?" and, if desired,
 those bumps.
 
 `update-helm` always scans the repository first, then resolves the latest chart versions
-and image-binding versions from public remote sources.
+and image-binding versions from public remote sources. It works on explicit values in
+individual manifests, so a base-file update may be overridden by a Kustomize overlay.
+Review upgrades for compatibility; latest stable can include a new major version.
 
 ## Safe First Run
 
@@ -47,6 +49,8 @@ Human-readable output includes counts for:
 - `Skipped generated files`
 
 Use `--json` when you need the actual item lists instead of summary counts.
+`Repositories` counts every discovered source, including duplicate names. JSON groups
+those duplicates under `ambiguous_repositories`; charts using an ambiguous name are skipped.
 
 ### `update-helm`
 
@@ -71,7 +75,8 @@ Image bindings include standard workload `containers`/`initContainers` scalars a
 recursive scalar or `repository`/`tag` mappings under `HelmRelease.spec.values`.
 Mutable, templated, digest-pinned, tagless, blank, and unknown schemas remain unchanged.
 Apply mode edits the targeted YAML scalar in place so unrelated formatting, comments,
-quote style, and multi-document separators stay intact where possible.
+quote and block-scalar styles, and multi-document separators stay intact. Literal mapping
+keys containing dots or brackets are addressed separately from nested paths.
 
 ## Interactive Vs Automation Behavior
 
@@ -79,6 +84,9 @@ Default behavior is for humans:
 
 - `cargo run -- update-helm /path/to/flux-repo`
   prompts for each planned update; press `y` or `n` to approve or skip
+
+Each interactive approval identifies the file, document, resource, and field. Chart
+prompts include the source and chart; image prompts show the full old and new image.
 
 Agent mode is explicit:
 
@@ -101,6 +109,15 @@ Recommended patterns:
   - inspect `planned[].id` from `--json --non-interactive`
   - pass each chosen ID as `--apply-id` with `--write --non-interactive`
 
+Treat IDs as opaque. Current planned IDs use `v2:` and include resource, chart source,
+and image/container identity as applicable. Older `v1:` planned IDs and IDs whose
+reviewed target or versions changed are rejected; generate and review a fresh plan.
+
+Before writing, apply rechecks the reviewed scalar and its identity, then parses the
+prepared YAML to verify that only approved values changed. All selected files must pass
+this preflight. Operating-system write failures can still leave earlier files changed;
+inspect the working tree and use Git for recovery.
+
 ## Error Cases
 
 The CLI rejects these combinations:
@@ -115,13 +132,19 @@ With `--json`, failures after argument parsing are reported as JSON on stderr wi
 Unresolved targets are normal best-effort plan outcomes and do not block other updates.
 A skip can happen because:
 
-- the referenced `HelmRepository` is missing from the scanned repo
+- the referenced `HelmRepository` is missing or has a known namespace mismatch
+  (`missing_helm_repository`)
+- multiple `HelmRepository` manifests share the referenced name
 - the chart could not be found in the repository index
 - the remote repository could not be reached
 - the version scheme is unfamiliar or incomparable
 - the image tag is mutable or otherwise not comparable
 - the container registry could not list tags for the image
 - the image is templated, mutable, tagless, or digest-pinned
+
+When every target is skipped, the output reports skipped targets rather than declaring
+the repository up to date. Exit code `0` does not mean every version was resolved;
+inspect `skipped` and its reason codes before treating a check as complete.
 
 ## Exit Codes
 

@@ -1,8 +1,9 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
-use std::sync::{LazyLock, Mutex};
+use std::hash::Hash;
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use anyhow::{Result, anyhow};
 use regex::Regex;
@@ -13,8 +14,43 @@ use yaml_serde::Value;
 use crate::models::{HelmRepository, RepoType};
 
 type ChartVersionCacheKey = (RepoType, String, String, String, Option<String>);
-type ChartIndexCacheKey = (RepoType, String, String);
+type ChartIndexCacheKey = (RepoType, String);
 type BearerTokenCacheKey = (String, Option<String>, Option<String>);
+type CachedResult<Value> = Result<Arc<Value>, ResolverError>;
+type FetchCells<Key, Value> = Mutex<HashMap<Key, Arc<OnceLock<CachedResult<Value>>>>>;
+
+struct MetadataCache<Key, Value> {
+    cells: FetchCells<Key, Value>,
+}
+
+impl<Key, Value> Default for MetadataCache<Key, Value> {
+    fn default() -> Self {
+        Self {
+            cells: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl<Key: Eq + Hash, Value> MetadataCache<Key, Value> {
+    fn get_or_fetch(&self, key: Key, fetch: impl FnOnce() -> Result<Value>) -> Result<Arc<Value>> {
+        let cell = self
+            .cells
+            .lock()
+            .expect("cache lock")
+            .entry(key)
+            .or_default()
+            .clone();
+        cell.get_or_init(|| {
+            fetch().map(Arc::new).map_err(|error| {
+                error.downcast::<ResolverError>().unwrap_or_else(|error| {
+                    ResolverError::permanent(ResolverErrorCode::Unclassified, error.to_string())
+                })
+            })
+        })
+        .clone()
+        .map_err(Into::into)
+    }
+}
 
 static AUTH_PAIR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"([A-Za-z]+)="([^"]*)""#).expect("auth regex"));
@@ -55,7 +91,7 @@ pub enum ResolverErrorCode {
     Unclassified,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResolverError {
     code: ResolverErrorCode,
     message: String,
@@ -76,12 +112,20 @@ impl ResolverError {
     fn request_failed(
         code: ResolverErrorCode,
         source_url: impl Into<String>,
-        error: impl fmt::Display,
+        error: reqwest::Error,
     ) -> Self {
+        let retryable = error.status().map_or_else(
+            || !error.is_builder() && !error.is_decode(),
+            |status| {
+                status.is_server_error()
+                    || status == reqwest::StatusCode::REQUEST_TIMEOUT
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            },
+        );
         Self {
             code,
             message: error.to_string(),
-            retryable: true,
+            retryable,
             source_url: Some(source_url.into()),
         }
     }
@@ -172,8 +216,9 @@ impl ImageVersionResolver for StaticImageVersionResolver {
 
 pub struct RepositoryChartResolver {
     client: Client,
+    registry_resolver: RegistryImageResolver,
     version_cache: Mutex<HashMap<ChartVersionCacheKey, String>>,
-    index_cache: Mutex<HashMap<ChartIndexCacheKey, Value>>,
+    index_cache: MetadataCache<ChartIndexCacheKey, Value>,
 }
 
 impl Default for RepositoryChartResolver {
@@ -247,17 +292,14 @@ impl RepositoryChartResolver {
                 format!("invalid OCI repository URL {}", repository.url),
             )
         })?;
-        let image = format!(
-            "{}/{chart_name}:{current_version}",
-            repository_path.trim_end_matches('/')
-        );
-        let registry_resolver = RegistryImageResolver::builder()
-            .client(self.client.clone())
-            .build();
-        let resolved_image = registry_resolver.resolve(&image)?;
-        parse_image_reference(&resolved_image)?
-            .tag
-            .ok_or_else(|| anyhow!("resolved OCI chart did not contain a version tag"))
+        let image = format!("{}/{chart_name}", repository_path.trim_end_matches('/'));
+        let versions = self
+            .registry_resolver
+            .list_tags(&parse_image_reference(&image)?)?
+            .iter()
+            .map(|tag| tag.replace('_', "+"))
+            .collect();
+        Self::select_chart_version(repository, chart_name, Some(current_version), versions)
     }
 
     fn resolve_index(
@@ -297,6 +339,15 @@ impl RepositoryChartResolver {
                     .map(str::to_string)
             })
             .collect::<Vec<_>>();
+        Self::select_chart_version(repository, chart_name, current_version, versions)
+    }
+
+    fn select_chart_version(
+        repository: &HelmRepository,
+        chart_name: &str,
+        current_version: Option<&str>,
+        versions: Vec<String>,
+    ) -> Result<String> {
         if versions.is_empty() {
             return Err(ResolverError::permanent(
                 ResolverErrorCode::ChartNotFound,
@@ -366,24 +417,13 @@ impl RepositoryChartResolver {
             })
     }
 
-    fn load_repository_index(&self, repository: &HelmRepository) -> Result<Value> {
-        let cache_key = (
-            repository.repo_type.clone(),
-            repository.name.clone(),
-            repository.url.clone(),
-        );
-        if let Some(document) = self.index_cache.lock().expect("cache lock").get(&cache_key) {
-            return Ok(document.clone());
-        }
-
-        let url = format!("{}/index.yaml", repository.url.trim_end_matches('/'));
-        let text = self.fetch_chart_metadata(&url)?;
-        let document: Value = yaml_serde::from_str(&text)?;
-        self.index_cache
-            .lock()
-            .expect("cache lock")
-            .insert(cache_key, document.clone());
-        Ok(document)
+    fn load_repository_index(&self, repository: &HelmRepository) -> Result<Arc<Value>> {
+        let cache_key = (repository.repo_type.clone(), repository.url.clone());
+        self.index_cache.get_or_fetch(cache_key, || {
+            let url = format!("{}/index.yaml", repository.url.trim_end_matches('/'));
+            let text = self.fetch_chart_metadata(&url)?;
+            Ok(yaml_serde::from_str(&text)?)
+        })
     }
 
     fn fetch_chart_metadata(&self, url: &str) -> Result<String> {
@@ -412,10 +452,14 @@ impl RepositoryChartResolverBuilder {
     }
 
     pub fn build(self) -> RepositoryChartResolver {
+        let client = self.client.unwrap_or_else(default_http_client);
         RepositoryChartResolver {
-            client: self.client.unwrap_or_else(default_http_client),
+            registry_resolver: RegistryImageResolver::builder()
+                .client(client.clone())
+                .build(),
+            client,
             version_cache: Mutex::new(HashMap::new()),
-            index_cache: Mutex::new(HashMap::new()),
+            index_cache: MetadataCache::default(),
         }
     }
 }
@@ -502,8 +546,8 @@ pub fn parse_image_reference(image: &str) -> Result<ParsedImageReference> {
 pub struct RegistryImageResolver {
     client: Client,
     resolution_cache: Mutex<HashMap<String, String>>,
-    tag_cache: Mutex<HashMap<(String, String), Vec<String>>>,
-    token_cache: Mutex<HashMap<BearerTokenCacheKey, String>>,
+    tag_cache: MetadataCache<(String, String), Vec<String>>,
+    token_cache: MetadataCache<BearerTokenCacheKey, String>,
 }
 
 impl Default for RegistryImageResolver {
@@ -578,11 +622,11 @@ impl ImageVersionResolver for RegistryImageResolver {
             .filter(|candidate| {
                 !is_mutable_image_tag(candidate)
                     && !looks_like_commit_tag(candidate)
-                    && !is_prerelease_version(candidate)
-                    && is_comparable_version(tag, candidate)
+                    && !is_prerelease_image_tag(candidate)
+                    && is_comparable_image_tag(tag, candidate)
             })
-            .max_by(|left, right| compare_versions(left, right));
-        if newest_stable.is_some_and(|latest| compare_versions(tag, latest).is_gt()) {
+            .max_by(|left, right| compare_image_tags(left, right));
+        if newest_stable.is_some_and(|latest| compare_image_tags(tag, latest).is_gt()) {
             return Err(ResolverError::permanent(
                 ResolverErrorCode::CurrentVersionNewerThanSource,
                 format!("current image tag {tag} is newer than every stable source tag"),
@@ -607,7 +651,7 @@ impl ImageVersionResolver for RegistryImageResolver {
         }
         let latest_tag = comparable_tags
             .into_iter()
-            .max_by(|left, right| compare_versions(left, right))
+            .max_by(|left, right| compare_image_tags(left, right))
             .expect("non-empty comparable tags");
         let resolved = reference.with_tag(latest_tag);
         self.resolution_cache
@@ -623,15 +667,16 @@ impl RegistryImageResolver {
         RegistryImageResolverBuilder::default()
     }
 
-    fn list_tags(&self, reference: &ParsedImageReference) -> Result<Vec<String>> {
+    fn list_tags(&self, reference: &ParsedImageReference) -> Result<Arc<Vec<String>>> {
         let cache_key = (
             reference.api_registry().to_string(),
             reference.repository.clone(),
         );
-        if let Some(cached) = self.tag_cache.lock().expect("cache lock").get(&cache_key) {
-            return Ok(cached.clone());
-        }
+        self.tag_cache
+            .get_or_fetch(cache_key, || self.fetch_tags(reference))
+    }
 
+    fn fetch_tags(&self, reference: &ParsedImageReference) -> Result<Vec<String>> {
         let mut url = Some(format!(
             "{}://{}/v2/{}/tags/list?n=1000",
             registry_scheme(reference.api_registry()),
@@ -639,7 +684,26 @@ impl RegistryImageResolver {
             reference.repository
         ));
         let mut tags = Vec::new();
+        let mut visited = HashSet::new();
         while let Some(current_url) = url {
+            if !visited.insert(current_url.clone()) {
+                return Err(ResolverError::with_source_url(
+                    ResolverErrorCode::RegistryRequestFailed,
+                    "registry pagination cycle detected",
+                    false,
+                    current_url,
+                )
+                .into());
+            }
+            if visited.len() > 1000 {
+                return Err(ResolverError::with_source_url(
+                    ResolverErrorCode::RegistryRequestFailed,
+                    "registry pagination exceeded 1000 pages",
+                    false,
+                    current_url,
+                )
+                .into());
+            }
             let response = self.get_registry(&current_url)?;
             let next_url = parse_next_link(
                 response
@@ -675,10 +739,6 @@ impl RegistryImageResolver {
             url = next_url;
         }
 
-        self.tag_cache
-            .lock()
-            .expect("cache lock")
-            .insert(cache_key, tags.clone());
         Ok(tags)
     }
 
@@ -714,10 +774,12 @@ impl RegistryImageResolver {
             challenge.service.clone(),
             challenge.scope.clone(),
         );
-        if let Some(token) = self.token_cache.lock().expect("cache lock").get(&cache_key) {
-            return Ok(token.clone());
-        }
+        self.token_cache
+            .get_or_fetch(cache_key, || self.fetch_bearer_token(challenge))
+            .map(|token| token.as_ref().clone())
+    }
 
+    fn fetch_bearer_token(&self, challenge: &WwwAuthenticateChallenge) -> Result<String> {
         let mut request = self.client.get(&challenge.realm);
         if let Some(service) = &challenge.service {
             request = request.query(&[("service", service)]);
@@ -766,10 +828,6 @@ impl RegistryImageResolver {
                 )
             })?
             .to_string();
-        self.token_cache
-            .lock()
-            .expect("cache lock")
-            .insert(cache_key, token.clone());
         Ok(token)
     }
 }
@@ -790,8 +848,8 @@ impl RegistryImageResolverBuilder {
         RegistryImageResolver {
             client: self.client.unwrap_or_else(default_http_client),
             resolution_cache: Mutex::new(HashMap::new()),
-            tag_cache: Mutex::new(HashMap::new()),
-            token_cache: Mutex::new(HashMap::new()),
+            tag_cache: MetadataCache::default(),
+            token_cache: MetadataCache::default(),
         }
     }
 }
@@ -855,8 +913,8 @@ pub fn select_comparable_tags<'a>(current_tag: &str, tags: &[&'a str]) -> Vec<&'
         .filter(|tag| {
             !is_mutable_image_tag(tag)
                 && !looks_like_commit_tag(tag)
-                && !is_prerelease_version(tag)
-                && is_comparable_version(current_tag, tag)
+                && !is_prerelease_image_tag(tag)
+                && is_comparable_image_tag(current_tag, tag)
         })
         .collect()
 }
@@ -875,6 +933,58 @@ pub fn is_newer_version(current: &str, candidate: &str) -> bool {
     !is_prerelease_version(candidate)
         && is_comparable_version(current, candidate)
         && compare_versions(candidate, current).is_gt()
+}
+
+pub fn is_newer_image_tag(current: &str, candidate: &str) -> bool {
+    !is_prerelease_image_tag(candidate)
+        && is_comparable_image_tag(current, candidate)
+        && compare_image_tags(candidate, current).is_gt()
+}
+
+fn image_tag_parts(tag: &str) -> (&str, Option<&str>) {
+    for (index, _) in tag.match_indices('-') {
+        let suffix = &tag[index + 1..];
+        let version = &tag[..index];
+        let numeric_version = parse_semver(version).is_some()
+            || parse_comparable_version(version)
+                .is_some_and(|version| version.family != VersionFamily::Pattern);
+        if numeric_version && is_image_variant(suffix) {
+            return (&tag[..index], Some(suffix));
+        }
+    }
+    (tag, None)
+}
+
+fn is_image_variant(suffix: &str) -> bool {
+    let suffix = suffix.to_lowercase();
+    let Some(first) = suffix.split(['-', '.', '_']).next() else {
+        return false;
+    };
+    !first.is_empty()
+        && !first.chars().all(|character| character.is_ascii_digit())
+        && !is_prerelease_identifier(first)
+}
+
+fn is_prerelease_image_tag(tag: &str) -> bool {
+    let (version, variant) = image_tag_parts(tag);
+    is_prerelease_version(version)
+        || variant.is_some_and(|variant| {
+            variant
+                .to_lowercase()
+                .split(['-', '.', '_'])
+                .any(is_prerelease_identifier)
+        })
+}
+
+fn is_comparable_image_tag(current: &str, candidate: &str) -> bool {
+    let (current_version, current_variant) = image_tag_parts(current);
+    let (candidate_version, candidate_variant) = image_tag_parts(candidate);
+    current_variant == candidate_variant
+        && is_comparable_version(current_version, candidate_version)
+}
+
+fn compare_image_tags(left: &str, right: &str) -> Ordering {
+    compare_versions(image_tag_parts(left).0, image_tag_parts(right).0)
 }
 
 fn compare_versions(left: &str, right: &str) -> Ordering {
@@ -993,13 +1103,22 @@ fn is_prerelease_version(version: &str) -> bool {
 }
 
 fn is_prerelease_identifier(identifier: &str) -> bool {
-    ["alpha", "beta", "preview", "pre", "dev", "snapshot", "rc"]
-        .into_iter()
-        .any(|prefix| {
-            identifier.strip_prefix(prefix).is_some_and(|suffix| {
-                suffix.is_empty() || suffix.chars().all(|character| character.is_ascii_digit())
-            })
+    [
+        "alpha",
+        "beta",
+        "preview",
+        "pre",
+        "dev",
+        "snapshot",
+        "rc",
+        "milestone",
+    ]
+    .into_iter()
+    .any(|prefix| {
+        identifier.strip_prefix(prefix).is_some_and(|suffix| {
+            suffix.is_empty() || suffix.chars().all(|character| character.is_ascii_digit())
         })
+    })
 }
 
 fn parse_semver(version: &str) -> Option<SemanticVersion> {

@@ -44,6 +44,67 @@ fn newer_version_rejects_incompatible_chart_scheme_changes() {
 }
 
 #[test]
+fn image_tag_variants_preserve_flavor_and_architecture() {
+    for variant in [
+        "alpine",
+        "alpine3.21",
+        "debian",
+        "bookworm",
+        "slim",
+        "slim-bookworm",
+        "amd64",
+        "arm64",
+        "arm64v8",
+        "arm32v7",
+        "x86_64",
+        "alpine-arm64",
+        "cuda12.4.0-runtime-ubuntu22.04",
+        "windowsservercore-ltsc2022",
+    ] {
+        let current = format!("1.2.3-{variant}");
+        let latest = format!("2.0.0-{variant}");
+        let prerelease = format!("3.0.0-rc.1-{variant}");
+        let tags = [
+            current.as_str(),
+            latest.as_str(),
+            "2.0.0",
+            prerelease.as_str(),
+        ];
+        assert_eq!(
+            select_comparable_tags(&current, &tags),
+            vec![current.as_str(), latest.as_str()],
+            "variant {variant} must be retained"
+        );
+    }
+    assert_eq!(
+        select_comparable_tags("1.2.3", &["1.2.3", "2.0.0-alpine", "2.0.0"]),
+        vec!["1.2.3", "2.0.0"]
+    );
+    assert_eq!(
+        select_comparable_tags("1.2.3-rc.1", &["1.2.3", "1.3.0-rc.1"]),
+        vec!["1.2.3"]
+    );
+    assert!(!is_newer_version("1.2.3", "2.0.0-alpine"));
+    for prerelease in ["rc.1", "milestone.1", "0"] {
+        assert_eq!(
+            select_comparable_tags(&format!("1.2.3-{prerelease}"), &["1.2.3", "1.3.0-rc.1"]),
+            vec!["1.2.3"]
+        );
+    }
+    assert_eq!(
+        select_comparable_tags("version-10.0_p1-r10", &["version-10.2_p1-r0"]),
+        vec!["version-10.2_p1-r0"]
+    );
+    assert!(
+        select_comparable_tags(
+            "1.2.3-alpine-rc.1",
+            &["1.2.3-alpine-rc.1", "1.3.0-alpine-rc.1", "1.3.0"]
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn version_comparison_stays_within_comparable_families() {
     let cases = [
         ("20250101", "20250102", true),
@@ -135,6 +196,57 @@ entries:
     let requests = server.finish();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].path, "/index.yaml");
+}
+
+#[test]
+fn concurrent_chart_resolves_share_one_index_download() {
+    let server = TestHttpServer::new(vec![ResponseSpec::new(
+        200,
+        "entries:\n  app:\n    - version: 1.0.0\n    - version: 2.0.0\n",
+    )]);
+    let resolver = RepositoryChartResolver::default();
+    let repository = helm_repository("charts", &server.base_url, "default");
+    let barrier = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        let handles = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    resolver.resolve(&repository, "app", Some("1.0.0"))
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            assert_eq!(handle.join().expect("worker").expect("resolution"), "2.0.0");
+        }
+    });
+    assert_eq!(server.finish().len(), 1);
+}
+
+#[test]
+fn oci_chart_resolves_reuse_registry_metadata_across_current_versions() {
+    let server = TestHttpServer::new(vec![ResponseSpec::new(
+        200,
+        r#"{"tags":["1.0.0","1.1.0","2.0.0"]}"#,
+    )]);
+    let resolver = RepositoryChartResolver::default();
+    let repository = helm_repository(
+        "charts",
+        &format!(
+            "oci://{}/charts",
+            server.base_url.trim_start_matches("http://")
+        ),
+        "oci",
+    );
+    for current in ["1.0.0", "1.1.0"] {
+        assert_eq!(
+            resolver
+                .resolve(&repository, "app", Some(current))
+                .expect("OCI resolution"),
+            "2.0.0"
+        );
+    }
+    assert_eq!(server.finish().len(), 1);
 }
 
 #[test]
@@ -256,6 +368,27 @@ fn repository_chart_resolver_resolves_generic_oci_repositories_by_protocol() {
     assert_eq!(latest, "2.0.0");
     let requests = server.finish();
     assert_eq!(requests[0].path, "/v2/charts/demo/tags/list?n=1000");
+}
+
+#[test]
+fn oci_chart_versions_normalize_build_metadata_and_keep_chart_prerelease_rules() {
+    let server = TestHttpServer::new(vec![ResponseSpec::new(
+        200,
+        r#"{"tags":["1.2.3_build.1","1.3.0_build.2","2.0.0-alpine","2.0.0-rc.1"]}"#,
+    )]);
+    let repository = helm_repository(
+        "charts",
+        &format!(
+            "oci://{}/charts",
+            server.base_url.trim_start_matches("http://")
+        ),
+        "oci",
+    );
+    let latest = RepositoryChartResolver::default()
+        .resolve(&repository, "app", Some("1.2.3+build.1"))
+        .expect("OCI chart with build metadata");
+    assert_eq!(latest, "1.3.0+build.2");
+    server.finish();
 }
 
 #[test]
@@ -457,9 +590,55 @@ fn registry_resolver_caches_resolved_image() {
     assert_eq!(requests[0].path, "/v2/demo/app/tags/list?n=1000");
 }
 
+#[test]
+fn permanent_http_errors_are_not_retryable() {
+    for (status, retryable) in [
+        (401, false),
+        (403, false),
+        (404, false),
+        (408, true),
+        (429, true),
+        (500, true),
+    ] {
+        let server = TestHttpServer::new(vec![ResponseSpec::new(status, "request failed")]);
+        let repository = helm_repository("charts", &server.base_url, "default");
+        let error = RepositoryChartResolver::default()
+            .resolve(&repository, "app", Some("1.0.0"))
+            .expect_err("HTTP failure");
+        let error = error
+            .downcast_ref::<ResolverError>()
+            .expect("resolver error");
+        assert_eq!(error.retryable(), retryable, "HTTP {status}");
+        assert_eq!(error.code(), ResolverErrorCode::ChartRequestFailed);
+        server.finish();
+    }
+}
+
+#[test]
+fn registry_pagination_stops_before_requesting_a_repeated_page() {
+    let server = TestHttpServer::new(vec![
+        ResponseSpec::new(200, r#"{"tags":["1.0.0","1.1.0"]}"#)
+            .header("Link", r#"</v2/app/tags/list?n=1000>; rel="next""#),
+    ]);
+    let image = format!(
+        "{}/app:1.0.0",
+        server.base_url.trim_start_matches("http://")
+    );
+    let error = RegistryImageResolver::default()
+        .resolve(&image)
+        .expect_err("pagination cycle");
+    let error = error
+        .downcast_ref::<ResolverError>()
+        .expect("resolver error");
+    assert!(error.to_string().contains("pagination cycle"));
+    assert!(!error.retryable());
+    assert_eq!(server.finish().len(), 1);
+}
+
 fn helm_repository(name: &str, url: &str, repo_type: &str) -> HelmRepository {
     HelmRepository {
         name: name.to_string(),
+        namespace: None,
         url: url.to_string(),
         repo_type: RepoType::from(repo_type),
         path: PathBuf::new(),
