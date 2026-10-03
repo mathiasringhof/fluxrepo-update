@@ -54,9 +54,9 @@ cargo run -- inventory /path/to/flux-repo
 cargo run -- inventory /path/to/flux-repo --json
 ```
 
-JSON inventory includes discovered `HelmRepository` sources, update targets, image
-references, unresolved targets, and skipped generated manifests. Repeated source names
-are grouped as ambiguous; affected charts are skipped instead of choosing a source.
+JSON inventory includes discovered sources, update targets, unchecked version declarations,
+and skipped generated manifests. Equivalent source copies resolve together when their
+name, raw namespace, and full specification match; conflicting copies remain ambiguous.
 
 Preview available updates without changing files:
 
@@ -162,6 +162,12 @@ best-effort: unresolved targets retain stable IDs and reason codes while other u
 remain available. Latest stable selection supports semantic, calendar, and numeric versions,
 can cross major versions, excludes prereleases, and never proposes a downgrade. Image
 variant suffixes are preserved, and OCI chart build metadata is normalized correctly.
+
+Reports cover all eligible repository manifests, including untracked files and inactive
+bases; they do not describe deployed resources. Coverage counts distinguish discovered,
+checked, and unchecked declarations. Tag-only `image.tag` overrides, CloudNativePG
+`spec.imageName`, and HTTP(S) Kustomize resource URLs are visible as unchecked entries
+with their location, value, and reason. They remain unchanged; additional checks are deferred.
 
 The tool does not evaluate effective Kustomize overlays, update `chartRef`/`OCIRepository`
 versions, or prove that an upgrade is compatible with your chart values or cluster.

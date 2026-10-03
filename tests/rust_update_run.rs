@@ -9,6 +9,184 @@ use fluxrepo_update::update_run::{
     UpdateRun, UpdateRunMode, UpdateRunStatus, UpdateSelectionIdentity,
 };
 
+fn chart_copies() -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for environment in ["production", "testing"] {
+        let directory = temp.path().join(environment);
+        fs::create_dir(&directory).expect("environment directory");
+        fs::write(directory.join("source.yaml"), format!(
+            "kind: HelmRepository\nmetadata:\n  name: shared\n  namespace: apps\n  labels: {{environment: {environment}}}\nspec:\n  url: https://charts.example.org\n  interval: 1h\n"
+        )).expect("source");
+        fs::write(directory.join("release.yaml"), format!(
+            "kind: HelmRelease\nmetadata: {{name: {environment}, namespace: apps}}\nspec:\n  chart:\n    spec:\n      chart: demo\n      version: 1.0.0\n      sourceRef: {{kind: HelmRepository, name: shared}}\n"
+        )).expect("release");
+    }
+    temp
+}
+
+#[test]
+fn equivalent_source_copies_allow_each_manifest_to_update() {
+    let temp = chart_copies();
+    let inventory = scan_repo(temp.path()).expect("scan");
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("shared".into(), "demo".into()),
+        "2.0.0".into(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::new());
+    let outcome = UpdateRun::new(&charts, &images)
+        .execute(
+            &inventory,
+            UpdateRunMode::ApplyAll,
+            &mut |_| unreachable!(),
+            None,
+        )
+        .expect("apply equivalent sources");
+    assert_eq!(outcome.applied().len(), 2);
+    assert!(outcome.plan().skipped().is_empty());
+    for environment in ["production", "testing"] {
+        let text = fs::read_to_string(temp.path().join(environment).join("release.yaml")).unwrap();
+        assert!(text.contains("version: 2.0.0"));
+    }
+}
+
+#[test]
+fn changing_any_equivalent_source_during_review_prevents_all_writes() {
+    for environment in ["production", "testing"] {
+        let temp = chart_copies();
+        let inventory = scan_repo(temp.path()).expect("scan");
+        let charts = StaticVersionResolver::new(HashMap::from([(
+            ("shared".into(), "demo".into()),
+            "2.0.0".into(),
+        )]));
+        let images = StaticImageVersionResolver::new(HashMap::new());
+        let result = UpdateRun::new(&charts, &images).execute(
+            &inventory,
+            UpdateRunMode::ReviewAndApply,
+            &mut |items| {
+                let path = temp.path().join(environment).join("source.yaml");
+                let text = fs::read_to_string(&path).unwrap();
+                fs::write(
+                    path,
+                    text.replace("charts.example.org", "different.example.org"),
+                )
+                .unwrap();
+                Ok(items.iter().map(|item| item.identity().clone()).collect())
+            },
+            None,
+        );
+        assert!(
+            result
+                .expect_err("changed copy must reject application")
+                .to_string()
+                .contains("changed after planning")
+        );
+        for directory in ["production", "testing"] {
+            assert!(
+                fs::read_to_string(temp.path().join(directory).join("release.yaml"))
+                    .unwrap()
+                    .contains("version: 1.0.0")
+            );
+        }
+    }
+}
+
+#[test]
+fn inventory_explains_equivalent_source_locations_without_losing_the_count() {
+    let temp = chart_copies();
+    let inventory = scan_repo(temp.path()).expect("scan").to_json_value();
+    assert_eq!(inventory["repository_count"], 2);
+    assert_eq!(inventory["ambiguous_repositories"], serde_json::json!([]));
+    let sources = inventory["equivalent_repositories"][0]["sources"]
+        .as_array()
+        .expect("equivalent sources");
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0]["path"], "production/source.yaml");
+    assert_eq!(sources[1]["path"], "testing/source.yaml");
+    assert!(sources.iter().all(
+        |source| source["namespace"] == "apps" && source["url"] == "https://charts.example.org"
+    ));
+}
+
+#[test]
+fn differing_source_specs_or_namespaces_remain_ambiguous() {
+    for replacement in [
+        "  interval: 2h\n",
+        "  interval: 1h\n  secretRef: {name: credentials}\n",
+        "  interval: 1h\n  type: oci\n",
+    ] {
+        let temp = chart_copies();
+        let path = temp.path().join("testing/source.yaml");
+        let original = fs::read_to_string(&path).unwrap();
+        fs::write(&path, original.replace("  interval: 1h\n", replacement)).unwrap();
+        let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+        assert_eq!(inventory["repository_count"], 2);
+        assert_eq!(
+            inventory["ambiguous_repositories"][0]["sources"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(inventory["equivalent_repositories"], serde_json::json!([]));
+    }
+    let temp = chart_copies();
+    let path = temp.path().join("testing/source.yaml");
+    let original = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        original.replace("namespace: apps", "namespace: other"),
+    )
+    .unwrap();
+    assert_eq!(
+        scan_repo(temp.path()).unwrap().ambiguous_repositories["shared"].len(),
+        2
+    );
+}
+
+#[test]
+fn a_changed_equivalent_copy_invalidates_previously_selected_ids() {
+    let temp = chart_copies();
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("shared".into(), "demo".into()),
+        "2.0.0".into(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::new());
+    let run = UpdateRun::new(&charts, &images);
+    let inventory = scan_repo(temp.path()).unwrap();
+    let planned = run
+        .execute(
+            &inventory,
+            UpdateRunMode::PlanOnly,
+            &mut |_| unreachable!(),
+            None,
+        )
+        .unwrap();
+    let selected = planned
+        .plan()
+        .review()
+        .iter()
+        .map(|item| item.identity().clone())
+        .collect();
+    let path = temp.path().join("testing/source.yaml");
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        text.replace("environment: testing", "environment: renamed"),
+    )
+    .unwrap();
+    let refreshed = scan_repo(temp.path()).unwrap();
+    let outcome = run
+        .execute(
+            &refreshed,
+            UpdateRunMode::ApplySelected(selected),
+            &mut |_| unreachable!(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(outcome.status(), UpdateRunStatus::RunRejected);
+    assert!(outcome.applied().is_empty());
+}
+
 fn fixture() -> (
     tempfile::TempDir,
     StaticVersionResolver,

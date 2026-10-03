@@ -14,6 +14,215 @@ use fluxrepo_update::cli::run_with_args;
 use serde_json::Value;
 
 #[test]
+fn tag_only_image_overrides_are_visible_and_never_written() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("release.yaml");
+    let original = "kind: HelmRelease\nmetadata: {name: immich}\nspec:\n  values:\n    controllers:\n      main:\n        containers:\n          main:\n            image: {tag: v3.1.0}\n    zfsPlugin:\n      image: {tag: 2.10.1}\n";
+    write_file(&path, original);
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().unwrap(),
+            "--json",
+            "--write",
+            "--non-interactive",
+        ],
+        &DefaultResolverFactory,
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    let skipped = report["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 2);
+    assert!(skipped.iter().any(|item| item["yaml_path"]
+        == "spec.values.controllers.main.containers.main.image.tag"
+        && item["current_value"] == "v3.1.0"));
+    assert!(skipped.iter().any(
+        |item| item["yaml_path"] == "spec.values.zfsPlugin.image.tag"
+            && item["current_value"] == "2.10.1"
+    ));
+    assert!(skipped.iter().all(|item| item["path"] == "release.yaml"
+        && item["reason"].as_str().unwrap().contains("repository")));
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn cloudnativepg_images_are_visible_without_enabling_new_writes() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("cloudnative-pg.yaml");
+    let original = "apiVersion: postgresql.cnpg.io/v1\nkind: Cluster\nmetadata: {name: immich}\nspec:\n  imageName: ghcr.io/tensorchord/cloudnative-vectorchord:16.9-0.4.3\n";
+    write_file(&path, original);
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().unwrap(),
+            "--json",
+            "--write",
+            "--non-interactive",
+        ],
+        &DefaultResolverFactory,
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["skipped"].as_array().unwrap().len(), 1);
+    assert_eq!(report["skipped"][0]["yaml_path"], "spec.imageName");
+    assert_eq!(
+        report["skipped"][0]["current_value"],
+        "ghcr.io/tensorchord/cloudnative-vectorchord:16.9-0.4.3"
+    );
+    assert!(!report["skipped"][0]["reason"].as_str().unwrap().is_empty());
+    assert_eq!(fs::read_to_string(path).unwrap(), original);
+}
+
+#[test]
+fn remote_kustomize_resources_are_reported_without_fetching_or_editing_them() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("kustomization.yaml");
+    let original = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n- https://github.com/kubevirt/kubevirt/releases/download/v1.8.0/kubevirt-operator.yaml\n- https://github.com/kubevirt/containerized-data-importer/releases/download/v1.65.0/cdi-operator.yaml\n- https://github.com/intel/intel-device-plugins-for-kubernetes/deployments/nfd?ref=v0.34.1\n- local.yaml\n# - https://example.org/commented/v1.0.0.yaml\n";
+    write_file(&path, original);
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().unwrap(),
+            "--json",
+            "--write",
+            "--non-interactive",
+        ],
+        &DefaultResolverFactory,
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    let skipped = report["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 3);
+    assert_eq!(skipped[0]["yaml_path"], "resources[0]");
+    assert!(
+        skipped[0]["current_value"]
+            .as_str()
+            .unwrap()
+            .contains("v1.8.0")
+    );
+    assert_eq!(skipped[2]["yaml_path"], "resources[2]");
+    assert!(
+        skipped[2]["current_value"]
+            .as_str()
+            .unwrap()
+            .ends_with("?ref=v0.34.1")
+    );
+    assert_eq!(fs::read_to_string(path).unwrap(), original);
+}
+
+#[test]
+fn coverage_counts_include_current_and_unchecked_declarations_in_plan_and_apply() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_file(
+        &temp.path().join("pod.yaml"),
+        "kind: Pod\nmetadata: {name: demo}\nspec:\n  containers:\n  - {name: current, image: 'example/current:1.0.0'}\n  - {name: update, image: 'example/update:1.0.0'}\n",
+    );
+    write_file(
+        &temp.path().join("release.yaml"),
+        "kind: HelmRelease\nmetadata: {name: override}\nspec:\n  values:\n    image: {tag: v3.1.0}\n",
+    );
+    let factory = StaticResolverFactory::new(
+        HashMap::new(),
+        HashMap::from([
+            (
+                "example/current:1.0.0".into(),
+                "example/current:1.0.0".into(),
+            ),
+            ("example/update:1.0.0".into(), "example/update:2.0.0".into()),
+        ]),
+    );
+    for write in [false, true] {
+        let mut args = vec![
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().unwrap(),
+            "--json",
+            "--non-interactive",
+        ];
+        if write {
+            args.push("--write");
+        }
+        let (code, stdout, stderr) = run_cli(&args, &factory);
+        assert_eq!(code, if write { 20 } else { 10 }, "{stderr}");
+        let report: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(report["scope"], "repository_manifests");
+        assert_eq!(report["summary"]["discovered_count"], 3);
+        assert_eq!(report["summary"]["checked_count"], 2);
+        assert_eq!(report["summary"]["unchecked_count"], 1);
+        assert_eq!(report["summary"]["planned_count"], 1);
+    }
+}
+
+#[test]
+fn human_report_explains_unchecked_fields_and_repository_coverage() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_file(
+        &temp.path().join("release.yaml"),
+        "kind: HelmRelease\nmetadata: {name: demo}\nspec:\n  values:\n    image: {tag: v3.1.0}\n",
+    );
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().unwrap(),
+            "--non-interactive",
+        ],
+        &DefaultResolverFactory,
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.is_empty());
+    for fact in [
+        "repository manifests",
+        "1 discovered",
+        "0 checked",
+        "1 unchecked",
+        "release.yaml",
+        "spec.values.image.tag",
+        "v3.1.0",
+    ] {
+        assert!(stderr.contains(fact), "missing {fact}: {stderr}");
+    }
+    assert!(!stderr.contains("No updates required"));
+}
+
+#[test]
+fn chart_plans_identify_every_equivalent_source_copy() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_ambiguous_source_fixture(temp.path(), "apps");
+    fs::copy(
+        temp.path().join("a-source.yaml"),
+        temp.path().join("z-source.yaml"),
+    )
+    .unwrap();
+    let factory = StaticResolverFactory::new(
+        HashMap::from([(("shared".into(), "demo".into()), "2.0.0".into())]),
+        HashMap::new(),
+    );
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().unwrap(),
+            "--json",
+            "--non-interactive",
+        ],
+        &factory,
+    );
+    assert_eq!(code, 10, "{stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        report["planned"][0]["sources"],
+        serde_json::json!([
+            {"path": "a-source.yaml", "document_index": 0},
+            {"path": "z-source.yaml", "document_index": 0},
+        ])
+    );
+}
+
+#[test]
 fn update_helm_workflow_plans_and_applies_from_local_remotes() {
     let temp = tempfile::tempdir().expect("temp dir");
     let repo_root = temp.path().join("repo");
@@ -487,6 +696,11 @@ spec:
         .iter()
         .map(|item| item["reason_code"].as_str().expect("reason code"))
         .collect::<std::collections::BTreeSet<_>>();
+    assert!(report["skipped"].as_array().unwrap().iter().any(|item| {
+        item["reason_code"] == "image_reference_pinned_by_digest"
+            && item["current_value"] == "1.0.0"
+            && item["document_index"] == 0
+    }));
     assert_eq!(
         reasons,
         std::collections::BTreeSet::from([

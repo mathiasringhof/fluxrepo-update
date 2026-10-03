@@ -3,7 +3,8 @@
 `fluxrepo-update` scans user-authored `.yaml` and `.yml` Managed Manifests. Each manifest
 is interpreted independently; the tool does not render Kustomize graphs or inherit chart
 identity and values from another file. An explicit base version can therefore be updated
-even when an overlay overrides it; the plan does not describe effective deployed versions.
+even when an overlay overrides it or no environment includes it. The scope is all eligible
+repository manifests, including untracked files, not effective deployed versions.
 
 ## Updated
 
@@ -26,11 +27,16 @@ including variant version numbers. Unfamiliar suffixes on numeric versions are t
 conservatively as variants; explicit prerelease markers remain excluded. Chart versions
 use chart SemVer rules, including OCI registry `_` encoding for `+` build metadata.
 
-Source names must be unique across the scanned tree. Duplicate `HelmRepository` names
-are reported as ambiguous, even across namespaces; affected charts are skipped. Known
+Repeated `HelmRepository` definitions resolve together only when their name, raw namespace,
+and complete `spec` match. Paths and descriptive metadata do not affect equivalence;
+even harmless spec differences such as polling intervals remain conflicts. Different
+definitions with the same name remain ambiguous, including across namespaces. Known
 namespace mismatches are also skipped: `sourceRef.namespace`, or the release namespace
 when omitted, must match the source namespace when both are explicit. Missing namespaces
 are not inferred from Kustomize configuration.
+
+All equivalent source copies participate in selection identity and are rechecked before
+applying updates. Kustomize namespace transformations remain unsupported.
 
 Within a run, targets share fetched metadata. Registry pagination cycles or more than
 1,000 pages are reported as resolution failures rather than using a partial tag list.
@@ -50,6 +56,23 @@ Within a run, targets share fetched metadata. Registry pagination cycles or more
 Recognizable unresolved targets appear in the Update Plan with stable identities and
 reason codes. They do not block independently resolvable updates. Malformed YAML and
 runtime or write failures remain errors.
+
+The scanner also reports these declarations without checking or editing them:
+
+- `image.tag` mappings under Helm values without a local image repository
+- CloudNativePG `Cluster.spec.imageName`
+- HTTP(S) URLs in Kustomization `resources`, including release paths and `?ref=` pins
+
+These entries include their file, document, field, current value, and reason. Digest-pinned
+image bindings continue to be reported as unchecked, even when they contain a version tag.
+No chart-default inference, remote-resource fetching, or new version resolver is added.
+Other custom resource fields, arbitrary tag/version keys, non-HTTP resource references,
+and inherited values without explicit declarations remain outside discovery.
+
+`discovered_count` counts recognized declarations, not every dependency in the repository.
+In an update report it equals `checked_count + unchecked_count`; successful checks include
+declarations with no available update. Unchecked counts include unsupported declarations
+and failed resolution attempts. Counts cover the whole run, including in selected apply mode.
 
 Apply mode prepares and validates every selected transformation before writing, including
 checking the scalar, resource identity, chart/source identity, and image/container identity

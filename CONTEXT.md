@@ -8,9 +8,22 @@ This context describes how version changes are discovered, reviewed, and applied
 The manual review step in which a person decides, one proposal at a time, which planned Flux manifest version changes may be applied.
 _Avoid_: Prompt loop
 
+**Version Declaration**:
+An explicit chart version, image reference or tag, or remote resource version pin in a
+repository manifest, whether or not it can currently be checked for available updates.
+
+**Unchecked Version Declaration**:
+A discovered Version Declaration whose update availability is unknown, with its location,
+current value, and reason it could not be checked. It does not imply that the version is current.
+
 **Flux Repository Inventory**:
-The discovered manifest-local targets, source identities, original document snapshots,
-and exclusions from one repository scan.
+The discovered Version Declarations, manifest-local targets, source identities, original
+document snapshots, and exclusions from one repository scan. Eligible manifests are included
+regardless of whether an environment deploys them; inclusion does not imply deployment.
+
+**Equivalent Helm Sources**:
+HelmRepository declarations with matching names, raw namespaces, and source specifications,
+regardless of file location or descriptive metadata such as labels.
 
 **Planned Update**:
 One resolved version change whose target, source identity, current value, and proposed

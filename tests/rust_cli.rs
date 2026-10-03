@@ -171,6 +171,8 @@ fn inventory_human_output_prints_summary_counts() {
     );
 
     assert_eq!(code, 0);
+    assert!(stdout.contains("repository manifests"));
+    assert!(stdout.contains("Version declarations:"));
     assert!(stdout.contains("Repositories:"));
     assert!(stdout.contains("Chart targets:"));
     assert!(stdout.contains("Image bindings:"));

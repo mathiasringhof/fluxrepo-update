@@ -79,6 +79,10 @@ impl UpdatePlan {
     pub fn skipped(&self) -> &[SkippedUpdate] {
         &self.report.skipped
     }
+
+    pub fn checked_count(&self) -> usize {
+        self.report.checked_count
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -146,6 +150,16 @@ impl UpdateReview<'_> {
         match self.update {
             PlannedUpdate::Chart(update) => Some(&update.repo_name),
             PlannedUpdate::Image(_) => None,
+        }
+    }
+
+    pub fn source_locations(&self) -> Vec<(&Path, usize)> {
+        match self.update {
+            PlannedUpdate::Chart(update) => update
+                .manifest_identity
+                .as_ref()
+                .map_or_else(Vec::new, |identity| identity.source_locations()),
+            PlannedUpdate::Image(_) => Vec::new(),
         }
     }
 

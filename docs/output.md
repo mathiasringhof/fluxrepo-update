@@ -6,6 +6,7 @@ This page explains the main fields returned by `inventory --json` and
 ## Human Output
 
 `inventory` prints plain summary count lines to stdout.
+Both commands explicitly report repository-manifest scope, without claiming deployment coverage.
 
 `update-helm` prints human status, skipped targets, planned updates, prompts, and final
 summaries to stderr. Update lines include the relative file path, target kind, resource
@@ -23,12 +24,16 @@ all human status, color, and progress output.
 Interactive approval includes the relative file, document number, resource, exact field,
 and chart/source or full image change. A plan containing only skipped targets reports
 that incomplete result instead of saying that no updates are required.
+Update output includes discovered, checked, and unchecked counts. Skips include the field
+and current value when available.
 
 ## `inventory --json`
 
 Top-level summary fields:
 
 - `repo_root`: absolute path to the scanned repository
+- `scope`: `repository_manifests`, including eligible untracked and inactive manifests
+- `discovered_count`: chart targets, unresolved chart targets, image bindings, and unsupported declarations
 - `repository_count`: total discovered `HelmRepository` resources, including ambiguous sources
 - `chart_target_count`: releases with enough local chart identity to attempt resolution
 - `image_binding_count`: number of explicit workload or Helm-values image bindings
@@ -41,7 +46,7 @@ Top-level summary fields:
 
 ### `repositories`
 
-Each item describes a `HelmRepository` whose name is unique in the scanned tree:
+Each item describes a unique `HelmRepository` or one representative of equivalent copies:
 
 - `path`: relative file path
 - `document_index`: document position inside a multi-document YAML file
@@ -52,10 +57,23 @@ Each item describes a `HelmRepository` whose name is unique in the scanned tree:
 
 ### `ambiguous_repositories`
 
-An array of groups with `name` and `sources`. Each `sources` item has the same fields
-as a `repositories` item. All sources with a repeated name appear here, including names
-repeated across namespaces; none is silently chosen. `repository_count` includes every
-source in both arrays. Affected chart targets produce `ambiguous_helm_repository` skips.
+An array of groups with `name` and `sources`. Each source has the same fields as a
+`repositories` item. Conflicting same-name definitions appear here, including across
+namespaces; none is chosen. Affected charts produce `ambiguous_helm_repository` skips.
+
+### `equivalent_repositories`
+
+Groups with `name` and all `sources` whose name, raw namespace, and complete `spec` match.
+Paths and descriptive metadata can differ. The representative also appears in `repositories`;
+`repository_count` counts each physical source once, not every occurrence in these arrays.
+
+### `unchecked_version_declarations`
+
+Recognized declarations without supported checking: tag-only Helm `image.tag` overrides,
+CloudNativePG `spec.imageName`, and HTTP(S) Kustomize `resources` URLs. Each entry contains
+`path`, zero-based `document_index`, `yaml_path`, `current_value`, and `reason`.
+These declarations also appear in update `skipped` output and cannot be applied.
+Inventory does not perform remote checks; further targets can become skips during planning.
 
 ### `chart_targets`
 
@@ -110,6 +128,7 @@ Top-level fields:
 
 - `mode`: `plan` or `apply`
 - `non_interactive`: whether prompts were disabled
+- `scope`: `repository_manifests`
 - `summary`: counts for planned, applied, skipped, and changed files
 - `planned`: planned or applied chart and image updates
 - `skipped`: targets that could not be resolved
@@ -120,6 +139,13 @@ Top-level fields:
 - `applied_count`: number of updates actually written
 - `skipped_count`: number of targets skipped during version resolution
 - `changed_file_count`: number of files written during apply mode
+- `discovered_count`: number of recognized declarations in the full run
+- `checked_count`: successfully resolved declarations, including those with no update
+- `unchecked_count`: unsupported declarations and failed checks; equals `skipped_count`
+
+`discovered_count = checked_count + unchecked_count`. These coverage counts describe the
+whole run even when only some updates are applied. They do not measure deployment coverage
+or include declarations outside the scanner's supported shapes.
 
 Plan mode includes all proposed updates. Apply mode retains the existing output
 contract: `planned` and `planned_count` describe the applied subset, so unapproved
@@ -139,7 +165,8 @@ Each item includes:
 - `latest_version`
 - `inherited_source`
 
-`HelmRelease` items also include `chart_name` and `repo_name`.
+`HelmRelease` items also include `chart_name`, `repo_name`, and `sources` (the `path` and
+zero-based `document_index` of every source copy used). Inventory provides their URLs and namespaces.
 
 `ImageBinding` items also include `current_image` and `latest_image`.
 
@@ -151,8 +178,8 @@ with `v2:` and bind the current/latest versions, resource kind/name/namespace, a
 relevant chart source, image mapping, or workload container identity. Older `v1:` planned
 IDs must be replaced by rerunning the preview. IDs for `skipped` targets are separate.
 
-Apply rechecks the targeted scalar and reviewed identity, including the chart source
-manifest where applicable. It validates all selected files before writing and rejects
+Apply rechecks the targeted scalar and reviewed identity, including every equivalent
+chart source copy. It validates all selected files before writing and rejects
 prepared YAML whose meaning differs beyond the approved values.
 
 ### `skipped`
@@ -162,6 +189,8 @@ Each item includes:
 - `path`
 - `id`: stable unresolved-target identity
 - `yaml_path`: exact explicit version field when known
+- `document_index`: zero-based document position when known
+- `current_value`: current scalar value when available, including tags, images, and remote URLs
 - `reason`: human-readable explanation, intended for display
 - `reason_code`: stable snake_case code for automation
 - `retryable`: whether another attempt may succeed; network failures, HTTP 408/429,
@@ -189,6 +218,8 @@ Current reason codes include:
 - `image_reference_pinned_by_digest`
 - `templated_image_reference`
 - `unparseable_image_reference`
+- `unsupported_image_schema`
+- `unsupported_version_declaration`
 - `unclassified`
 
 An empty `planned` array with nonempty `skipped` means resolution was incomplete.

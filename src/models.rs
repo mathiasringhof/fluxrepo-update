@@ -69,6 +69,15 @@ pub struct ImageReference {
 }
 
 #[derive(Debug, Clone)]
+pub struct UncheckedVersionDeclaration {
+    pub path: PathBuf,
+    pub document_index: usize,
+    pub yaml_path: String,
+    pub current_value: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ImageBinding {
     pub path: PathBuf,
     pub document_index: usize,
@@ -109,11 +118,13 @@ pub struct Inventory {
     pub manifest_documents: HashMap<(PathBuf, usize), yaml_serde::Value>,
     pub repositories: HashMap<String, HelmRepository>,
     pub ambiguous_repositories: BTreeMap<String, Vec<HelmRepository>>,
+    pub equivalent_repositories: BTreeMap<String, Vec<HelmRepository>>,
     pub chart_targets: Vec<HelmReleaseTarget>,
     pub image_bindings: Vec<ImageBinding>,
     pub helmreleases_without_chart_version: Vec<HelmReleaseTarget>,
     pub unresolved_chart_targets: Vec<HelmReleaseTarget>,
     pub image_references: Vec<ImageReference>,
+    pub unchecked_version_declarations: Vec<UncheckedVersionDeclaration>,
     pub skipped_paths: Vec<PathBuf>,
 }
 
@@ -124,11 +135,13 @@ impl Inventory {
             manifest_documents: HashMap::new(),
             repositories: HashMap::new(),
             ambiguous_repositories: BTreeMap::new(),
+            equivalent_repositories: BTreeMap::new(),
             chart_targets: Vec::new(),
             image_bindings: Vec::new(),
             helmreleases_without_chart_version: Vec::new(),
             unresolved_chart_targets: Vec::new(),
             image_references: Vec::new(),
+            unchecked_version_declarations: Vec::new(),
             skipped_paths: Vec::new(),
         }
     }
@@ -136,10 +149,22 @@ impl Inventory {
     pub fn repository_count(&self) -> usize {
         self.repositories.len()
             + self
+                .equivalent_repositories
+                .values()
+                .map(|sources| sources.len() - 1)
+                .sum::<usize>()
+            + self
                 .ambiguous_repositories
                 .values()
                 .map(Vec::len)
                 .sum::<usize>()
+    }
+
+    pub fn declaration_count(&self) -> usize {
+        self.chart_targets.len()
+            + self.unresolved_chart_targets.len()
+            + self.image_bindings.len()
+            + self.unchecked_version_declarations.len()
     }
 
     pub(crate) fn add_repository(&mut self, repository: HelmRepository) {
@@ -154,6 +179,37 @@ impl Inventory {
         }
     }
 
+    pub(crate) fn combine_equivalent_sources(&mut self) {
+        for (name, sources) in std::mem::take(&mut self.ambiguous_repositories) {
+            let first = &sources[0];
+            let specification = self.source_specification(first);
+            if specification.is_some()
+                && sources.iter().all(|source| {
+                    source.namespace == first.namespace
+                        && self.source_specification(source) == specification
+                })
+            {
+                self.repositories.insert(name.clone(), first.clone());
+                self.equivalent_repositories.insert(name, sources);
+            } else {
+                self.ambiguous_repositories.insert(name, sources);
+            }
+        }
+    }
+
+    fn source_specification(&self, source: &HelmRepository) -> Option<&yaml_serde::Value> {
+        self.manifest_documents
+            .get(&(source.path.clone(), source.document_index))?
+            .get("spec")
+    }
+
+    pub(crate) fn repository_sources(&self, name: &str) -> Vec<&HelmRepository> {
+        self.equivalent_repositories.get(name).map_or_else(
+            || self.repositories.get(name).into_iter().collect(),
+            |sources| sources.iter().collect(),
+        )
+    }
+
     pub fn to_json_value(&self) -> Value {
         let mut repositories = self.repositories.values().collect::<Vec<_>>();
         repositories.sort_by_key(|repository| {
@@ -166,15 +222,28 @@ impl Inventory {
 
         json!({
             "repo_root": self.repo_root,
+            "scope": "repository_manifests",
+            "discovered_count": self.declaration_count(),
             "repository_count": self.repository_count(),
             "chart_target_count": self.chart_targets.len(),
             "image_binding_count": self.image_bindings.len(),
             "helmreleases_without_chart_version_count": self.helmreleases_without_chart_version.len(),
             "unresolved_chart_target_count": self.unresolved_chart_targets.len(),
             "image_reference_count": self.image_references.len(),
+            "unchecked_version_declarations": self.unchecked_version_declarations.iter().map(|declaration| json!({
+                "path": self.relative(&declaration.path),
+                "document_index": declaration.document_index,
+                "yaml_path": declaration.yaml_path,
+                "current_value": declaration.current_value,
+                "reason": declaration.reason,
+            })).collect::<Vec<_>>(),
             "skipped_paths": self.skipped_paths.iter().map(|path| self.relative(path)).collect::<Vec<_>>(),
             "repositories": repositories.iter().map(|repository| self.repository_json(repository)).collect::<Vec<_>>(),
             "ambiguous_repositories": self.ambiguous_repositories.iter().map(|(name, sources)| json!({
+                "name": name,
+                "sources": sources.iter().map(|source| self.repository_json(source)).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "equivalent_repositories": self.equivalent_repositories.iter().map(|(name, sources)| json!({
                 "name": name,
                 "sources": sources.iter().map(|source| self.repository_json(source)).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),

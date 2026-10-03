@@ -6,6 +6,77 @@ use common::{fixture_root, write_file};
 use fluxrepo_update::scanner::scan_repo;
 
 #[test]
+fn inventory_reports_unchecked_declarations_and_includes_inactive_manifests() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_file(
+        &temp.path().join("apps/base/immich/release.yaml"),
+        "kind: HelmRelease\nmetadata: {name: immich}\nspec:\n  values:\n    image: {tag: v3.1.0}\n",
+    );
+    write_file(
+        &temp
+            .path()
+            .join("apps/production/immich/cloudnative-pg.yaml"),
+        "apiVersion: postgresql.cnpg.io/v1\nkind: Cluster\nmetadata: {name: immich}\nspec: {imageName: 'ghcr.io/tensorchord/cloudnative-vectorchord:16.9-0.4.3'}\n",
+    );
+    write_file(
+        &temp.path().join("kustomization.yaml"),
+        "kind: Kustomization\nresources:\n- https://example.org/releases/v1.8.0/operator.yaml\n# - apps/base/uptimekuma\n",
+    );
+    write_file(
+        &temp.path().join("apps/base/uptimekuma/release.yaml"),
+        "kind: HelmRelease\nmetadata: {name: uptime-kuma}\nspec:\n  chart:\n    spec:\n      chart: uptime-kuma\n      version: 4.1.0\n      sourceRef: {kind: HelmRepository, name: public}\n",
+    );
+    let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+    assert_eq!(inventory["scope"], "repository_manifests");
+    assert_eq!(inventory["discovered_count"], 4);
+    let unchecked = inventory["unchecked_version_declarations"]
+        .as_array()
+        .unwrap();
+    assert_eq!(unchecked.len(), 3);
+    assert!(
+        unchecked
+            .iter()
+            .any(|item| item["yaml_path"] == "spec.values.image.tag"
+                && item["current_value"] == "v3.1.0")
+    );
+    assert!(unchecked.iter().all(|item| item["document_index"] == 0
+        && !item["path"].as_str().unwrap().is_empty()
+        && !item["reason"].as_str().unwrap().is_empty()));
+    assert_eq!(inventory["chart_targets"][0]["name"], "uptime-kuma");
+}
+
+#[test]
+fn an_image_tag_with_an_empty_repository_is_counted_once_as_unchecked() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_file(
+        &temp.path().join("release.yaml"),
+        "kind: HelmRelease\nmetadata: {name: demo}\nspec:\n  values:\n    image: {repository: '', tag: v3.1.0}\n",
+    );
+    let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+    assert_eq!(inventory["discovered_count"], 1);
+    assert_eq!(inventory["image_binding_count"], 0);
+    assert_eq!(
+        inventory["unchecked_version_declarations"][0]["current_value"],
+        "v3.1.0"
+    );
+}
+
+#[test]
+fn kustomization_files_without_kind_still_expose_remote_resources() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_file(
+        &temp.path().join("kustomization.yml"),
+        "resources:\n- https://github.com/intel/intel-device-plugins-for-kubernetes/deployments/nfd?ref=v0.34.1\n",
+    );
+    let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+    assert_eq!(inventory["discovered_count"], 1);
+    assert_eq!(
+        inventory["unchecked_version_declarations"][0]["yaml_path"],
+        "resources[0]"
+    );
+}
+
+#[test]
 fn scanner_does_not_inherit_chart_identity_for_patch_versions() {
     let repo_root = fixture_root();
     let inventory = scan_repo(&repo_root).expect("scan fixture");

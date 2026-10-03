@@ -7,7 +7,7 @@ use yaml_edit::{Document as EditDocument, YamlFile, YamlNode};
 
 use crate::models::{
     HelmReleaseTarget, HelmRepository, ImageBinding, ImageBindingValueKind, ImageReference,
-    Inventory, RepoType, ResourceId,
+    Inventory, RepoType, ResourceId, UncheckedVersionDeclaration,
 };
 use yaml_serde::{Deserializer, Mapping, Value};
 
@@ -51,6 +51,14 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
             }
 
             if kind == "HelmRelease" {
+                if let Some(values) = value_at_path(document, "spec.values") {
+                    let mut declarations = Vec::new();
+                    collect_tag_only_overrides(values, "spec.values", &mut declarations);
+                    inventory.unchecked_version_declarations.extend(declarations.into_iter().map(|(yaml_path, current_value)| UncheckedVersionDeclaration {
+                        path: path.clone(), document_index, yaml_path, current_value,
+                        reason: "image tag has no manifest-local repository; chart defaults are not evaluated".into(),
+                    }));
+                }
                 if let Some(target) = parse_helmrelease(&path, document_index, mapping) {
                     if target.can_update() {
                         inventory.chart_targets.push(target);
@@ -76,6 +84,23 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
                 ));
             }
 
+            if kind == "Cluster"
+                && string_field(mapping, "apiVersion")
+                    .is_some_and(|version| version.starts_with("postgresql.cnpg.io/"))
+                && let Some(image) =
+                    value_at_path(document, "spec.imageName").and_then(Value::as_str)
+            {
+                inventory
+                    .unchecked_version_declarations
+                    .push(UncheckedVersionDeclaration {
+                        path: path.clone(),
+                        document_index,
+                        yaml_path: "spec.imageName".into(),
+                        current_value: image.into(),
+                        reason: "CloudNativePG imageName checking is not supported".into(),
+                    });
+            }
+
             inventory.image_references.extend(parse_image_references(
                 &path,
                 document_index,
@@ -83,9 +108,38 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
                 mapping,
                 document,
             ));
+            if (kind == "Kustomization"
+                || (kind.is_empty()
+                    && matches!(
+                        path.file_name().and_then(|name| name.to_str()),
+                        Some("kustomization.yaml" | "kustomization.yml")
+                    )))
+                && let Some(resources) = mapping
+                    .get(Value::String("resources".into()))
+                    .and_then(Value::as_sequence)
+            {
+                for (index, resource) in resources.iter().enumerate() {
+                    if let Some(url) = resource.as_str()
+                        && (url.starts_with("https://") || url.starts_with("http://"))
+                    {
+                        inventory.unchecked_version_declarations.push(
+                            UncheckedVersionDeclaration {
+                                path: path.clone(),
+                                document_index,
+                                yaml_path: format!("resources[{index}]"),
+                                current_value: url.into(),
+                                reason:
+                                    "remote Kustomize resource version checking is not supported"
+                                        .into(),
+                            },
+                        );
+                    }
+                }
+            }
         }
     }
 
+    inventory.combine_equivalent_sources();
     inventory
         .chart_targets
         .sort_by_key(|item| (item.path.clone(), item.document_index));
@@ -339,6 +393,32 @@ fn collect_helm_value_bindings(
     }
 }
 
+fn collect_tag_only_overrides(value: &Value, path: &str, results: &mut Vec<(String, String)>) {
+    match value {
+        Value::Mapping(mapping) => {
+            for (key, child) in mapping {
+                let Some(key) = key.as_str() else { continue };
+                let child_path = append_yaml_key(path, key);
+                if key == "image"
+                    && let Some(image) = child.as_mapping()
+                    && string_field(image, "repository")
+                        .is_none_or(|repository| repository.trim().is_empty())
+                    && let Some(tag) = string_field(image, "tag")
+                {
+                    results.push((format!("{child_path}.tag"), tag));
+                }
+                collect_tag_only_overrides(child, &child_path, results);
+            }
+        }
+        Value::Sequence(items) => {
+            for (index, child) in items.iter().enumerate() {
+                collect_tag_only_overrides(child, &format!("{path}[{index}]"), results);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn recognizable_unsupported_image_mapping(mapping: &Mapping) -> Option<String> {
     let repository = string_field(mapping, "repository")?;
     if mapping.contains_key(Value::String("tag".to_string())) {
@@ -351,7 +431,8 @@ fn recognizable_unsupported_image_mapping(mapping: &Mapping) -> Option<String> {
 }
 
 fn concrete_image_mapping(mapping: &Mapping) -> Option<String> {
-    let repository = string_field(mapping, "repository")?;
+    let repository =
+        string_field(mapping, "repository").filter(|value| !value.trim().is_empty())?;
     let tag = string_field(mapping, "tag").filter(|tag| !tag.trim().is_empty())?;
     let registry = string_field(mapping, "registry").filter(|registry| !registry.trim().is_empty());
     let repository = match registry {

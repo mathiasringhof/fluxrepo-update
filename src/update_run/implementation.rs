@@ -14,6 +14,7 @@ use crate::scanner::{edit_node_at_path, parse_yaml_documents, value_at_path, val
 
 use crate::models::{
     HelmReleaseTarget, ImageBinding, ImageBindingValueKind, Inventory, ResourceId, TargetKind,
+    UncheckedVersionDeclaration,
 };
 use crate::resolvers::{
     ChartVersionResolver, ImageVersionResolver, ResolverError, ResolverErrorCode,
@@ -50,7 +51,7 @@ pub struct PlannedImageUpdate {
 pub struct ManifestIdentity {
     pub resource_id: ResourceId,
     fields: Vec<(String, Option<yaml_serde::Value>)>,
-    source: Option<Box<SourceIdentity>>,
+    sources: Vec<SourceIdentity>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,13 @@ struct SourceIdentity {
 }
 
 impl ManifestIdentity {
+    pub(super) fn source_locations(&self) -> Vec<(&Path, usize)> {
+        self.sources
+            .iter()
+            .map(|source| (source.path.as_path(), source.document_index))
+            .collect()
+    }
+
     fn selection_context(&self, repo_root: &Path) -> JsonValue {
         let fields = self
             .fields
@@ -73,13 +81,22 @@ impl ManifestIdentity {
                 (path.clone(), value)
             })
             .collect::<serde_json::Map<_, _>>();
-        let source = self.source.as_ref().map(|source| {
-            json!({
-                "path": relative_identity_path(&source.path, repo_root),
-                "document_index": source.document_index,
-                "document": canonical_yaml_value(&source.document),
+        let sources = self
+            .sources
+            .iter()
+            .map(|source| {
+                json!({
+                    "path": relative_identity_path(&source.path, repo_root),
+                    "document_index": source.document_index,
+                    "document": canonical_yaml_value(&source.document),
+                })
             })
-        });
+            .collect::<Vec<_>>();
+        let source = match sources.as_slice() {
+            [] => JsonValue::Null,
+            [source] => source.clone(),
+            _ => json!(sources),
+        };
         json!({"fields": fields, "source": source})
     }
 
@@ -105,7 +122,7 @@ impl ManifestIdentity {
         Some(Self {
             resource_id: resource_id.clone(),
             fields,
-            source: None,
+            sources: Vec::new(),
         })
     }
 
@@ -115,7 +132,7 @@ impl ManifestIdentity {
                 return Err(anyhow!("target identity at {path} changed after planning"));
             }
         }
-        if let Some(source) = &self.source {
+        for source in &self.sources {
             let text = fs::read_to_string(&source.path)
                 .with_context(|| format!("failed to recheck source {}", source.path.display()))?;
             let documents = parse_yaml_documents(&text)?;
@@ -142,7 +159,7 @@ impl PlannedUpdate {
             Self::Chart(update) => update
                 .manifest_identity
                 .as_ref()
-                .is_some_and(|identity| identity.source.is_some()),
+                .is_some_and(|identity| !identity.sources.is_empty()),
             Self::Image(update) => update.manifest_identity.is_some(),
         }
     }
@@ -312,6 +329,7 @@ fn nibble_to_hex(value: u8) -> char {
 pub struct UpdateReport {
     pub planned: Vec<PlannedUpdate>,
     pub skipped: Vec<SkippedUpdate>,
+    pub checked_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,9 +341,33 @@ pub struct SkippedUpdate {
     pub source_url: Option<String>,
     identity_suffix: Option<String>,
     yaml_path: Option<String>,
+    current_value: Option<String>,
+    document_index: Option<usize>,
 }
 
 impl SkippedUpdate {
+    fn unchecked_declaration(declaration: &UncheckedVersionDeclaration) -> Self {
+        let mut skipped = Self::with_reason(
+            Some(declaration.path.clone()),
+            SkipReason::new(
+                &declaration.reason,
+                SkipReasonCode::UnsupportedVersionDeclaration,
+                false,
+                None,
+            ),
+        )
+        .with_target_identity(
+            format!(
+                "VersionDeclaration:{}:{}:{}",
+                declaration.document_index, declaration.yaml_path, declaration.current_value
+            ),
+            &declaration.yaml_path,
+        );
+        skipped.current_value = Some(declaration.current_value.clone());
+        skipped.document_index = Some(declaration.document_index);
+        skipped
+    }
+
     pub fn new(path: Option<PathBuf>, reason: impl Into<String>) -> Self {
         Self::with_reason(path, SkipReason::unclassified(reason))
     }
@@ -426,6 +468,8 @@ impl SkippedUpdate {
             source_url: reason.source_url,
             identity_suffix: None,
             yaml_path: None,
+            current_value: None,
+            document_index: None,
         }
     }
 
@@ -450,6 +494,14 @@ impl SkippedUpdate {
 
     pub fn yaml_path(&self) -> Option<&str> {
         self.yaml_path.as_deref()
+    }
+
+    pub fn current_value(&self) -> Option<&str> {
+        self.current_value.as_deref()
+    }
+
+    pub fn document_index(&self) -> Option<usize> {
+        self.document_index
     }
 }
 
@@ -508,6 +560,7 @@ pub enum SkipReasonCode {
     TemplatedImageReference,
     UnparseableImageReference,
     UnsupportedImageSchema,
+    UnsupportedVersionDeclaration,
     Unclassified,
 }
 
@@ -530,6 +583,7 @@ impl SkipReasonCode {
             Self::TemplatedImageReference => "templated_image_reference",
             Self::UnparseableImageReference => "unparseable_image_reference",
             Self::UnsupportedImageSchema => "unsupported_image_schema",
+            Self::UnsupportedVersionDeclaration => "unsupported_version_declaration",
             Self::Unclassified => "unclassified",
         }
     }
@@ -621,6 +675,10 @@ fn plan_updates_with_optional_progress(
         progress_callback,
     );
     indexed_outcomes.sort_by_key(|(index, _)| *index);
+    let checked_count = indexed_outcomes
+        .iter()
+        .filter(|(_, outcome)| !matches!(outcome, ResolutionOutcome::Skipped(_)))
+        .count();
 
     let mut planned = indexed_outcomes
         .iter()
@@ -647,13 +705,18 @@ fn plan_updates_with_optional_progress(
         })
         .collect();
 
-    UpdateReport { planned, skipped }
+    UpdateReport {
+        planned,
+        skipped,
+        checked_count,
+    }
 }
 
 enum ResolutionTask<'a> {
     Chart(usize, &'a HelmReleaseTarget),
     UnresolvedChart(usize, &'a HelmReleaseTarget),
     Image(usize, &'a ImageBinding),
+    Unchecked(usize, &'a UncheckedVersionDeclaration),
 }
 
 impl ResolutionTask<'_> {
@@ -661,6 +724,7 @@ impl ResolutionTask<'_> {
         match self {
             Self::Chart(_, target) | Self::UnresolvedChart(_, target) => &target.path,
             Self::Image(_, target) => &target.path,
+            Self::Unchecked(_, declaration) => &declaration.path,
         }
     }
 }
@@ -701,6 +765,21 @@ fn resolve_targets(
                 .enumerate()
                 .map(|(index, target)| {
                     ResolutionTask::Image(chart_count + unresolved_chart_count + index, target)
+                }),
+        )
+        .chain(
+            inventory
+                .unchecked_version_declarations
+                .iter()
+                .enumerate()
+                .map(|(index, declaration)| {
+                    ResolutionTask::Unchecked(
+                        chart_count
+                            + unresolved_chart_count
+                            + inventory.image_bindings.len()
+                            + index,
+                        declaration,
+                    )
                 }),
         )
         .collect::<Vec<_>>();
@@ -754,7 +833,7 @@ fn resolve_task(
     chart_resolver: &dyn ChartVersionResolver,
     image_resolver: &dyn ImageVersionResolver,
 ) -> (usize, ResolutionOutcome) {
-    match task {
+    let (index, mut outcome) = match task {
         ResolutionTask::Chart(index, target) => (
             *index,
             resolve_chart_target(inventory, target, chart_resolver),
@@ -767,7 +846,32 @@ fn resolve_task(
             *index,
             resolve_image_binding(inventory, target, image_resolver),
         ),
+        ResolutionTask::Unchecked(index, declaration) => (
+            *index,
+            ResolutionOutcome::Skipped(SkippedUpdate::unchecked_declaration(declaration)),
+        ),
+    };
+    if let ResolutionOutcome::Skipped(skipped) = &mut outcome {
+        let (document_index, yaml_path) = match task {
+            ResolutionTask::Chart(_, target) | ResolutionTask::UnresolvedChart(_, target) => {
+                (target.document_index, "spec.chart.spec.version")
+            }
+            ResolutionTask::Image(_, target) => (target.document_index, target.yaml_path.as_str()),
+            ResolutionTask::Unchecked(_, declaration) => {
+                (declaration.document_index, declaration.yaml_path.as_str())
+            }
+        };
+        skipped.document_index = Some(document_index);
+        skipped.yaml_path = Some(yaml_path.into());
+        skipped.current_value = inventory
+            .manifest_documents
+            .get(&(task.path().to_path_buf(), document_index))
+            .and_then(|document| value_at_path(document, yaml_path))
+            .and_then(yaml_serde::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| skipped.current_value.clone());
     }
+    (index, outcome)
 }
 
 fn resolve_chart_target(
@@ -869,16 +973,21 @@ fn resolve_chart_target(
         ],
     );
     if let Some(identity) = &mut manifest_identity {
-        identity.source = inventory
-            .manifest_documents
-            .get(&(repository.path.clone(), repository.document_index))
-            .map(|document| {
-                Box::new(SourceIdentity {
-                    path: repository.path.clone(),
-                    document_index: repository.document_index,
+        identity.sources = inventory
+            .repository_sources(repo_name)
+            .into_iter()
+            .map(|source| {
+                let document = inventory
+                    .manifest_documents
+                    .get(&(source.path.clone(), source.document_index))?;
+                Some(SourceIdentity {
+                    path: source.path.clone(),
+                    document_index: source.document_index,
                     document: document.clone(),
                 })
-            });
+            })
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
     }
     ResolutionOutcome::Planned(PlannedUpdate::Chart(PlannedChartUpdate {
         manifest_identity,

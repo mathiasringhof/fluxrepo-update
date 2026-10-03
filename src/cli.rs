@@ -227,6 +227,20 @@ fn inventory_command<W: Write>(
         )?;
     } else {
         writeln!(stdout, "Repositories: {}", inventory.repository_count())?;
+        writeln!(
+            stdout,
+            "Scope: repository manifests (deployment state unknown)"
+        )?;
+        writeln!(
+            stdout,
+            "Version declarations: {}",
+            inventory.declaration_count()
+        )?;
+        writeln!(
+            stdout,
+            "Unsupported declarations: {}",
+            inventory.unchecked_version_declarations.len()
+        )?;
         writeln!(stdout, "Chart targets: {}", inventory.chart_targets.len())?;
         writeln!(stdout, "Image bindings: {}", inventory.image_bindings.len())?;
         writeln!(
@@ -295,7 +309,7 @@ where
         writeln!(stderr, "Scanning {}...", repo_root.display())?;
     }
     let inventory = scan_repo(&repo_root)?;
-    let target_count = inventory.chart_targets.len() + inventory.image_bindings.len();
+    let target_count = inventory.declaration_count();
     if !json_output {
         writeln!(stderr, "Resolving updates for {target_count} targets...")?;
     }
@@ -646,12 +660,37 @@ fn emit_update_output<W: Write, E: Write>(
             &context,
             applied_count,
             changed_file_count,
+            outcome.plan().checked_count(),
         );
         writeln!(stdout, "{}", serde_json::to_string_pretty(&report)?)?;
         return Ok(());
     }
+    writeln!(
+        stderr,
+        "Coverage (repository manifests): {} discovered, {} checked, {} unchecked.",
+        outcome.plan().checked_count() + skipped.len(),
+        outcome.plan().checked_count(),
+        skipped.len()
+    )?;
     for item in skipped {
-        writeln!(stderr, "skip: {item}")?;
+        write!(
+            stderr,
+            "skip: {}",
+            item.path
+                .as_ref()
+                .map(|path| relative_path(path, context.repo_root))
+                .unwrap_or_default()
+        )?;
+        if let Some(index) = item.document_index() {
+            write!(stderr, " (document {})", index + 1)?;
+        }
+        if let Some(field) = item.yaml_path() {
+            write!(stderr, " {field}")?;
+        }
+        if let Some(value) = item.current_value() {
+            write!(stderr, " = {value}")?;
+        }
+        writeln!(stderr, ": {}", item.reason)?;
     }
     if planned.is_empty() {
         if context.mode == "apply" {
@@ -692,24 +731,35 @@ fn update_output_json(
     context: &OutputContext<'_>,
     applied_count: usize,
     changed_file_count: usize,
+    checked_count: usize,
 ) -> serde_json::Value {
     json!({
         "mode": context.mode, "non_interactive": context.non_interactive,
+        "scope": "repository_manifests",
         "summary": { "planned_count": planned.len(), "applied_count": applied_count,
-            "skipped_count": skipped.len(), "changed_file_count": changed_file_count },
+            "skipped_count": skipped.len(), "changed_file_count": changed_file_count,
+            "discovered_count": checked_count + skipped.len(),
+            "checked_count": checked_count, "unchecked_count": skipped.len() },
         "planned": planned.iter().map(|item| update_json(item, context.repo_root)).collect::<Vec<_>>(),
         "skipped": skipped.iter().map(|item| skip_json(item, context.repo_root)).collect::<Vec<_>>(),
     })
 }
 
 pub(crate) fn skip_json(skipped: &SkippedUpdate, repo_root: &Path) -> serde_json::Value {
-    json!({
+    let mut value = json!({
         "id": skipped.selection_id(repo_root),
         "path": skipped.path.as_ref().map(|path| relative_path(path, repo_root)).unwrap_or_default(),
         "yaml_path": skipped.yaml_path(), "reason": skipped.reason,
         "reason_code": skipped.reason_code.as_str(), "retryable": skipped.retryable,
         "source_url": skipped.source_url,
-    })
+    });
+    if let Some(current) = skipped.current_value() {
+        value["current_value"] = json!(current);
+    }
+    if let Some(index) = skipped.document_index() {
+        value["document_index"] = json!(index);
+    }
+    value
 }
 
 #[cfg(test)]
@@ -724,6 +774,7 @@ pub(crate) fn plan_payload(
         &OutputContext::new(root, true, "plan", true, HumanOutput::plain()),
         0,
         0,
+        plan.checked_count(),
     )
 }
 
@@ -739,6 +790,15 @@ fn update_json(update: &UpdateReview<'_>, repo_root: &Path) -> serde_json::Value
         TargetKind::HelmRelease => {
             value["chart_name"] = json!(update.chart_name());
             value["repo_name"] = json!(update.repo_name());
+            value["sources"] = json!(
+                update
+                    .source_locations()
+                    .iter()
+                    .map(|(path, index)| json!({
+                        "path": relative_path(path, repo_root), "document_index": index,
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
         TargetKind::ImageBinding => {
             value["current_image"] = json!(update.current_image());
@@ -1177,6 +1237,7 @@ mod tests {
 
     fn report_with_updates(paths: &[&str]) -> UpdatePlan {
         let report = UpdateReport {
+            checked_count: paths.len(),
             planned: paths
                 .iter()
                 .map(|path| {

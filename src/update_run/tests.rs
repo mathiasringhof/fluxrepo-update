@@ -170,9 +170,7 @@ fn progress_reports_each_resolved_target() {
     );
 
     let seen = seen.into_inner().expect("progress lock");
-    let total_targets = inventory.chart_targets.len()
-        + inventory.unresolved_chart_targets.len()
-        + inventory.image_bindings.len();
+    let total_targets = inventory.declaration_count();
     assert_eq!(seen.len(), total_targets);
     assert_eq!(seen.first().map(|event| event.0), Some(1));
     assert_eq!(seen.last().map(|event| event.0), Some(total_targets));
@@ -637,6 +635,7 @@ fn preserves_input_order_for_skipped_image_bindings() {
 #[test]
 fn update_report_serializes_non_repo_path_skip_reason() {
     let report = UpdateReport {
+        checked_count: 0,
         planned: Vec::new(),
         skipped: vec![SkippedUpdate::new(None, "network timeout")],
     };
@@ -663,6 +662,7 @@ fn apply_updates_rejects_non_mapping_helmrelease_documents() {
     let path = temp.path().join("release.yaml");
     write_file(&path, "- not\n- a\n- mapping\n");
     let report = UpdateReport {
+        checked_count: 0,
         planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
             manifest_identity: None,
             path,
@@ -692,6 +692,7 @@ fn apply_updates_rejects_a_chart_scalar_changed_after_planning() {
     let changed = "kind: HelmRelease\nspec: {chart: {spec: {version: 1.5.0}}}\n";
     write_file(&path, changed);
     let report = UpdateReport {
+        checked_count: 0,
         planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
             manifest_identity: None,
             path: path.clone(),
@@ -718,6 +719,7 @@ fn apply_updates_rejects_an_image_scalar_changed_after_planning() {
     let changed = "kind: Pod\nspec: {containers: [{image: example/demo:1.5.0}]}\n";
     write_file(&path, changed);
     let report = UpdateReport {
+        checked_count: 0,
         planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
             manifest_identity: None,
             path: path.clone(),
@@ -762,6 +764,7 @@ fn apply_updates_prepares_every_file_before_writing_any_file() {
         })
     };
     let report = UpdateReport {
+        checked_count: 0,
         planned: vec![
             update(first_path.clone(), "spec.containers[0].image"),
             update(second_path, "spec.missing[0].image"),
@@ -806,6 +809,7 @@ fn apply_updates_reports_partial_application_after_a_later_write_failure() {
         })
     };
     let report = UpdateReport {
+        checked_count: 0,
         planned: vec![update(first_path.clone()), update(second_path.clone())],
         skipped: Vec::new(),
     };
@@ -843,6 +847,7 @@ spec:
 "#,
     );
     let report = UpdateReport {
+        checked_count: 0,
         planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
             manifest_identity: None,
             path: path.clone(),
@@ -887,6 +892,7 @@ spec:
 "#;
     write_file(&path, original);
     let report = UpdateReport {
+        checked_count: 0,
         planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
             manifest_identity: None,
             path: path.clone(),
@@ -932,6 +938,7 @@ metadata:
 "#;
     write_file(&path, original);
     let report = UpdateReport {
+        checked_count: 0,
         planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
             manifest_identity: None,
             path: path.clone(),
@@ -965,6 +972,7 @@ fn apply_updates_preserves_crlf_line_endings_around_scalar_changes() {
     let original = "apiVersion: helm.toolkit.fluxcd.io/v2\r\nkind: HelmRelease\r\nmetadata:\r\n  name: demo\r\nspec:\r\n  chart:\r\n    spec:\r\n      chart: demo\r\n      version: \"1.0.0\"\r\n";
     write_file(&path, original);
     let report = UpdateReport {
+        checked_count: 0,
         planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
             manifest_identity: None,
             path: path.clone(),
@@ -1001,6 +1009,7 @@ spec:
       version: "1.0.0""#;
     write_file(&path, original);
     let report = UpdateReport {
+        checked_count: 0,
         planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
             manifest_identity: None,
             path: path.clone(),

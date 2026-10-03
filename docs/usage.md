@@ -49,8 +49,9 @@ Human-readable output includes counts for:
 - `Skipped generated files`
 
 Use `--json` when you need the actual item lists instead of summary counts.
-`Repositories` counts every discovered source, including duplicate names. JSON groups
-those duplicates under `ambiguous_repositories`; charts using an ambiguous name are skipped.
+`Repositories` counts every discovered source, including copies. JSON lists equivalent
+copies under `equivalent_repositories` and conflicting definitions under
+`ambiguous_repositories`; charts using an ambiguous name are skipped.
 
 ### `update-helm`
 
@@ -134,17 +135,23 @@ A skip can happen because:
 
 - the referenced `HelmRepository` is missing or has a known namespace mismatch
   (`missing_helm_repository`)
-- multiple `HelmRepository` manifests share the referenced name
+- conflicting `HelmRepository` definitions share the referenced name
 - the chart could not be found in the repository index
 - the remote repository could not be reached
 - the version scheme is unfamiliar or incomparable
 - the image tag is mutable or otherwise not comparable
 - the container registry could not list tags for the image
 - the image is templated, mutable, tagless, or digest-pinned
+- a tag-only override, CloudNativePG image, or remote Kustomize URL is recognized but not checked
 
 When every target is skipped, the output reports skipped targets rather than declaring
 the repository up to date. Exit code `0` does not mean every version was resolved;
 inspect `skipped` and its reason codes before treating a check as complete.
+
+Both commands identify their scope as repository manifests, including inactive bases and
+untracked YAML files. Update coverage counts distinguish discovered, checked, and unchecked
+declarations without changing exit codes. Equivalent source copies are accepted only when
+their name, raw namespace, and full specification match; namespace transformations are not evaluated.
 
 ## Exit Codes
 
