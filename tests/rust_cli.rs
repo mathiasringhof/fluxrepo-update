@@ -8,8 +8,8 @@ use std::fs;
 use std::io::Cursor;
 
 use common::{
-    ResponseSpec, StaticResolverFactory, TestHttpServer, TestResolvers, copy_fixture, fixture_root,
-    write_file,
+    DefaultResolverFactory, ResponseSpec, StaticResolverFactory, TestHttpServer, TestResolvers,
+    copy_fixture, fixture_root, write_file,
 };
 use fluxrepo_update::cli::run_with_args;
 use fluxrepo_update::resolvers::{
@@ -388,6 +388,95 @@ spec:
     let requests = server.finish();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].path, "/v2/charts/jellyseerr/tags/list?n=1000");
+}
+
+#[test]
+fn update_helm_json_plan_keeps_jellyfin_on_stable_releases() {
+    let (code, payload) = registry_image_plan("10.11.8", &["10.11.8", "12.1", "2026092811"]);
+
+    assert_eq!(code, 10);
+    assert_eq!(payload["summary"]["planned_count"], 1);
+    assert_eq!(payload["summary"]["skipped_count"], 0);
+    assert_eq!(payload["planned"][0]["path"], "release.yaml");
+    assert_eq!(payload["planned"][0]["target_name"], "jellyfin");
+    assert_eq!(payload["planned"][0]["yaml_path"], "spec.values.image.tag");
+    assert_eq!(payload["planned"][0]["current_version"], "10.11.8");
+    assert_eq!(payload["planned"][0]["latest_version"], "12.1");
+    assert!(
+        payload["planned"][0]["latest_image"]
+            .as_str()
+            .expect("latest image")
+            .ends_with("/jellyfin/jellyfin:12.1")
+    );
+}
+
+#[test]
+fn update_helm_json_plan_ignores_timestamp_builds_when_jellyfin_is_current() {
+    let (code, payload) = registry_image_plan("10.11.8", &["10.11.8", "2026092811"]);
+
+    assert_eq!(code, 0);
+    assert_eq!(payload["summary"]["planned_count"], 0);
+    assert_eq!(payload["summary"]["skipped_count"], 0);
+}
+
+#[test]
+fn update_helm_json_plan_reports_incompatible_image_schemes_as_unresolved() {
+    let (code, payload) = registry_image_plan("10.11.8-rc.1", &["10.11.8-rc.1", "2026092811"]);
+
+    assert_eq!(code, 0);
+    assert_eq!(payload["summary"]["planned_count"], 0);
+    assert_eq!(payload["summary"]["skipped_count"], 1);
+    assert_eq!(
+        payload["skipped"][0]["reason_code"],
+        "incompatible_version_scheme"
+    );
+    assert_eq!(payload["skipped"][0]["retryable"], false);
+}
+
+#[test]
+fn update_helm_json_plan_reports_missing_stable_tags_as_unresolved() {
+    let (code, payload) = registry_image_plan("10.11.8", &["2026092811"]);
+
+    assert_eq!(code, 0);
+    assert_eq!(payload["summary"]["planned_count"], 0);
+    assert_eq!(payload["summary"]["skipped_count"], 1);
+    assert_eq!(
+        payload["skipped"][0]["reason_code"],
+        "current_version_not_found"
+    );
+    assert_eq!(payload["skipped"][0]["retryable"], false);
+}
+
+#[test]
+fn update_helm_json_plan_reports_unknown_image_schemes_as_unresolved() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_file(
+        &temp.path().join("release.yaml"),
+        &include_str!("fixtures/jellyfin/release.yaml").replace("10.11.8", "release-blue"),
+    );
+
+    let (code, stdout, stderr) = run_cli_with_any_factory(
+        [
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().expect("repo path"),
+            "--json",
+            "--non-interactive",
+        ],
+        "",
+        &DefaultResolverFactory,
+    );
+    let payload: Value = serde_json::from_str(&stdout).expect("json plan");
+
+    assert_eq!(code, 0);
+    assert_eq!(stderr, "");
+    assert_eq!(payload["summary"]["planned_count"], 0);
+    assert_eq!(payload["summary"]["skipped_count"], 1);
+    assert_eq!(
+        payload["skipped"][0]["reason_code"],
+        "incompatible_version_scheme"
+    );
+    assert_eq!(payload["skipped"][0]["retryable"], false);
 }
 
 #[test]
@@ -926,6 +1015,47 @@ fn json_error_output<'a>(stdout: &'a str, stderr: &'a str) -> &'a str {
     } else {
         stdout
     }
+}
+
+fn registry_image_plan(current_tag: &str, tags: &[&str]) -> (u8, Value) {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let server = TestHttpServer::new(vec![
+        ResponseSpec::new(200, serde_json::json!({ "tags": tags }).to_string())
+            .header("Content-Type", "application/json"),
+    ]);
+    let manifest = include_str!("fixtures/jellyfin/release.yaml")
+        .replace(
+            "registry.example.test",
+            server.base_url.trim_start_matches("http://"),
+        )
+        .replace("10.11.8", current_tag);
+    let path = temp.path().join("release.yaml");
+    write_file(&path, &manifest);
+
+    let (code, stdout, stderr) = run_cli_with_any_factory(
+        [
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().expect("repo path"),
+            "--json",
+            "--non-interactive",
+        ],
+        "",
+        &DefaultResolverFactory,
+    );
+
+    assert_eq!(stderr, "");
+    assert_eq!(
+        fs::read_to_string(path).expect("manifest after plan"),
+        manifest
+    );
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].path, "/v2/jellyfin/jellyfin/tags/list?n=1000",
+        "{requests:?}; {stdout}"
+    );
+    (code, serde_json::from_str(&stdout).expect("json plan"))
 }
 
 fn json_plan(repo_root: &std::path::Path, factory: &StaticResolverFactory) -> Value {

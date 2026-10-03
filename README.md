@@ -162,6 +162,8 @@ best-effort: unresolved targets retain stable IDs and reason codes while other u
 remain available. Latest stable selection supports semantic, calendar, and numeric versions,
 can cross major versions, excludes prereleases, and never proposes a downgrade. Image
 variant suffixes are preserved, and OCI chart build metadata is normalized correctly.
+Compact calendar tags stay within matching precision, preventing timestamp builds from
+replacing dotted or ordinary numeric releases.
 
 The tool does not evaluate effective Kustomize overlays, update `chartRef`/`OCIRepository`
 versions, or prove that an upgrade is compatible with your chart values or cluster.

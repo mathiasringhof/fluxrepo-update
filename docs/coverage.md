@@ -21,6 +21,12 @@ numeric-pattern releases. It excludes prereleases and mutable tags, permits cros
 updates, and never proposes a downgrade. This is version selection, not a compatibility
 check for chart values, application migrations, or Kubernetes versions.
 
+Compact calendar tags (`YYYYMMDD`, `YYYYMMDDHH`, `YYYYMMDDHHMM`, `YYYYMMDDHHMMSS`)
+compare only within the same precision, including optional `v` prefixes and image variants.
+They cannot replace dotted or ordinary numeric releases, so Jellyfin's timestamp build
+channel stays separate from its stable releases. Unknown or incompatible version schemes
+are reported as unresolved rather than used to guess an update.
+
 Image suffixes such as `-alpine`, `-slim-bookworm`, and `-arm64` are retained exactly,
 including variant version numbers. Unfamiliar suffixes on numeric versions are treated
 conservatively as variants; explicit prerelease markers remain excluded. Chart versions
