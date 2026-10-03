@@ -1222,6 +1222,7 @@ mod tests {
             {
                 std::thread::yield_now();
             }
+            master
         });
         let mut output = Vec::new();
         let result = InteractiveApproval::classified(slave).review(
@@ -1230,7 +1231,8 @@ mod tests {
             Path::new("/repo"),
             HumanOutput::plain(),
         );
-        writer.join().expect("PTY writer");
+        // Linux cannot query the slave's settings after the master is closed.
+        let _master = writer.join().expect("PTY writer");
         let restored = tcgetattr(&observer).expect("restored settings");
         (result, output, original, restored)
     }
