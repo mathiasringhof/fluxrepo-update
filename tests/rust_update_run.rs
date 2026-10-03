@@ -222,7 +222,12 @@ fn planning_retains_all_updates_without_review_or_writes() {
             &inventory,
             UpdateRunMode::PlanOnly,
             &mut |_| panic!("planning must not review"),
-            Some(&mut |event| progress.push((event.completed, event.total))),
+            Some(&mut |event| {
+                if event.completed == 1 {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                progress.push((event.completed, event.total));
+            }),
         )
         .expect("plan");
     assert_eq!(outcome.status(), UpdateRunStatus::UpdatesPlanned);
