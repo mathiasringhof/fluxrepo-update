@@ -1,0 +1,6 @@
+kind: HelmRelease
+metadata: {name: demo}
+spec:
+  values:
+    image:
+      tag: 2.0.0

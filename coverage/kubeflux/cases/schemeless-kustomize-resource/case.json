@@ -1,0 +1,33 @@
+{
+  "id": "schemeless-kustomize-resource",
+  "category": "remote-kustomize",
+  "description": "A scheme-less GitHub resource pin is a located unchecked declaration.",
+  "audit": [
+    "U4"
+  ],
+  "source": [
+    "infrastructure/base/metallb/kustomization.yaml",
+    "infrastructure/testing/metallb/kustomization.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "The scanner recognizes only HTTP(S) remote resources and silently misses scheme-less GitHub refs.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "kustomization.yaml",
+          "current_value": "github.com/example/network/config/native?ref=v0.15.3",
+          "yaml_path": "resources[0]"
+        }
+      }
+    ]
+  }
+}

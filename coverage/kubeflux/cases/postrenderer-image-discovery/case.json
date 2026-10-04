@@ -1,0 +1,32 @@
+{
+  "id": "postrenderer-image-discovery",
+  "category": "embedded-images",
+  "description": "An image in an inline JSON6902 patch is visible without editing the block scalar.",
+  "audit": [
+    "U7"
+  ],
+  "source": [
+    "apps/apptesting/immich/release-patch.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Post-renderer block strings are not parsed for embedded workload images.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "release.yaml",
+          "current_value": "example/busybox:1.36",
+          "yaml_path": "spec.postRenderers[0].kustomize.patches[0].patch"
+        }
+      }
+    ]
+  }
+}

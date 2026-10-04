@@ -1,0 +1,10 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: public
+  namespace: apps
+  labels: {environment: base}
+spec:
+  interval: 1h
+  type: oci
+  url: oci://{{registry}}/charts

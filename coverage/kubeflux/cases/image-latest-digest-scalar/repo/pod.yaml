@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Pod
+metadata: {name: browser}
+spec:
+  containers:
+  - name: main
+    image: "{{registry}}/demo/browser:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

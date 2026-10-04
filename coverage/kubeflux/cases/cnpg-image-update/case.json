@@ -1,0 +1,34 @@
+{
+  "id": "cnpg-image-update",
+  "category": "custom-resource-images",
+  "description": "A CNPG image updates within the same PostgreSQL and extension version shape.",
+  "audit": [
+    "U3"
+  ],
+  "source": [
+    "apps/production/immich/cloudnative-pg.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "CloudNativePG imageName is visible but no registry resolution or field editing is supported.",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/postgres/tags/list": {
+      "json": {
+        "name": "demo/postgres",
+        "tags": [
+          "16.9-0.4.3",
+          "16.9-0.4.4"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      }
+    ]
+  }
+}

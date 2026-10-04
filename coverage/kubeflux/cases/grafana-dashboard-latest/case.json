@@ -1,0 +1,32 @@
+{
+  "id": "grafana-dashboard-latest",
+  "category": "dashboard-dependencies",
+  "description": "A latest-revision dashboard URL is reported with unknown availability and preserved.",
+  "audit": [
+    "U14"
+  ],
+  "source": [
+    "apps/production/kube-prometheus-stack/kube-prometheus-stack-values.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Mutable Grafana dashboard revision URLs are not discovered.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "release.yaml",
+          "current_value": "https://grafana.com/api/dashboards/11311/revisions/latest/download",
+          "yaml_path": "spec.values.grafana.dashboards.unpoller.sites.url"
+        }
+      }
+    ]
+  }
+}

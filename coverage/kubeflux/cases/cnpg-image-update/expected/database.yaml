@@ -1,0 +1,5 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: {name: photos}
+spec:
+  imageName: "{{registry}}/demo/postgres:16.9-0.4.4"

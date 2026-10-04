@@ -1,0 +1,75 @@
+{
+  "id": "version-no-downgrade",
+  "category": "version-families",
+  "description": "Sources containing only older stable versions must not downgrade either a chart prerelease or an image.",
+  "audit": [
+    "U6",
+    "T3"
+  ],
+  "source": [
+    "apps/production/unifi/unpoller.yaml",
+    "apps/base/sonarr/deployment.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/charts/index.yaml": {
+      "text": "entries:\n  demo:\n  - version: \"2.1.0\"\n"
+    },
+    "/v2/demo/app/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 0
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_value": "2.11.2-Chart6",
+          "reason_code": "current_version_newer_than_source",
+          "retryable": false
+        }
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[0].image",
+          "current_value": "{{registry}}/demo/app:2.0.0",
+          "reason_code": "current_version_newer_than_source",
+          "retryable": false
+        }
+      }
+    ]
+  }
+}

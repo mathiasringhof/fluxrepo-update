@@ -1,0 +1,9 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata: {name: guest}
+spec:
+  template:
+    spec:
+      volumes:
+      - name: installer
+        hostDisk: {path: /tmp/debian-13.1.0-amd64-netinst.iso, type: Disk}

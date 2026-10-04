@@ -1,0 +1,85 @@
+{
+  "id": "chart-source-equivalence",
+  "category": "chart-sources",
+  "description": "Equivalent source specifications with different labels resolve both releases and retain both source locations.",
+  "audit": [
+    "U1"
+  ],
+  "source": [
+    "apps/production/jellyfin/repository.yaml",
+    "apps/testing/jellyfin/repository.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/charts/index.yaml": {
+      "text": "entries:\n  demo:\n  - version: \"1.0.0\"\n  - version: \"2.0.0\"\n"
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 2
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "apps/a.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0",
+          "sources": [
+            {
+              "path": "sources/a.yaml",
+              "document_index": 0
+            },
+            {
+              "path": "sources/b.yaml",
+              "document_index": 0
+            }
+          ]
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "apps/b.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0",
+          "sources": [
+            {
+              "path": "sources/a.yaml",
+              "document_index": 0
+            },
+            {
+              "path": "sources/b.yaml",
+              "document_index": 0
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

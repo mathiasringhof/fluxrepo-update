@@ -1,0 +1,52 @@
+{
+  "id": "image-mapping-tag-digest",
+  "category": "image-boundaries",
+  "description": "Preserve the mapping-tag-digest Helm override as one unchecked declaration, without losing the digest or inventing a repository.",
+  "audit": [
+    "U5",
+    "T2"
+  ],
+  "source": [
+    "apps/production/immich/release-patch.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 0
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.values.image.tag",
+          "current_value": "9.0-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "reason_code": "image_reference_pinned_by_digest",
+          "retryable": false
+        }
+      }
+    ]
+  }
+}

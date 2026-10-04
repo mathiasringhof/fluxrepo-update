@@ -1,0 +1,39 @@
+{
+  "id": "script-binary-checksum-pins",
+  "category": "executable-dependencies",
+  "description": "Pinned executable and checksum download URLs are both visible, without treating a validation assertion as another install.",
+  "audit": [
+    "U10"
+  ],
+  "source": [
+    "kubevirt/production/lab/runner/run.py",
+    "kubevirt/production/lab/runner/gate.py"
+  ],
+  "expectation": "todo",
+  "todo": "Versioned binary and checksum URLs in executable source are outside discovery.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "install.py",
+          "current_value": "{{server}}/example/k3s/releases/download/v1.35.8%2Bk3s1/k3s"
+        }
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "install.py",
+          "current_value": "{{server}}/example/k3s/releases/download/v1.35.8%2Bk3s1/sha256sum-amd64.txt"
+        }
+      }
+    ]
+  }
+}

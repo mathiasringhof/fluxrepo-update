@@ -1,0 +1,54 @@
+{
+  "id": "charts-http",
+  "category": "charts-http",
+  "description": "Apply a public Helm chart selected from an HTTP index, excluding prereleases.",
+  "audit": [],
+  "source": [
+    "apps/base/audiobookshelf/release.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/charts/index.yaml": {
+      "text": "entries:\n  demo:\n  - version: \"1.0.0\"\n  - version: \"2.0.0\"\n  - version: \"3.0.0-rc.1\"\n"
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0",
+          "chart_name": "demo",
+          "repo_name": "public"
+        }
+      }
+    ]
+  }
+}

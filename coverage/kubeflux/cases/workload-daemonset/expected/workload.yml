@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: daemonset}
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: "{{registry}}/demo/daemonset:2.0.0" # keep
+      initContainers:
+        - name: app-init
+          image: "{{registry}}/demo/daemonset-init:2.0.0" # keep

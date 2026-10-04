@@ -1,0 +1,77 @@
+{
+  "id": "workload-pod",
+  "category": "workloads",
+  "description": "Apply regular and init-container images at the exact Pod PodSpec paths in a .yml file.",
+  "audit": [],
+  "source": [
+    "kubevirt/production/lab/runner/run.py"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/pod/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    },
+    "/v2/demo/pod-init/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 2
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "workload.yml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[0].image",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0",
+          "target_name": "pod"
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "workload.yml",
+          "document_index": 0,
+          "yaml_path": "spec.initContainers[0].image",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0",
+          "target_name": "pod"
+        }
+      }
+    ]
+  }
+}

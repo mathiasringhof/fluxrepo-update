@@ -1,0 +1,63 @@
+{
+  "id": "version-linuxserver-openssh",
+  "category": "version-families",
+  "description": "LinuxServer OpenSSH versions compare all numeric components while preserving the version/p/r spelling.",
+  "audit": [
+    "T3"
+  ],
+  "source": [
+    "apps/production/openssh/deployment.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/app/tags/list": {
+      "json": {
+        "tags": [
+          "version-10.3_p1-r0",
+          "version-10.3_p1-r10",
+          "version-10.4_p1-r0",
+          "10.5.0",
+          "latest"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[0].image",
+          "current_version": "version-10.3_p1-r0",
+          "latest_version": "version-10.4_p1-r0",
+          "latest_image": "{{registry}}/demo/app:version-10.4_p1-r0"
+        }
+      }
+    ]
+  }
+}

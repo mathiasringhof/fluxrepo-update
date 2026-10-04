@@ -1,0 +1,53 @@
+{
+  "id": "image-commit-digest-tag-only",
+  "category": "image-boundaries",
+  "description": "A raw commit plus digest override without a repository stays visible without inventing image identity.",
+  "audit": [
+    "U2",
+    "U5",
+    "T2"
+  ],
+  "source": [
+    "apps/apptesting/ente-auth/release-patch.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 0
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.values.museum.image.tag",
+          "current_value": "0123456789abcdef0123456789abcdef01234567@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "reason_code": "unsupported_version_declaration",
+          "retryable": false
+        }
+      }
+    ]
+  }
+}

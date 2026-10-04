@@ -1,0 +1,7 @@
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: {name: root}
+spec:
+  source:
+    http:
+      url: https://cloud-images.example.test/noble/current/noble-server-cloudimg-amd64.img

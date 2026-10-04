@@ -1,0 +1,55 @@
+{
+  "id": "secret-valuesfrom-opaque",
+  "category": "inherited-identity",
+  "description": "Whole-value and targetPath Secret references stay opaque and unchanged while an independently declared image updates.",
+  "audit": [
+    "U2",
+    "T4"
+  ],
+  "source": [
+    "infrastructure/production/tailscale/release-patch.yaml",
+    "apps/production/kube-prometheus-stack/kube-prometheus-stack-values.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/independent/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "pod.yaml",
+          "yaml_path": "spec.containers[0].image",
+          "latest_version": "2.0.0"
+        }
+      }
+    ]
+  }
+}

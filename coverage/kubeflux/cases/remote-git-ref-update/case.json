@@ -1,0 +1,32 @@
+{
+  "id": "remote-git-ref-update",
+  "category": "remote-kustomize",
+  "description": "A remote Kustomize ref changes while its selected subdirectory is retained.",
+  "audit": [
+    "U4"
+  ],
+  "source": [
+    "infrastructure/base/intel-gpu/kustomization.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "HTTPS Kustomize refs have no upstream version resolver or writer.",
+  "command": "apply",
+  "responses": {
+    "/repos/example/plugins/releases/latest": {
+      "json": {
+        "tag_name": "v2.0.0",
+        "prerelease": false,
+        "draft": false
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "id": "vm-iso-version",
+  "category": "virtual-machine-images",
+  "description": "An ISO version is reported for review without rewriting its local file path.",
+  "audit": [
+    "U9"
+  ],
+  "source": [
+    "kubevirt/apptesting/ubnt3-autoinstall-test.yaml",
+    "kubevirt/testing/debian-vm/debian.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Versioned VM installation-media paths are outside dependency discovery.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "vm.yaml",
+          "current_value": "/var/lib/images/ubuntu-24.04.4-live-server-amd64.iso",
+          "yaml_path": "spec.template.spec.volumes[0].hostDisk.path"
+        }
+      }
+    ]
+  }
+}

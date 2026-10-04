@@ -1,0 +1,84 @@
+{
+  "id": "manifest-local-overlays",
+  "category": "chart-boundaries",
+  "description": "Update a complete base and an independent values-only image, preserve an incomplete chart patch and blank inherited tag, and never infer cross-file identity.",
+  "audit": [
+    "U2"
+  ],
+  "source": [
+    "apps/production/audiobookshelf/release-patch.yaml",
+    "apps/base/audiobookshelf/release.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/charts/index.yaml": {
+      "text": "entries:\n  demo:\n  - version: \"1.0.0\"\n  - version: \"2.0.0\"\n"
+    },
+    "/v2/demo/helper/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 3
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 2
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "base.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0"
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "values.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.values.helper.image",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0"
+        }
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "overlay.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_value": "1.5.0",
+          "reason_code": "missing_chart_identity",
+          "retryable": false
+        }
+      }
+    ]
+  }
+}

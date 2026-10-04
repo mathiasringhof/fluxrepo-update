@@ -1,0 +1,61 @@
+{
+  "id": "charts-oci",
+  "category": "charts-oci",
+  "description": "Apply a public OCI chart selected from registry tags, decoding build metadata while excluding chart prereleases.",
+  "audit": [],
+  "source": [
+    "infrastructure/base/sources/truecharts.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/v2/charts/demo/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0_build.1",
+          "2.0.0_build.2",
+          "3.0.0-rc.1",
+          "3.0.0-alpine"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_version": "1.0.0+build.1",
+          "latest_version": "2.0.0+build.2",
+          "chart_name": "demo",
+          "repo_name": "public"
+        }
+      }
+    ]
+  }
+}

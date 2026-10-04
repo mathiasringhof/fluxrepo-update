@@ -1,0 +1,10 @@
+# Synthetic fixture representing generated Flux bootstrap output.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: source-controller}
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          image: "{{registry}}/flux/source-controller:v1.7.0"

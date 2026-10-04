@@ -1,0 +1,63 @@
+{
+  "id": "version-variant",
+  "category": "version-families",
+  "description": "An explicit image variant, including its distribution version, remains identical when the application version advances.",
+  "audit": [
+    "T3"
+  ],
+  "source": [
+    "apps/production/agent-browser/browser-deployment.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/app/tags/list": {
+      "json": {
+        "tags": [
+          "1.28.0-alpine3.21",
+          "1.29.0-alpine3.21",
+          "1.30.0-alpine3.22",
+          "2.0.0",
+          "2.0.0-rc.1-alpine3.21"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[0].image",
+          "current_version": "1.28.0-alpine3.21",
+          "latest_version": "1.29.0-alpine3.21",
+          "latest_image": "{{registry}}/demo/app:1.29.0-alpine3.21"
+        }
+      }
+    ]
+  }
+}

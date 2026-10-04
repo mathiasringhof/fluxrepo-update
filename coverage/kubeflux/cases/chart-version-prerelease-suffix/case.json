@@ -1,0 +1,55 @@
+{
+  "id": "chart-version-prerelease-suffix",
+  "category": "version-families",
+  "description": "Chart6 is a SemVer prerelease, not an image variant; move to the newest stable chart and reject newer prerelease-only entries.",
+  "audit": [
+    "U6",
+    "T3"
+  ],
+  "source": [
+    "apps/production/unifi/unpoller.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/charts/index.yaml": {
+      "text": "entries:\n  demo:\n  - version: \"2.11.2-Chart6\"\n  - version: \"2.11.2\"\n  - version: \"2.11.3\"\n  - version: \"3.0.0-Chart7\"\n"
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_version": "2.11.2-Chart6",
+          "latest_version": "2.11.3"
+        }
+      }
+    ]
+  }
+}

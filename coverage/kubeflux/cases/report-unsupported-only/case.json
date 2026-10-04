@@ -1,0 +1,49 @@
+{
+  "id": "report-unsupported-only",
+  "category": "reporting",
+  "description": "An explicit tag-only override remains visible as unchecked and unchanged.",
+  "audit": [
+    "U13"
+  ],
+  "source": [
+    "apps/production/jellyfin/release.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 0
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "release.yaml",
+          "yaml_path": "spec.values.image.tag",
+          "reason_code": "unsupported_version_declaration",
+          "current_value": "v3.1.0"
+        }
+      }
+    ]
+  }
+}

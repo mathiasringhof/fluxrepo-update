@@ -1,0 +1,4 @@
+kind: Kustomization
+resources:
+- {{server}}/example/operator/releases/download/v2.0.0/operator.yaml
+- {{server}}/example/operator/releases/download/v2.0.0/custom-resource.yaml

@@ -1,0 +1,32 @@
+{
+  "id": "generated-bootstrap-update-visibility",
+  "category": "generated-bootstrap",
+  "description": "Bootstrap controller versions need separate update visibility without editing generated files.",
+  "audit": [
+    "U12"
+  ],
+  "source": [
+    "clusters/production/flux-system/gotk-components.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "U12: generated files are excluded; their controller versions need separate bootstrap-update reporting, never scalar edits.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "clusters/demo/flux-system/gotk-components.yaml",
+          "yaml_path": "spec.template.spec.containers[0].image",
+          "current_value": "{{registry}}/flux/source-controller:v1.7.0"
+        }
+      }
+    ]
+  }
+}

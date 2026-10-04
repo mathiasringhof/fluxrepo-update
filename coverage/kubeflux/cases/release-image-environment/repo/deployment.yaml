@@ -1,0 +1,11 @@
+kind: Deployment
+metadata: {name: controller}
+spec:
+  template:
+    spec:
+      containers:
+      - name: controller
+        image: "example/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        env:
+        - {name: RELEASE_IMAGE, value: "example/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        - {name: DESCRIPTION, value: "uses version 123"}

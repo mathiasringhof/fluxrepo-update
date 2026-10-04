@@ -1,0 +1,33 @@
+{
+  "id": "vm-opaque-import",
+  "category": "virtual-machine-images",
+  "description": "An imported VM disk stays opaque and unchanged while its dependency is visible.",
+  "audit": [
+    "U9"
+  ],
+  "source": [
+    "kubevirt/testing/vm-102-import-dv.yaml",
+    "kubevirt/production/vms/haos/rootdisk-dv.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Opaque imported disk dependencies are not reported; their VM IDs must not become inferred versions.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "disk.yaml",
+          "current_value": "http://images.example.test/imports/vm-102-disk-0.qcow2",
+          "yaml_path": "spec.source.http.url"
+        }
+      }
+    ]
+  }
+}

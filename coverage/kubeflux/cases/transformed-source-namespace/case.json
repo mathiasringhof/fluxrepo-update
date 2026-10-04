@@ -1,0 +1,30 @@
+{
+  "id": "transformed-source-namespace",
+  "category": "kustomize-source-identity",
+  "description": "A namespace transform makes a chart source match its release.",
+  "audit": [
+    "U1"
+  ],
+  "source": [
+    "apps/production/jellyfin/release.yaml",
+    "apps/production/jellyfin/repository.yaml",
+    "apps/production/jellyfin/kustomization.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Raw namespaces currently prevent resolving the source transformed into the release namespace.",
+  "command": "apply",
+  "responses": {
+    "/charts/index.yaml": {
+      "text": "apiVersion: v1\nentries:\n  demo:\n  - version: 2.0.0\n  - version: 1.0.0\n"
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      }
+    ]
+  }
+}

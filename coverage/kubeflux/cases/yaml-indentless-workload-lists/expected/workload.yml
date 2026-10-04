@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata: {name: pod}
+spec:
+  containers:
+  - name: app
+    image: "{{registry}}/demo/pod:2.0.0" # keep
+  initContainers:
+  - name: app-init
+    image: "{{registry}}/demo/pod-init:2.0.0" # keep

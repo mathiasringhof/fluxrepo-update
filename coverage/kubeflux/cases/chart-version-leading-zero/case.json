@@ -1,0 +1,55 @@
+{
+  "id": "chart-version-leading-zero",
+  "category": "version-families",
+  "description": "A recognized numeric chart series with a padded component advances within that series without normalizing the published spelling.",
+  "audit": [
+    "U6",
+    "T3"
+  ],
+  "source": [
+    "infrastructure/base/multus/release.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/charts/index.yaml": {
+      "text": "entries:\n  demo:\n  - version: \"v4.3.016\"\n  - version: \"v4.3.017\"\n  - version: \"v4.3.018\"\n  - version: \"v4.3.019-rc.1\"\n"
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_version": "v4.3.017",
+          "latest_version": "v4.3.018"
+        }
+      }
+    ]
+  }
+}

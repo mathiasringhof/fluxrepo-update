@@ -1,0 +1,6 @@
+kind: HelmRelease
+metadata: {name: demo, namespace: flux-system}
+spec:
+  chart:
+    spec:
+      version: 1.0.0

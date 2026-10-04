@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Pod
+metadata: {name: demo}
+spec:
+  containers:
+  - name: app
+    image: "{{registry}}/demo/app:version-4.0.20.3000" # retained comment

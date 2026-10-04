@@ -1,0 +1,114 @@
+{
+  "id": "helm-values-mappings",
+  "category": "helm-values",
+  "description": "Update root, shared, recursive, and optional-registry image mappings exactly once per tag; do not duplicate an existing registry prefix.",
+  "audit": [
+    "T1"
+  ],
+  "source": [
+    "apps/production/jellyfin/release.yaml",
+    "apps/apptesting/immich/release-patch.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/root/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    },
+    "/v2/demo/shared/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    },
+    "/v2/demo/helper/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    },
+    "/v2/demo/prefixed/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 4
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 4
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 4
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 4
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.values.image.tag",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0"
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.values.sharedImage.tag",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0"
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.values.nested.helper.image.tag",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0"
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.values.nested.prefixed.image.tag",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "id": "report-mixed-resolution",
+  "category": "reporting",
+  "description": "An unavailable chart source retains its skip while an independent image update applies.",
+  "audit": [
+    "U13"
+  ],
+  "source": [
+    "apps/production/jellyfin/release.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/charts/index.yaml": {
+      "status": 503,
+      "text": "synthetic metadata outage"
+    },
+    "/v2/demo/current/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "release.yaml",
+          "reason_code": "chart_request_failed",
+          "retryable": true
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "pod.yaml",
+          "yaml_path": "spec.containers[0].image",
+          "latest_version": "2.0.0"
+        }
+      }
+    ]
+  }
+}

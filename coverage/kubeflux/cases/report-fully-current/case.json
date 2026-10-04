@@ -1,0 +1,52 @@
+{
+  "id": "report-fully-current",
+  "category": "reporting",
+  "description": "A fully checked current repository reports one checked declaration and no updates.",
+  "audit": [
+    "U13"
+  ],
+  "source": [
+    "apps/production/jellyfin/release.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "plan",
+  "responses": {
+    "/v2/demo/current/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 0
+      },
+      {
+        "at": "/skipped",
+        "equals": []
+      }
+    ]
+  }
+}

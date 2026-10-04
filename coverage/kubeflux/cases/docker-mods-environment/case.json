@@ -1,0 +1,49 @@
+{
+  "id": "docker-mods-environment",
+  "category": "environment-images",
+  "description": "Every pipe-separated DOCKER_MODS image is a declaration; arbitrary env text is not.",
+  "audit": [
+    "U8"
+  ],
+  "source": [
+    "apps/production/openssh/deployment.yaml",
+    "apps/production/webtop/deployment.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "DOCKER_MODS lists are not recognized or split into image declarations.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 4
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "pod.yaml",
+          "current_value": "linuxserver/mods:universal-package-install",
+          "yaml_path": "spec.containers[0].env[0].value"
+        }
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "pod.yaml",
+          "current_value": "ghcr.io/example/docker-mod:main",
+          "yaml_path": "spec.containers[0].env[0].value"
+        }
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "pod.yaml",
+          "current_value": "linuxserver/mods:openssh-server-git",
+          "yaml_path": "spec.containers[0].env[0].value"
+        }
+      }
+    ]
+  }
+}

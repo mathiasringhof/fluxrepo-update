@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Pod
+metadata: {name: independent}
+spec:
+  containers:
+  - name: main
+    image: "{{registry}}/demo/independent:2.0.0"

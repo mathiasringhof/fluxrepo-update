@@ -1,0 +1,42 @@
+{
+  "id": "stable-release-over-timestamp",
+  "category": "version-selection",
+  "description": "A stable semantic release wins over a larger timestamp build.",
+  "audit": [
+    "U6"
+  ],
+  "source": [
+    "apps/production/jellyfin/release.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Timestamp builds can be considered comparable upgrades for a semantic-version image channel.",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/media/tags/list": {
+      "json": {
+        "name": "demo/media",
+        "tags": [
+          "10.11.8",
+          "12.1",
+          "2026092811"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "yaml_path": "spec.values.image.tag",
+          "latest_version": "12.1"
+        }
+      }
+    ]
+  }
+}

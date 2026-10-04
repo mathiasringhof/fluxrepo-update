@@ -1,5 +1,9 @@
 # Coverage
 
+See the [kubeflux audit](kubeflux-coverage.md) for observed categories and remaining
+update/discovery gaps, and the separate [executable corpus](../coverage/kubeflux/README.md)
+for local CLI examples and [recorded outcomes](../coverage/kubeflux/STATUS.md).
+
 `fluxrepo-update` scans user-authored `.yaml` and `.yml` Managed Manifests. Each manifest
 is interpreted independently; the tool does not render Kustomize graphs or inherit chart
 identity and values from another file. An explicit base version can therefore be updated
@@ -80,6 +84,10 @@ as applicable. It parses the prepared YAML and rejects unintended semantic chang
 including effects through aliases. Supported block scalars and literal keys containing
 punctuation are handled without changing surrounding comments, quoting, document
 separators, line endings, or unrelated formatting.
+
+Known limitation: applying some valid indentless block lists reports a missing YAML
+path after planning. The [U15 examples](kubeflux-coverage.md#u15) retain the expected
+edits and currently report TODO.
 
 No automatic rollback, deployment, or reconciliation is performed. If an operating-system
 write fails after earlier files were written, the error reports partial application and

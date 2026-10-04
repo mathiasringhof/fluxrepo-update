@@ -1,0 +1,55 @@
+{
+  "id": "chart-version-v-prefix",
+  "category": "version-families",
+  "description": "A v-prefixed chart follows stable SemVer ordering and retains the exact selected source spelling.",
+  "audit": [
+    "U6",
+    "T3"
+  ],
+  "source": [
+    "infrastructure/base/cert-manager/release.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/charts/index.yaml": {
+      "text": "entries:\n  demo:\n  - version: \"v1.21.1\"\n  - version: \"v1.22.0\"\n  - version: \"v2.0.0-rc.1\"\n"
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_version": "v1.21.1",
+          "latest_version": "v1.22.0"
+        }
+      }
+    ]
+  }
+}

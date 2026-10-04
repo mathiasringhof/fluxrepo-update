@@ -1,0 +1,4 @@
+kind: Kustomization
+resources:
+- github.com/example/network/config/native?ref=v0.15.3
+- local.yaml

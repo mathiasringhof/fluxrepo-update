@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Pod
+metadata: {name: desktop}
+spec:
+  containers:
+  - name: main
+    image: example/desktop:latest
+    env:
+    - {name: DOCKER_MODS, value: "ghcr.io/example/docker-mod:main"}

@@ -1,0 +1,5 @@
+kind: HelmRelease
+metadata: {name: media}
+spec:
+  values:
+    image: {repository: "{{registry}}/demo/media", tag: "12.1"}

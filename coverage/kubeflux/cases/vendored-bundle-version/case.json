@@ -1,0 +1,31 @@
+{
+  "id": "vendored-bundle-version",
+  "category": "bundle-dependencies",
+  "description": "A versioned vendored bundle remains visible independently of its already newer image.",
+  "audit": [
+    "U12"
+  ],
+  "source": [
+    "apps/apptesting/kubevirt-manager/bundled-v1.5.3.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "A discovered container image does not identify or track the upstream manifest bundle release.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "bundled-v1.5.3.yaml",
+          "current_value": "v1.5.3"
+        }
+      }
+    ]
+  }
+}

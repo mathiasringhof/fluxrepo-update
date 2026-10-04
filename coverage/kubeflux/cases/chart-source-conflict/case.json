@@ -1,0 +1,71 @@
+{
+  "id": "chart-source-conflict",
+  "category": "chart-sources",
+  "description": "Different same-name source specifications stay unchecked while an independent image updates.",
+  "audit": [
+    "U1"
+  ],
+  "source": [
+    "apps/production/jellyfin/repository.yaml",
+    "apps/testing/jellyfin/repository.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/independent/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_value": "1.0.0",
+          "reason_code": "ambiguous_helm_repository",
+          "retryable": false
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[0].image",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+kind: Kustomization
+configMapGenerator:
+- name: install
+  files: [install.py]

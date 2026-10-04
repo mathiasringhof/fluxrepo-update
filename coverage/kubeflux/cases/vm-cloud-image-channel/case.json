@@ -1,0 +1,33 @@
+{
+  "id": "vm-cloud-image-channel",
+  "category": "virtual-machine-images",
+  "description": "A mutable cloud OS image URL is visible with unknown update availability.",
+  "audit": [
+    "U9"
+  ],
+  "source": [
+    "kubevirt/production/vms/k3s-apptesting/rootdisk-dv.yaml",
+    "kubevirt/production/lab/vms/resources.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "CDI DataVolume HTTP image channels are not discovered.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "disk.yaml",
+          "current_value": "https://cloud-images.example.test/noble/current/noble-server-cloudimg-amd64.img",
+          "yaml_path": "spec.source.http.url"
+        }
+      }
+    ]
+  }
+}

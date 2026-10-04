@@ -1,0 +1,31 @@
+{
+  "id": "virtctl-checksum-only",
+  "category": "tooling-dependencies",
+  "description": "A checksum-only executable pin is visible for manual review without inventing a release.",
+  "audit": [
+    "U11"
+  ],
+  "source": [
+    "scripts/lab/guest.py"
+  ],
+  "expectation": "todo",
+  "todo": "Checksum-only operator-tool pins are not discovered and have no upstream version identity.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "scripts/guest.py",
+          "current_value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+kind: Pod
+metadata: {name: shell}
+spec:
+  containers:
+  - name: shell
+    image: example/shell:latest
+    env:
+    - name: DOCKER_MODS
+      value: "linuxserver/mods:universal-package-install|ghcr.io/example/docker-mod:main|linuxserver/mods:openssh-server-git"
+    - name: DESCRIPTION
+      value: "ordinary text:100"

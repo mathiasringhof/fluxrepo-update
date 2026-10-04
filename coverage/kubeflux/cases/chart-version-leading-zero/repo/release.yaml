@@ -1,0 +1,9 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata: {name: demo, namespace: apps}
+spec:
+  chart:
+    spec:
+      chart: demo
+      version: "v4.3.017" # selected chart version
+      sourceRef: {kind: HelmRepository, name: public, namespace: apps}

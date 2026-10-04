@@ -1,0 +1,53 @@
+{
+  "id": "report-all-requests-failed",
+  "category": "reporting",
+  "description": "A total metadata outage must have an automation-visible unsuccessful outcome.",
+  "audit": [
+    "U13"
+  ],
+  "source": [
+    "apps/production/jellyfin/release.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "U13 / #18: total resolution failure exits zero; this case requires a nonzero outcome without choosing a future code.",
+  "command": "plan",
+  "responses": {
+    "/charts/index.yaml": {
+      "status": 503,
+      "text": "synthetic metadata outage"
+    }
+  },
+  "checks": {
+    "exit_code_not": 0,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 0
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "release.yaml",
+          "reason_code": "chart_request_failed",
+          "retryable": true
+        }
+      }
+    ]
+  }
+}

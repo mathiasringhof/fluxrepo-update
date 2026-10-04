@@ -1,0 +1,9 @@
+kind: HelmRelease
+metadata: {name: metrics}
+spec:
+  values:
+    grafana:
+      dashboards:
+        unpoller:
+          sites:
+            url: https://grafana.com/api/dashboards/11311/revisions/latest/download

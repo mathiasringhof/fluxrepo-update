@@ -1,0 +1,5 @@
+kind: HelmRelease
+metadata: {name: app}
+spec:
+  values:
+    image: {tag: v3.1.0}

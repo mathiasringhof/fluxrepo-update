@@ -1,0 +1,12 @@
+apiVersion: batch/v1
+kind: Job
+metadata: {name: job}
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: "{{registry}}/demo/job:1.0.0" # keep
+      initContainers:
+        - name: app-init
+          image: "{{registry}}/demo/job-init:1.0.0" # keep

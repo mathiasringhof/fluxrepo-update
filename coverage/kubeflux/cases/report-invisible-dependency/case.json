@@ -1,0 +1,57 @@
+{
+  "id": "report-invisible-dependency",
+  "category": "reporting",
+  "description": "A current ordinary image must not hide an undiscovered image-valued environment declaration.",
+  "audit": [
+    "U13",
+    "U8"
+  ],
+  "source": [
+    "apps/production/jellyfin/release.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "U13/U8: report counts omit the RELEASE_IMAGE dependency entirely.",
+  "command": "plan",
+  "responses": {
+    "/v2/demo/current/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 0
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "pod.yaml",
+          "yaml_path": "spec.containers[0].env[0].value",
+          "current_value": "{{registry}}/demo/receiver:1.0.0"
+        }
+      }
+    ]
+  }
+}

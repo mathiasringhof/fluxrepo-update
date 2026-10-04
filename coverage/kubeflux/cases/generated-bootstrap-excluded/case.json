@@ -1,0 +1,30 @@
+{
+  "id": "generated-bootstrap-excluded",
+  "category": "generated-bootstrap",
+  "description": "Generated Flux bootstrap files stay excluded and byte-identical.",
+  "audit": [
+    "U12"
+  ],
+  "source": [
+    "clusters/production/flux-system/gotk-components.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 0
+      },
+      {
+        "at": "/skipped_paths",
+        "equals": [
+          "clusters/demo/flux-system/gotk-components.yaml"
+        ]
+      }
+    ]
+  }
+}

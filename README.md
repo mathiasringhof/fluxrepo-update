@@ -104,6 +104,18 @@ cargo run -- inventory tests/fixtures/kubeflux --json
 cargo run -- update-helm tests/fixtures/kubeflux --json --non-interactive
 ```
 
+Run the separate [synthetic kubeflux corpus](coverage/kubeflux/README.md) to exercise
+supported behavior and explicit TODOs without accessing real registries:
+
+```bash
+cargo build --locked
+python3 coverage/kubeflux/run.py
+```
+
+The [case status](coverage/kubeflux/STATUS.md) distinguishes working updates, safe skips,
+and desired capabilities that still fail. This opt-in corpus is separate from the Rust
+suite and CI.
+
 Run the Rust test suite:
 
 ```bash
@@ -179,4 +191,6 @@ completely. See [coverage](docs/coverage.md) for scope and recovery limits.
 - [Usage](docs/usage.md)
 - [Output](docs/output.md)
 - [Coverage](docs/coverage.md)
+- [kubeflux coverage audit and remaining TODOs](docs/kubeflux-coverage.md)
+- [Synthetic corpus and status](coverage/kubeflux/STATUS.md)
 - [Docs Index](docs/README.md)

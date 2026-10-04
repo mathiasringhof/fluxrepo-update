@@ -1,0 +1,32 @@
+{
+  "id": "vm-debian-iso-version",
+  "category": "virtual-machine-images",
+  "description": "A Debian installer ISO carries a dotted release version and remains a manual-review local artifact.",
+  "audit": [
+    "U9"
+  ],
+  "source": [
+    "kubevirt/testing/debian-vm/debian.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Debian installation-media versions embedded in hostDisk paths are not discovered.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "vm.yaml",
+          "yaml_path": "spec.template.spec.volumes[0].hostDisk.path",
+          "current_value": "/tmp/debian-13.1.0-amd64-netinst.iso"
+        }
+      }
+    ]
+  }
+}

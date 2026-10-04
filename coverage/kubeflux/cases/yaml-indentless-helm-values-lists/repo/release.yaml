@@ -1,0 +1,15 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata: {name: demo}
+spec:
+  values:
+    initContainers:
+    - name: init
+      image: "{{registry}}/demo/init:1.0.0"
+    - name: inherited
+      image: "{{registry}}/demo/tagless"
+    extraContainers:
+    - name: helper
+      image: {repository: "{{registry}}/demo/helper", tag: "1.0.0"}
+    - name: sidecar
+      image: "{{registry}}/demo/sidecar:latest"

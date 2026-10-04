@@ -1,0 +1,63 @@
+{
+  "id": "version-date",
+  "category": "version-families",
+  "description": "Calendar tags compare within their family and retain eight-digit spelling.",
+  "audit": [
+    "T3"
+  ],
+  "source": [
+    "apps/production/webtop/deployment.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/app/tags/list": {
+      "json": {
+        "tags": [
+          "20260829",
+          "20260830",
+          "20260901",
+          "1.0.0",
+          "latest"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[0].image",
+          "current_version": "20260830",
+          "latest_version": "20260901",
+          "latest_image": "{{registry}}/demo/app:20260901"
+        }
+      }
+    ]
+  }
+}

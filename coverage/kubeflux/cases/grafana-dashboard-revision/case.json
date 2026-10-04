@@ -1,0 +1,33 @@
+{
+  "id": "grafana-dashboard-revision",
+  "category": "dashboard-dependencies",
+  "description": "A Grafana dashboard revision is discovered without treating its numeric identity or unrelated revisions as versions.",
+  "audit": [
+    "U14"
+  ],
+  "source": [
+    "apps/production/kube-prometheus-stack/kube-prometheus-stack-values.yaml",
+    "apps/apptesting/kube-prometheus-stack/kube-prometheus-stack-values.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Grafana gnetId/revision dependency schemas are not recognized.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "release.yaml",
+          "current_value": "2",
+          "yaml_path": "spec.values.grafana.dashboards.default.disks.revision"
+        }
+      }
+    ]
+  }
+}

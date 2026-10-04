@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata: {name: demo}
+spec:
+  containers:
+    - name: app
+      image: "{{registry}}/demo/current:1.0.0"
+      env:
+        - name: RELEASE_IMAGE
+          value: "{{registry}}/demo/receiver:1.0.0"

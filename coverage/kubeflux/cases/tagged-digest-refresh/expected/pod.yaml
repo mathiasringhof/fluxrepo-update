@@ -1,0 +1,6 @@
+kind: Pod
+metadata: {name: app}
+spec:
+  containers:
+  - name: main
+    image: "{{registry}}/demo/app:1.0.0@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

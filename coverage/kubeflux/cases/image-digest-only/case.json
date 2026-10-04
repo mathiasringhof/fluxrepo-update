@@ -1,0 +1,52 @@
+{
+  "id": "image-digest-only",
+  "category": "image-boundaries",
+  "description": "Preserve the digest-only image, report its precise unchecked location and reason, and make no metadata requests.",
+  "audit": [
+    "U5",
+    "T2"
+  ],
+  "source": [
+    "apps/base/zfsreplication/deployment.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 0
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[0].image",
+          "current_value": "{{registry}}/demo/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "reason_code": "image_reference_pinned_by_digest",
+          "retryable": false
+        }
+      }
+    ]
+  }
+}

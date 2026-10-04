@@ -1,0 +1,49 @@
+{
+  "id": "tagged-digest-refresh",
+  "category": "digest-updates",
+  "description": "Refreshing a tagged image digest retains the tag and digest pin.",
+  "audit": [
+    "U5"
+  ],
+  "source": [
+    "apps/production/hermes/deployment.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Digest-pinned images are skipped before metadata retrieval; digest refresh has no implementation.",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/app/tags/list": {
+      "json": {
+        "name": "demo/app",
+        "tags": [
+          "1.0.0"
+        ]
+      }
+    },
+    "/v2/demo/app/manifests/1.0.0": {
+      "headers": {
+        "Docker-Content-Digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "Content-Type": "application/vnd.oci.image.manifest.v1+json"
+      },
+      "json": {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {
+          "mediaType": "application/vnd.oci.image.config.v1+json",
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 2
+        },
+        "layers": []
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      }
+    ]
+  }
+}

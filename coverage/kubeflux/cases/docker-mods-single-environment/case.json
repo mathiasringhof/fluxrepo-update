@@ -1,0 +1,32 @@
+{
+  "id": "docker-mods-single-environment",
+  "category": "environment-images",
+  "description": "A DOCKER_MODS value with one image and no delimiter is a separate located dependency.",
+  "audit": [
+    "U8"
+  ],
+  "source": [
+    "apps/production/webtop/deployment.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Single-reference DOCKER_MODS values are not discovered.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "pod.yaml",
+          "yaml_path": "spec.containers[0].env[0].value",
+          "current_value": "ghcr.io/example/docker-mod:main"
+        }
+      }
+    ]
+  }
+}

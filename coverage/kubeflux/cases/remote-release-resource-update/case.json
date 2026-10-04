@@ -1,0 +1,42 @@
+{
+  "id": "remote-release-resource-update",
+  "category": "remote-kustomize",
+  "description": "Two release artifact URLs move together to one newer release.",
+  "audit": [
+    "U4"
+  ],
+  "source": [
+    "infrastructure/base/cdi/kustomization.yaml",
+    "infrastructure/base/kubevirt/kustomization.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "HTTP release resources are only reported unchecked; release metadata resolution and coordinated URL edits are unsupported.",
+  "command": "apply",
+  "responses": {
+    "/repos/example/operator/releases/latest": {
+      "json": {
+        "tag_name": "v2.0.0",
+        "prerelease": false,
+        "draft": false
+      }
+    },
+    "/repos/example/operator/releases": {
+      "json": [
+        {
+          "tag_name": "v2.0.0",
+          "prerelease": false,
+          "draft": false
+        }
+      ]
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/applied_count",
+        "equals": 2
+      }
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+kind: HelmRelease
+metadata: {name: demo}
+spec:
+  values:
+    image:
+      repository: "{{registry}}/demo/app"

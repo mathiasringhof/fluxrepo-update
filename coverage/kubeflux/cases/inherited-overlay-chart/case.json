@@ -1,0 +1,28 @@
+{
+  "id": "inherited-overlay-chart",
+  "category": "inherited-identity",
+  "description": "A chart-version overlay inherits chart/source identity from its base.",
+  "audit": [
+    "U2"
+  ],
+  "source": [
+    "apps/production/audiobookshelf/release-patch.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Chart and source identity are not inherited across Kustomize files.",
+  "command": "apply",
+  "responses": {
+    "/charts/index.yaml": {
+      "text": "apiVersion: v1\nentries:\n  demo:\n  - version: 2.0.0\n  - version: 1.0.0\n"
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      }
+    ]
+  }
+}

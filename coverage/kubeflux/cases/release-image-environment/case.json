@@ -1,0 +1,32 @@
+{
+  "id": "release-image-environment",
+  "category": "environment-images",
+  "description": "A controller image repeated in RELEASE_IMAGE is a separate declaration.",
+  "audit": [
+    "U8"
+  ],
+  "source": [
+    "apps/base/zfsreplication/deployment.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Image-valued environment variables are not discovered, even when they repeat a controller image.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "deployment.yaml",
+          "current_value": "example/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "yaml_path": "spec.template.spec.containers[0].env[0].value"
+        }
+      }
+    ]
+  }
+}

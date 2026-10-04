@@ -1,0 +1,63 @@
+{
+  "id": "version-linuxserver-numeric",
+  "category": "version-families",
+  "description": "LinuxServer numeric-pattern versions keep their prefix and compare numeric components.",
+  "audit": [
+    "T3"
+  ],
+  "source": [
+    "apps/base/sonarr/deployment.yaml"
+  ],
+  "expectation": "pass",
+  "todo": "",
+  "command": "apply",
+  "responses": {
+    "/v2/demo/app/tags/list": {
+      "json": {
+        "tags": [
+          "version-4.0.18.2900",
+          "version-4.0.19.2979",
+          "version-4.0.20.3000",
+          "5.0.0",
+          "latest"
+        ]
+      }
+    }
+  },
+  "checks": {
+    "exit_code": 20,
+    "json": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[0].image",
+          "current_version": "version-4.0.19.2979",
+          "latest_version": "version-4.0.20.3000",
+          "latest_image": "{{registry}}/demo/app:version-4.0.20.3000"
+        }
+      }
+    ]
+  }
+}

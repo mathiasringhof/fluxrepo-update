@@ -1,0 +1,4 @@
+kind: Kustomization
+configMapGenerator:
+- name: runner
+  files: [run.py]

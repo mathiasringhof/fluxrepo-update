@@ -1,0 +1,13 @@
+kind: HelmRelease
+metadata: {name: photos}
+spec:
+  postRenderers:
+  - kustomize:
+      patches:
+      - target: {kind: Deployment, name: photos}
+        patch: |-
+          - op: add
+            path: /spec/template/spec/initContainers
+            value:
+            - name: initialize
+              image: example/busybox:1.36

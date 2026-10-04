@@ -1,0 +1,12 @@
+kind: HelmRelease
+metadata: {name: metrics}
+spec:
+  values:
+    grafana:
+      dashboards:
+        default:
+          disks:
+            gnetId: 22604
+            revision: 2
+    ordinaryConfig:
+      revision: 99

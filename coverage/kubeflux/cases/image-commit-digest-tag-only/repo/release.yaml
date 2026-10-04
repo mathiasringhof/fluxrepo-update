@@ -1,0 +1,7 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata: {name: photos}
+spec:
+  values:
+    museum:
+      image: {tag: "0123456789abcdef0123456789abcdef01234567@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}

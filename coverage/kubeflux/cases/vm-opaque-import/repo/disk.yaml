@@ -1,0 +1,7 @@
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata: {name: restored}
+spec:
+  source:
+    http:
+      url: http://images.example.test/imports/vm-102-disk-0.qcow2

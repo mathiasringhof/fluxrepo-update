@@ -1,0 +1,13 @@
+kind: Deployment
+metadata:
+  name: manager
+  labels: {kubevirt-manager.io/version: v1.5.3}
+spec:
+  selector:
+    matchLabels: {kubevirt-manager.io/version: v1.5.3}
+  template:
+    metadata:
+      labels: {kubevirt-manager.io/version: v1.5.3}
+    spec:
+      containers:
+      - {name: manager, image: "example/manager:1.5.4"}

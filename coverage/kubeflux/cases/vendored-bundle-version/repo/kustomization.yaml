@@ -1,0 +1,2 @@
+kind: Kustomization
+resources: [bundled-v1.5.3.yaml]

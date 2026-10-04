@@ -1,0 +1,16 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata: {name: tunnel}
+spec:
+  valuesFrom:
+  - {kind: Secret, name: external-values, valuesKey: values.yaml}
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata: {name: metrics}
+spec:
+  valuesFrom:
+  - kind: Secret
+    name: external-values
+    valuesKey: token
+    targetPath: alertmanager.config.receivers[0].pushover_configs[0].token

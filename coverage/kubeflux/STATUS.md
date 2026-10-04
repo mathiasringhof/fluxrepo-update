@@ -1,0 +1,90 @@
+# Synthetic kubeflux case status
+
+Snapshot: **2026-10-04 — 73 cases, 44 PASS, 29 TODO, 0 XPASS, 0 FAIL, 0 ERROR.**
+
+Recorded from `python3 coverage/kubeflux/run.py --json`. See the [runner guide](README.md)
+for reproduction and the [audit](../../docs/kubeflux-coverage.md) for source evidence.
+This corpus is opt-in and separate from the normal Rust suite and CI.
+
+PASS on a preservation case means a safe skip, not support for checking newer versions.
+TODO records a desired check that still fails. These remain open capabilities or known
+failures; the expected outcome is not weakened to match current behavior.
+
+| Case | Status | Desired behavior | Audit |
+| --- | --- | --- | --- |
+| [chart-default-image-unknown](cases/chart-default-image-unknown/case.json) | PASS | An image override without an available chart default stays visible and unchanged. | [U2](../../docs/kubeflux-coverage.md#u2) |
+| [chart-source-conflict](cases/chart-source-conflict/case.json) | PASS | Different same-name source specifications stay unchecked while an independent image updates. | [U1](../../docs/kubeflux-coverage.md#u1) |
+| [chart-source-equivalence](cases/chart-source-equivalence/case.json) | PASS | Equivalent source specifications with different labels resolve both releases and retain both source locations. | [U1](../../docs/kubeflux-coverage.md#u1) |
+| [chart-version-leading-zero](cases/chart-version-leading-zero/case.json) | PASS | A recognized numeric chart series with a padded component advances within that series without normalizing the published spelling. | [U6](../../docs/kubeflux-coverage.md#u6), [T3](../../docs/kubeflux-coverage.md#t3) |
+| [chart-version-prerelease-suffix](cases/chart-version-prerelease-suffix/case.json) | PASS | Chart6 is a SemVer prerelease, not an image variant; move to the newest stable chart and reject newer prerelease-only entries. | [U6](../../docs/kubeflux-coverage.md#u6), [T3](../../docs/kubeflux-coverage.md#t3) |
+| [chart-version-v-prefix](cases/chart-version-v-prefix/case.json) | PASS | A v-prefixed chart follows stable SemVer ordering and retains the exact selected source spelling. | [U6](../../docs/kubeflux-coverage.md#u6), [T3](../../docs/kubeflux-coverage.md#t3) |
+| [charts-http](cases/charts-http/case.json) | PASS | Apply a public Helm chart selected from an HTTP index, excluding prereleases. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
+| [charts-oci](cases/charts-oci/case.json) | PASS | Apply a public OCI chart selected from registry tags, decoding build metadata while excluding chart prereleases. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
+| [cnpg-image-update](cases/cnpg-image-update/case.json) | TODO | A CNPG image updates within the same PostgreSQL and extension version shape. | [U3](../../docs/kubeflux-coverage.md#u3) |
+| [configmap-script-pod-images](cases/configmap-script-pod-images/case.json) | TODO | Images in Python-generated Pods packaged by a ConfigMap generator are visible without executing code. | [U10](../../docs/kubeflux-coverage.md#u10) |
+| [docker-mods-environment](cases/docker-mods-environment/case.json) | TODO | Every pipe-separated DOCKER_MODS image is a declaration; arbitrary env text is not. | [U8](../../docs/kubeflux-coverage.md#u8) |
+| [docker-mods-single-environment](cases/docker-mods-single-environment/case.json) | TODO | A DOCKER_MODS value with one image and no delimiter is a separate located dependency. | [U8](../../docs/kubeflux-coverage.md#u8) |
+| [generated-bootstrap-excluded](cases/generated-bootstrap-excluded/case.json) | PASS | Generated Flux bootstrap files stay excluded and byte-identical. | [U12](../../docs/kubeflux-coverage.md#u12) |
+| [generated-bootstrap-update-visibility](cases/generated-bootstrap-update-visibility/case.json) | TODO | Bootstrap controller versions need separate update visibility without editing generated files. | [U12](../../docs/kubeflux-coverage.md#u12) |
+| [grafana-dashboard-latest](cases/grafana-dashboard-latest/case.json) | TODO | A latest-revision dashboard URL is reported with unknown availability and preserved. | [U14](../../docs/kubeflux-coverage.md#u14) |
+| [grafana-dashboard-revision](cases/grafana-dashboard-revision/case.json) | TODO | A Grafana dashboard revision is discovered without treating its numeric identity or unrelated revisions as versions. | [U14](../../docs/kubeflux-coverage.md#u14) |
+| [helm-values-lists](cases/helm-values-lists/case.json) | PASS | Apply scalar and mapping images in Helm values lists while preserving neighboring tagless and mutable images. | [T1](../../docs/kubeflux-coverage.md#t1) |
+| [helm-values-mappings](cases/helm-values-mappings/case.json) | PASS | Update root, shared, recursive, and optional-registry image mappings exactly once per tag; do not duplicate an existing registry prefix. | [T1](../../docs/kubeflux-coverage.md#t1) |
+| [helm-values-scalars](cases/helm-values-scalars/case.json) | PASS | Update recursive scalar images and a literal dotted key without changing neighboring values. | [T1](../../docs/kubeflux-coverage.md#t1) |
+| [image-commit](cases/image-commit/case.json) | PASS | Preserve the commit image, report its precise unchecked location and reason, and make no metadata requests. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-commit-digest-mapping](cases/image-commit-digest-mapping/case.json) | PASS | A raw 40-hex commit plus digest in a repository/tag mapping remains pinned and precisely reported. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-commit-digest-tag-only](cases/image-commit-digest-tag-only/case.json) | PASS | A raw commit plus digest override without a repository stays visible without inventing image identity. | [U2](../../docs/kubeflux-coverage.md#u2), [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-digest-only](cases/image-digest-only/case.json) | PASS | Preserve the digest-only image, report its precise unchecked location and reason, and make no metadata requests. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-flavor](cases/image-flavor/case.json) | PASS | Preserve the flavor image, report its precise unchecked location and reason, and make no metadata requests. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-latest](cases/image-latest/case.json) | PASS | Preserve the latest image, report its precise unchecked location and reason, and make no metadata requests. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-latest-digest-scalar](cases/image-latest-digest-scalar/case.json) | PASS | A latest-channel scalar image with a digest is classified by its pin and preserved without metadata requests. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-main](cases/image-main/case.json) | PASS | Preserve the main image, report its precise unchecked location and reason, and make no metadata requests. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-mapping-digest-field](cases/image-mapping-digest-field/case.json) | PASS | Preserve the mapping-digest-field Helm override as one unchecked declaration, without losing the digest or inventing a repository. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-mapping-tag-digest](cases/image-mapping-tag-digest/case.json) | PASS | Preserve the mapping-tag-digest Helm override as one unchecked declaration, without losing the digest or inventing a repository. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-tag-digest](cases/image-tag-digest/case.json) | PASS | Preserve the tag-digest image, report its precise unchecked location and reason, and make no metadata requests. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-tag-only-digest](cases/image-tag-only-digest/case.json) | PASS | Preserve the tag-only-digest Helm override as one unchecked declaration, without losing the digest or inventing a repository. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-tagless-port](cases/image-tagless-port/case.json) | PASS | Preserve the tagless-port image, report its precise unchecked location and reason, and make no metadata requests. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [image-template](cases/image-template/case.json) | PASS | Preserve the template image, report its precise unchecked location and reason, and make no metadata requests. | [U5](../../docs/kubeflux-coverage.md#u5), [T2](../../docs/kubeflux-coverage.md#t2) |
+| [inherited-overlay-chart](cases/inherited-overlay-chart/case.json) | TODO | A chart-version overlay inherits chart/source identity from its base. | [U2](../../docs/kubeflux-coverage.md#u2) |
+| [inherited-overlay-image](cases/inherited-overlay-image/case.json) | TODO | An image-tag overlay inherits its explicit repository from a base. | [U2](../../docs/kubeflux-coverage.md#u2) |
+| [manifest-local-overlays](cases/manifest-local-overlays/case.json) | PASS | Update a complete base and an independent values-only image, preserve an incomplete chart patch and blank inherited tag, and never infer cross-file identity. | [U2](../../docs/kubeflux-coverage.md#u2) |
+| [negative-controls](cases/negative-controls/case.json) | PASS | SOPS/schema/API versions, configuration rollout revisions, arbitrary numbers, comments, and ordinary disk paths remain unchanged beside one real image update. | [T4](../../docs/kubeflux-coverage.md#t4) |
+| [postrenderer-image-discovery](cases/postrenderer-image-discovery/case.json) | TODO | An image in an inline JSON6902 patch is visible without editing the block scalar. | [U7](../../docs/kubeflux-coverage.md#u7) |
+| [python-requirement-pins](cases/python-requirement-pins/case.json) | TODO | Pinned Python test tools are separate dependency declarations. | [U11](../../docs/kubeflux-coverage.md#u11) |
+| [release-image-environment](cases/release-image-environment/case.json) | TODO | A controller image repeated in RELEASE_IMAGE is a separate declaration. | [U8](../../docs/kubeflux-coverage.md#u8) |
+| [remote-git-ref-update](cases/remote-git-ref-update/case.json) | TODO | A remote Kustomize ref changes while its selected subdirectory is retained. | [U4](../../docs/kubeflux-coverage.md#u4) |
+| [remote-release-resource-update](cases/remote-release-resource-update/case.json) | TODO | Two release artifact URLs move together to one newer release. | [U4](../../docs/kubeflux-coverage.md#u4) |
+| [report-all-requests-failed](cases/report-all-requests-failed/case.json) | TODO | A total metadata outage must have an automation-visible unsuccessful outcome. | [U13](../../docs/kubeflux-coverage.md#u13) |
+| [report-fully-current](cases/report-fully-current/case.json) | PASS | A fully checked current repository reports one checked declaration and no updates. | [U13](../../docs/kubeflux-coverage.md#u13) |
+| [report-invisible-dependency](cases/report-invisible-dependency/case.json) | TODO | A current ordinary image must not hide an undiscovered image-valued environment declaration. | [U13](../../docs/kubeflux-coverage.md#u13), [U8](../../docs/kubeflux-coverage.md#u8) |
+| [report-mixed-resolution](cases/report-mixed-resolution/case.json) | PASS | An unavailable chart source retains its skip while an independent image update applies. | [U13](../../docs/kubeflux-coverage.md#u13) |
+| [report-unsupported-only](cases/report-unsupported-only/case.json) | PASS | An explicit tag-only override remains visible as unchecked and unchanged. | [U13](../../docs/kubeflux-coverage.md#u13) |
+| [schemeless-kustomize-resource](cases/schemeless-kustomize-resource/case.json) | TODO | A scheme-less GitHub resource pin is a located unchecked declaration. | [U4](../../docs/kubeflux-coverage.md#u4) |
+| [scope-exclusions](cases/scope-exclusions/case.json) | PASS | Eligible inactive .yml manifests update independently of the Kustomize graph; hidden directories, build caches, and non-YAML files remain byte-identical. | [T4](../../docs/kubeflux-coverage.md#t4) |
+| [script-binary-checksum-pins](cases/script-binary-checksum-pins/case.json) | TODO | Pinned executable and checksum download URLs are both visible, without treating a validation assertion as another install. | [U10](../../docs/kubeflux-coverage.md#u10) |
+| [secret-valuesfrom-opaque](cases/secret-valuesfrom-opaque/case.json) | PASS | Whole-value and targetPath Secret references stay opaque and unchanged while an independently declared image updates. | [U2](../../docs/kubeflux-coverage.md#u2), [T4](../../docs/kubeflux-coverage.md#t4) |
+| [stable-release-over-timestamp](cases/stable-release-over-timestamp/case.json) | TODO | A stable semantic release wins over a larger timestamp build. | [U6](../../docs/kubeflux-coverage.md#u6) |
+| [tagged-digest-refresh](cases/tagged-digest-refresh/case.json) | TODO | Refreshing a tagged image digest retains the tag and digest pin. | [U5](../../docs/kubeflux-coverage.md#u5) |
+| [transformed-source-namespace](cases/transformed-source-namespace/case.json) | TODO | A namespace transform makes a chart source match its release. | [U1](../../docs/kubeflux-coverage.md#u1) |
+| [vendored-bundle-version](cases/vendored-bundle-version/case.json) | TODO | A versioned vendored bundle remains visible independently of its already newer image. | [U12](../../docs/kubeflux-coverage.md#u12) |
+| [version-date](cases/version-date/case.json) | PASS | Calendar tags compare within their family and retain eight-digit spelling. | [T3](../../docs/kubeflux-coverage.md#t3) |
+| [version-linuxserver-numeric](cases/version-linuxserver-numeric/case.json) | PASS | LinuxServer numeric-pattern versions keep their prefix and compare numeric components. | [T3](../../docs/kubeflux-coverage.md#t3) |
+| [version-linuxserver-openssh](cases/version-linuxserver-openssh/case.json) | PASS | LinuxServer OpenSSH versions compare all numeric components while preserving the version/p/r spelling. | [T3](../../docs/kubeflux-coverage.md#t3) |
+| [version-no-downgrade](cases/version-no-downgrade/case.json) | PASS | Sources containing only older stable versions must not downgrade either a chart prerelease or an image. | [U6](../../docs/kubeflux-coverage.md#u6), [T3](../../docs/kubeflux-coverage.md#t3) |
+| [version-variant](cases/version-variant/case.json) | PASS | An explicit image variant, including its distribution version, remains identical when the application version advances. | [T3](../../docs/kubeflux-coverage.md#t3) |
+| [virtctl-checksum-only](cases/virtctl-checksum-only/case.json) | TODO | A checksum-only executable pin is visible for manual review without inventing a release. | [U11](../../docs/kubeflux-coverage.md#u11) |
+| [vm-cloud-image-channel](cases/vm-cloud-image-channel/case.json) | TODO | A mutable cloud OS image URL is visible with unknown update availability. | [U9](../../docs/kubeflux-coverage.md#u9) |
+| [vm-debian-iso-version](cases/vm-debian-iso-version/case.json) | TODO | A Debian installer ISO carries a dotted release version and remains a manual-review local artifact. | [U9](../../docs/kubeflux-coverage.md#u9) |
+| [vm-iso-version](cases/vm-iso-version/case.json) | TODO | An ISO version is reported for review without rewriting its local file path. | [U9](../../docs/kubeflux-coverage.md#u9) |
+| [vm-opaque-import](cases/vm-opaque-import/case.json) | TODO | An imported VM disk stays opaque and unchanged while its dependency is visible. | [U9](../../docs/kubeflux-coverage.md#u9) |
+| [workload-cronjob](cases/workload-cronjob/case.json) | PASS | Apply regular and init-container images at the exact CronJob PodSpec paths in a .yml file. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
+| [workload-daemonset](cases/workload-daemonset/case.json) | PASS | Apply regular and init-container images at the exact DaemonSet PodSpec paths in a .yml file. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
+| [workload-deployment](cases/workload-deployment/case.json) | PASS | Apply regular and init-container images at the exact Deployment PodSpec paths in a .yml file. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
+| [workload-job](cases/workload-job/case.json) | PASS | Apply regular and init-container images at the exact Job PodSpec paths in a .yml file. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
+| [workload-pod](cases/workload-pod/case.json) | PASS | Apply regular and init-container images at the exact Pod PodSpec paths in a .yml file. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
+| [workload-statefulset](cases/workload-statefulset/case.json) | PASS | Apply regular and init-container images at the exact StatefulSet PodSpec paths in a .yml file. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
+| [yaml-indentless-helm-values-lists](cases/yaml-indentless-helm-values-lists/case.json) | TODO | Apply every image in valid indentless block-sequence siblings, preserving the original YAML style and all unrelated fields. | [U15](../../docs/kubeflux-coverage.md#u15) |
+| [yaml-indentless-workload-lists](cases/yaml-indentless-workload-lists/case.json) | TODO | Apply every image in valid indentless block-sequence siblings, preserving the original YAML style and all unrelated fields. | [U15](../../docs/kubeflux-coverage.md#u15) |
+
+Rerun the corpus after changes; `--strict` also fails when TODO cases remain.
+This snapshot is evidence about the synthetic examples, not a live currency check of kubeflux.

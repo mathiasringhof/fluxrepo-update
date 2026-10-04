@@ -1,0 +1,40 @@
+{
+  "id": "configmap-script-pod-images",
+  "category": "executable-dependencies",
+  "description": "Images in Python-generated Pods packaged by a ConfigMap generator are visible without executing code.",
+  "audit": [
+    "U10"
+  ],
+  "source": [
+    "kubevirt/production/lab/runner/run.py",
+    "kubevirt/production/lab/runner/directrouting.py",
+    "kubevirt/production/lab/runner/kustomization.yaml"
+  ],
+  "expectation": "todo",
+  "todo": "Non-YAML ConfigMap generator source files and runtime-generated Pod definitions are not inspected.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "run.py",
+          "current_value": "example/busybox:1.37.0"
+        }
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "run.py",
+          "current_value": "example/python:3.12-slim-bookworm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ]
+  }
+}

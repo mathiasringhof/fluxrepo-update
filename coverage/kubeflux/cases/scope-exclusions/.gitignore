@@ -1,0 +1,5 @@
+# These cache-shaped paths are intentional example data.
+!repo/target/
+!repo/target/pod.yaml
+!repo/__pycache__/
+!repo/__pycache__/pod.yaml
