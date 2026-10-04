@@ -19,7 +19,7 @@ type BearerTokenCacheKey = (String, Option<String>, Option<String>);
 type CachedResult<Value> = Result<Arc<Value>, ResolverError>;
 type FetchCells<Key, Value> = Mutex<HashMap<Key, Arc<OnceLock<CachedResult<Value>>>>>;
 
-struct MetadataCache<Key, Value> {
+pub(crate) struct MetadataCache<Key, Value> {
     cells: FetchCells<Key, Value>,
 }
 
@@ -32,7 +32,11 @@ impl<Key, Value> Default for MetadataCache<Key, Value> {
 }
 
 impl<Key: Eq + Hash, Value> MetadataCache<Key, Value> {
-    fn get_or_fetch(&self, key: Key, fetch: impl FnOnce() -> Result<Value>) -> Result<Arc<Value>> {
+    pub(crate) fn get_or_fetch(
+        &self,
+        key: Key,
+        fetch: impl FnOnce() -> Result<Value>,
+    ) -> Result<Arc<Value>> {
         let cell = self
             .cells
             .lock()
@@ -93,6 +97,10 @@ pub enum ResolverErrorCode {
     ImageReferencePinnedByDigest,
     TemplatedImageReference,
     UnparseableImageReference,
+    GitHubRequestFailed,
+    GitHubReleaseAssetsMissing,
+    GitHubReleaseMetadataInvalid,
+    GitHubReleaseVersionUnavailable,
     Unclassified,
 }
 
@@ -105,7 +113,7 @@ pub struct ResolverError {
 }
 
 impl ResolverError {
-    fn permanent(code: ResolverErrorCode, message: impl Into<String>) -> Self {
+    pub(crate) fn permanent(code: ResolverErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -114,7 +122,7 @@ impl ResolverError {
         }
     }
 
-    fn request_failed(
+    pub(crate) fn request_failed(
         code: ResolverErrorCode,
         source_url: impl Into<String>,
         error: reqwest::Error,
@@ -135,7 +143,7 @@ impl ResolverError {
         }
     }
 
-    fn with_source_url(
+    pub(crate) fn with_source_url(
         code: ResolverErrorCode,
         message: impl Into<String>,
         retryable: bool,
@@ -151,6 +159,30 @@ impl ResolverError {
 
     pub fn code(&self) -> ResolverErrorCode {
         self.code
+    }
+
+    pub fn reason_code(&self) -> &'static str {
+        match self.code {
+            ResolverErrorCode::UnsupportedRepositoryType => "unsupported_repository_type",
+            ResolverErrorCode::ChartNotFound => "chart_not_found",
+            ResolverErrorCode::IncompatibleVersionScheme => "incompatible_version_scheme",
+            ResolverErrorCode::CurrentVersionNotFound => "current_version_not_found",
+            ResolverErrorCode::CurrentVersionNewerThanSource => "current_version_newer_than_source",
+            ResolverErrorCode::ChartRequestFailed => "chart_request_failed",
+            ResolverErrorCode::RegistryRequestFailed => "registry_request_failed",
+            ResolverErrorCode::MutableImageTag => "mutable_image_tag",
+            ResolverErrorCode::ImageReferenceMissingTag => "image_reference_missing_tag",
+            ResolverErrorCode::ImageReferencePinnedByDigest => "image_reference_pinned_by_digest",
+            ResolverErrorCode::TemplatedImageReference => "templated_image_reference",
+            ResolverErrorCode::UnparseableImageReference => "unparseable_image_reference",
+            ResolverErrorCode::GitHubRequestFailed => "github_request_failed",
+            ResolverErrorCode::GitHubReleaseAssetsMissing => "github_release_assets_missing",
+            ResolverErrorCode::GitHubReleaseMetadataInvalid => "github_release_metadata_invalid",
+            ResolverErrorCode::GitHubReleaseVersionUnavailable => {
+                "github_release_version_unavailable"
+            }
+            ResolverErrorCode::Unclassified => "unclassified",
+        }
     }
 
     pub fn retryable(&self) -> bool {
@@ -896,6 +928,14 @@ fn registry_scheme(registry: &str) -> &'static str {
 }
 
 pub fn parse_next_link(link_header: Option<&str>, current_url: &str) -> Option<String> {
+    Url::parse(current_url)
+        .ok()?
+        .join(next_link_target(link_header)?)
+        .ok()
+        .map(|url| url.to_string())
+}
+
+pub(crate) fn next_link_target(link_header: Option<&str>) -> Option<&str> {
     let next = LINK_RE.captures_iter(link_header?).find(|link| {
         LINK_PARAM_RE
             .captures_iter(&link[2])
@@ -908,11 +948,7 @@ pub fn parse_next_link(link_header: Option<&str>, current_url: &str) -> Option<S
                     .any(|relation| relation.eq_ignore_ascii_case("next"))
             })
     })?;
-    Url::parse(current_url)
-        .ok()?
-        .join(&next[1])
-        .ok()
-        .map(|url| url.to_string())
+    next.get(1).map(|target| target.as_str())
 }
 
 pub fn select_comparable_tags<'a>(current_tag: &str, tags: &[&'a str]) -> Vec<&'a str> {

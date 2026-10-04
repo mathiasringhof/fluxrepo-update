@@ -15,7 +15,7 @@ use crate::scanner::{edit_node_at_path, parse_yaml_documents, value_at_path, val
 
 #[cfg(test)]
 use crate::github::GitHubReleaseResolver;
-use crate::github::{GitHubResolverError, RemoteResourceVersionResolver};
+use crate::github::RemoteResourceVersionResolver;
 use crate::models::{
     HelmReleaseTarget, ImageBinding, ImageBindingValueKind, Inventory, RemoteResourceTarget,
     ResourceId, TargetKind, UncheckedVersionDeclaration,
@@ -421,17 +421,6 @@ impl SkippedUpdate {
         if let Some(error) = error.downcast_ref::<ResolverError>() {
             return Self::with_reason(path, SkipReason::from_resolver_error(error));
         }
-        if let Some(error) = error.downcast_ref::<GitHubResolverError>() {
-            return Self::with_reason(
-                path,
-                SkipReason::new(
-                    error.to_string(),
-                    SkipReasonCode::from_github(error.reason_code()),
-                    error.retryable(),
-                    error.source_url().map(str::to_string),
-                ),
-            );
-        }
         Self::new(path, error.to_string())
     }
 
@@ -595,17 +584,6 @@ impl SkipReasonCode {
             Self::Unclassified => "unclassified",
         }
     }
-
-    fn from_github(code: &str) -> Self {
-        match code {
-            "github_request_failed" => Self::GitHubRequestFailed,
-            "github_release_assets_missing" => Self::GitHubReleaseAssetsMissing,
-            "github_release_metadata_invalid" => Self::GitHubReleaseMetadataInvalid,
-            "github_release_version_unavailable" => Self::GitHubReleaseVersionUnavailable,
-            "incompatible_version_scheme" => Self::IncompatibleVersionScheme,
-            _ => Self::Unclassified,
-        }
-    }
 }
 
 impl From<ResolverErrorCode> for SkipReasonCode {
@@ -623,6 +601,12 @@ impl From<ResolverErrorCode> for SkipReasonCode {
             ResolverErrorCode::ImageReferencePinnedByDigest => Self::ImageReferencePinnedByDigest,
             ResolverErrorCode::TemplatedImageReference => Self::TemplatedImageReference,
             ResolverErrorCode::UnparseableImageReference => Self::UnparseableImageReference,
+            ResolverErrorCode::GitHubRequestFailed => Self::GitHubRequestFailed,
+            ResolverErrorCode::GitHubReleaseAssetsMissing => Self::GitHubReleaseAssetsMissing,
+            ResolverErrorCode::GitHubReleaseMetadataInvalid => Self::GitHubReleaseMetadataInvalid,
+            ResolverErrorCode::GitHubReleaseVersionUnavailable => {
+                Self::GitHubReleaseVersionUnavailable
+            }
             ResolverErrorCode::Unclassified => Self::Unclassified,
         }
     }
@@ -1214,6 +1198,33 @@ pub(crate) fn apply_planned_updates<'a>(
         let semantic_documents = parse_yaml_documents(&original)?;
         let mut expected_documents = semantic_documents.clone();
         let mut edits = Vec::new();
+        let mut prepare_scalar_edit = |document_index: usize,
+                                       yaml_path: &str,
+                                       expected: &str,
+                                       replacement: &str|
+         -> Result<()> {
+            let document = documents.get(document_index).ok_or_else(|| {
+                anyhow!(
+                    "document index {document_index} not found in {}",
+                    path.display()
+                )
+            })?;
+            edits.push(checked_scalar_edit(
+                document,
+                yaml_path,
+                expected,
+                replacement,
+            )?);
+            let expected_document = expected_documents
+                .get_mut(document_index)
+                .ok_or_else(|| anyhow!("semantic document missing"))?;
+            let expected_node =
+                value_at_path_mut(expected_document, yaml_path).ok_or_else(|| {
+                    anyhow!("missing YAML path {yaml_path}; target changed after planning")
+                })?;
+            *expected_node = yaml_serde::Value::String(replacement.to_string());
+            Ok(())
+        };
         for update in updates {
             if let PlannedUpdate::RemoteResource(remote) = update {
                 let identities = remote
@@ -1231,20 +1242,12 @@ pub(crate) fn apply_planned_updates<'a>(
                     })?)?;
                 }
                 for change in &remote.changes {
-                    let document = documents.get(change.document_index).ok_or_else(|| {
-                        anyhow!("remote resource document changed after planning")
-                    })?;
-                    edits.push(checked_scalar_edit(
-                        document,
+                    prepare_scalar_edit(
+                        change.document_index,
                         &change.yaml_path,
                         &change.current_resource,
                         &change.latest_resource,
-                    )?);
-                    let expected_node = expected_documents
-                        .get_mut(change.document_index)
-                        .and_then(|document| value_at_path_mut(document, &change.yaml_path))
-                        .ok_or_else(|| anyhow!("remote resource field changed after planning"))?;
-                    *expected_node = yaml_serde::Value::String(change.latest_resource.clone());
+                    )?;
                 }
                 continue;
             }
@@ -1294,20 +1297,7 @@ pub(crate) fn apply_planned_updates<'a>(
             if let Some(identity) = identity {
                 identity.verify(semantic_document)?;
             }
-            edits.push(checked_scalar_edit(
-                document,
-                yaml_path,
-                expected,
-                replacement,
-            )?);
-            let expected_document = expected_documents
-                .get_mut(update.document_index())
-                .ok_or_else(|| anyhow!("semantic document missing"))?;
-            let expected_node =
-                value_at_path_mut(expected_document, yaml_path).ok_or_else(|| {
-                    anyhow!("missing YAML path {yaml_path}; target changed after planning")
-                })?;
-            *expected_node = yaml_serde::Value::String(replacement.clone());
+            prepare_scalar_edit(update.document_index(), yaml_path, expected, replacement)?;
         }
         edits.sort_by_key(|edit| edit.range.start);
         if edits

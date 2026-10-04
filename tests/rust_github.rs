@@ -185,40 +185,79 @@ fn github_release_resolver_never_downgrades_or_rewrites_an_equivalent_pin() {
 
 #[test]
 fn github_release_resolver_follows_trusted_pagination_before_selecting_assets() {
-    let server = TestHttpServer::new(vec![
-        ResponseSpec::new(200, json!([release("v3.0.0", &["first.yaml"])]).to_string())
-            .header("Link", "<?per_page=100&page=2>; rel=next"),
-        ResponseSpec::new(
-            200,
-            json!([release("v2.0.0", &["first.yaml", "second.yaml"])]).to_string(),
+    for (name, link) in [
+        ("unquoted", "<?per_page=100&page=2>; rel=next"),
+        (
+            "quoted parameters and multiple relations",
+            r#"<?per_page=100&page=2>; title="comma, semicolon; escaped \"quote\""; ReL="prev NEXT""#,
         ),
-    ]);
-    let resolver = resolver(&server);
-    assert_eq!(
-        resolver
-            .resolve(
-                "owner",
-                "project",
-                "v1.0.0",
-                &["first.yaml".to_string(), "second.yaml".to_string()],
-            )
-            .expect("paginated common release"),
-        "v2.0.0"
-    );
-    let requests = server.finish();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(
-        requests[1].path,
-        "/repos/owner/project/releases?per_page=100&page=2"
-    );
+        (
+            "next title on an unrelated link",
+            r#"<https://example.invalid/>; title="next"; rel=prev, <?per_page=100&page=2>; rel="next""#,
+        ),
+    ] {
+        let server = TestHttpServer::new(vec![
+            ResponseSpec::new(200, json!([release("v3.0.0", &["first.yaml"])]).to_string())
+                .header("Link", link),
+            ResponseSpec::new(
+                200,
+                json!([release("v2.0.0", &["first.yaml", "second.yaml"])]).to_string(),
+            ),
+        ]);
+        assert_eq!(
+            resolver(&server)
+                .resolve(
+                    "owner",
+                    "project",
+                    "v1.0.0",
+                    &["first.yaml".to_string(), "second.yaml".to_string()],
+                )
+                .expect(name),
+            "v2.0.0",
+            "{name}"
+        );
+        let requests = server.finish();
+        assert_eq!(requests.len(), 2, "{name}");
+        assert_eq!(
+            requests[1].path, "/repos/owner/project/releases?per_page=100&page=2",
+            "{name}"
+        );
+    }
 }
 
 #[test]
-fn github_release_resolver_rejects_untrusted_or_cyclic_pagination() {
-    for link in [
-        "<https://example.invalid/releases?page=2>; rel=next",
-        "<{base_url}/repos/owner/project/releases?per_page=100>; rel=next",
-        "<http://user@{host}/repos/owner/project/releases?page=2>; rel=next",
+fn github_release_resolver_rejects_invalid_pagination() {
+    for (name, link, source_url) in [
+        (
+            "another origin",
+            "<https://example.invalid/releases?page=2>; rel=next",
+            "https://example.invalid/releases?page=2",
+        ),
+        (
+            "cycle",
+            "<{base_url}/repos/owner/project/releases?per_page=100>; rel=next",
+            "{base_url}/repos/owner/project/releases?per_page=100",
+        ),
+        (
+            "user information",
+            "<http://user@{host}/repos/owner/project/releases?page=2>; rel=next",
+            "http://user@{host}/repos/owner/project/releases?page=2",
+        ),
+        (
+            "malformed URL",
+            r#"<http://[invalid]>; rel="next""#,
+            "{base_url}/repos/owner/project/releases?per_page=100",
+        ),
+        (
+            "another project",
+            "<{base_url}/repos/different/project/releases?page=2>; rel=next",
+            "{base_url}/repos/different/project/releases?page=2",
+        ),
+        (
+            "another port",
+            "<http://127.0.0.1:1/repos/owner/project/releases?page=2>; rel=next",
+            "http://127.0.0.1:1/repos/owner/project/releases?page=2",
+        ),
     ] {
         let server = TestHttpServer::new(vec![
             ResponseSpec::new(200, json!([release("v1.0.0", &[])]).to_string())
@@ -226,11 +265,19 @@ fn github_release_resolver_rejects_untrusted_or_cyclic_pagination() {
         ]);
         let error = resolver(&server)
             .resolve("owner", "project", "v1.0.0", &[])
-            .expect_err("untrusted pagination");
+            .expect_err(name);
         let error = github_error(&error);
-        assert_eq!(error.reason_code(), "github_release_metadata_invalid");
-        assert!(!error.retryable());
-        assert_eq!(server.finish().len(), 1);
+        assert_eq!(
+            error.reason_code(),
+            "github_release_metadata_invalid",
+            "{name}"
+        );
+        assert!(!error.retryable(), "{name}");
+        let source_url = source_url
+            .replace("{base_url}", &server.base_url)
+            .replace("{host}", server.base_url.strip_prefix("http://").unwrap());
+        assert_eq!(error.source_url(), Some(source_url.as_str()), "{name}");
+        assert_eq!(server.finish().len(), 1, "{name}");
     }
 }
 
@@ -251,18 +298,24 @@ fn github_release_resolver_default_client_does_not_follow_redirects() {
 
 #[test]
 fn github_release_resolver_caches_typed_request_failures_case_insensitively() {
-    for (status, rate_limited, retryable) in [
-        (401, false, false),
-        (403, false, false),
-        (403, true, true),
-        (404, false, false),
-        (408, false, true),
-        (429, false, true),
-        (500, false, true),
+    for (name, status, header, retryable) in [
+        ("unauthorized", 401, None, false),
+        ("forbidden", 403, None, false),
+        (
+            "rate limit exhausted",
+            403,
+            Some(("X-RateLimit-Remaining", "0")),
+            true,
+        ),
+        ("retry after", 403, Some(("Retry-After", "60")), true),
+        ("not found", 404, None, false),
+        ("timeout", 408, None, true),
+        ("too many requests", 429, None, true),
+        ("server error", 500, None, true),
     ] {
         let response = ResponseSpec::new(status, "request failed");
-        let response = if rate_limited {
-            response.header("X-RateLimit-Remaining", "0")
+        let response = if let Some((name, value)) = header {
+            response.header(name, value)
         } else {
             response
         };
@@ -271,10 +324,10 @@ fn github_release_resolver_caches_typed_request_failures_case_insensitively() {
         for (owner, project) in [("Owner", "Project"), ("owner", "project")] {
             let error = resolver
                 .resolve(owner, project, "v1.0.0", &[])
-                .expect_err("HTTP failure");
+                .expect_err(name);
             let error = github_error(&error);
-            assert_eq!(error.reason_code(), "github_request_failed");
-            assert_eq!(error.retryable(), retryable, "HTTP {status}");
+            assert_eq!(error.reason_code(), "github_request_failed", "{name}");
+            assert_eq!(error.retryable(), retryable, "{name}");
             assert_eq!(
                 error.source_url(),
                 Some(
@@ -283,10 +336,11 @@ fn github_release_resolver_caches_typed_request_failures_case_insensitively() {
                         server.base_url
                     )
                     .as_str()
-                )
+                ),
+                "{name}"
             );
         }
-        assert_eq!(server.finish().len(), 1);
+        assert_eq!(server.finish().len(), 1, "{name}");
     }
 }
 
@@ -377,43 +431,6 @@ fn github_release_resolver_uses_the_injected_http_client() {
 }
 
 #[test]
-fn github_release_resolver_does_not_treat_a_malformed_next_link_as_the_last_page() {
-    let server = TestHttpServer::new(vec![
-        ResponseSpec::new(200, json!([release("v1.0.0", &[])]).to_string())
-            .header("Link", r#"<http://[invalid]>; rel="next""#),
-    ]);
-    let error = resolver(&server)
-        .resolve("owner", "project", "v1.0.0", &[])
-        .expect_err("malformed next page must remain unchecked");
-    assert_eq!(
-        github_error(&error).reason_code(),
-        "github_release_metadata_invalid"
-    );
-    assert_eq!(server.finish().len(), 1);
-}
-
-#[test]
-fn github_release_resolver_rejects_pagination_to_another_project_or_port() {
-    for link in [
-        "<{base_url}/repos/different/project/releases?page=2>; rel=next",
-        "<http://127.0.0.1:1/repos/owner/project/releases?page=2>; rel=next",
-    ] {
-        let server = TestHttpServer::new(vec![
-            ResponseSpec::new(200, json!([release("v1.0.0", &[])]).to_string())
-                .header("Link", link),
-        ]);
-        let error = resolver(&server)
-            .resolve("owner", "project", "v1.0.0", &[])
-            .expect_err("release endpoint changed");
-        assert_eq!(
-            github_error(&error).reason_code(),
-            "github_release_metadata_invalid"
-        );
-        assert_eq!(server.finish().len(), 1);
-    }
-}
-
-#[test]
 fn github_release_resolver_checks_metadata_before_reporting_current() {
     for malformed in [
         json!({"tag_name": "v1.0.0", "draft": false, "prerelease": false}),
@@ -450,18 +467,6 @@ fn github_release_resolver_accepts_an_exact_asset_download_url() {
             .expect("exact asset URL"),
         "v2.0.0"
     );
-    server.finish();
-}
-
-#[test]
-fn github_release_resolver_marks_retry_after_rate_limits_retryable() {
-    let server = TestHttpServer::new(vec![
-        ResponseSpec::new(403, "rate limited").header("Retry-After", "60"),
-    ]);
-    let error = resolver(&server)
-        .resolve("owner", "project", "v1.0.0", &[])
-        .expect_err("rate limit");
-    assert!(github_error(&error).retryable());
     server.finish();
 }
 

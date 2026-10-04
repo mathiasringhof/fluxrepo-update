@@ -1,21 +1,14 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ops::Range;
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::Arc;
 
 use anyhow::Result;
-use regex::Regex;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use url::Url;
 
-use crate::resolvers::parse_next_link;
-
-type ReleaseFetchResult = std::result::Result<Arc<Vec<Release>>, GitHubResolverError>;
-type ReleaseFetchCells = Mutex<HashMap<(String, String), Arc<OnceLock<ReleaseFetchResult>>>>;
-
-static LINK_TARGET_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<[^>]*>").expect("link target regex"));
+use crate::resolvers::{MetadataCache, ResolverError, ResolverErrorCode, next_link_target};
 
 const MAX_RELEASE_PAGES: usize = 1_000;
 
@@ -127,70 +120,13 @@ pub trait RemoteResourceVersionResolver {
     ) -> Result<String>;
 }
 
-#[derive(Debug, Clone)]
-pub struct GitHubResolverError {
-    reason_code: &'static str,
-    message: String,
-    retryable: bool,
-    source_url: Option<String>,
-}
-
-impl GitHubResolverError {
-    fn permanent(
-        reason_code: &'static str,
-        message: impl Into<String>,
-        source_url: Option<String>,
-    ) -> Self {
-        Self {
-            reason_code,
-            message: message.into(),
-            retryable: false,
-            source_url,
-        }
-    }
-
-    fn request_failed(source_url: &str, error: &reqwest::Error) -> Self {
-        let retryable = error.status().map_or_else(
-            || !error.is_builder() && !error.is_decode(),
-            |status| {
-                status.is_server_error()
-                    || status == reqwest::StatusCode::REQUEST_TIMEOUT
-                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-            },
-        );
-        Self {
-            reason_code: "github_request_failed",
-            message: error.to_string(),
-            retryable,
-            source_url: Some(source_url.to_string()),
-        }
-    }
-
-    pub fn reason_code(&self) -> &'static str {
-        self.reason_code
-    }
-
-    pub fn retryable(&self) -> bool {
-        self.retryable
-    }
-
-    pub fn source_url(&self) -> Option<&str> {
-        self.source_url.as_deref()
-    }
-}
-
-impl std::fmt::Display for GitHubResolverError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for GitHubResolverError {}
+/// Compatibility name for the shared typed resolver error.
+pub type GitHubResolverError = ResolverError;
 
 pub struct GitHubReleaseResolver {
     client: Client,
     api_base_url: String,
-    release_cache: ReleaseFetchCells,
+    release_cache: MetadataCache<(String, String), Vec<Release>>,
 }
 
 impl Default for GitHubReleaseResolver {
@@ -229,22 +165,14 @@ impl GitHubReleaseResolver {
         source_url: &Url,
     ) -> Result<Arc<Vec<Release>>> {
         let key = (owner.to_ascii_lowercase(), repository.to_ascii_lowercase());
-        let cell = self
-            .release_cache
-            .lock()
-            .expect("GitHub release cache lock")
-            .entry(key)
-            .or_default()
-            .clone();
-        cell.get_or_init(|| self.fetch_releases(source_url).map(Arc::new))
-            .clone()
-            .map_err(Into::into)
+        self.release_cache
+            .get_or_fetch(key, || Ok(self.fetch_releases(source_url)?))
     }
 
     fn fetch_releases(
         &self,
         initial_url: &Url,
-    ) -> std::result::Result<Vec<Release>, GitHubResolverError> {
+    ) -> std::result::Result<Vec<Release>, ResolverError> {
         let mut current_url = initial_url.clone();
         let mut visited = HashSet::new();
         let mut releases = Vec::new();
@@ -263,7 +191,11 @@ impl GitHubReleaseResolver {
                 .header("X-GitHub-Api-Version", "2022-11-28")
                 .send()
                 .map_err(|error| {
-                    GitHubResolverError::request_failed(current_url.as_str(), &error)
+                    ResolverError::request_failed(
+                        ResolverErrorCode::GitHubRequestFailed,
+                        current_url.as_str(),
+                        error,
+                    )
                 })?;
             if response.url() != &current_url {
                 return Err(metadata_error(
@@ -282,15 +214,15 @@ impl GitHubReleaseResolver {
                             .get("X-RateLimit-Remaining")
                             .and_then(|value| value.to_str().ok())
                             .is_some_and(|remaining| remaining.trim() == "0"));
-                return Err(GitHubResolverError {
-                    reason_code: "github_request_failed",
-                    message: format!("GitHub release request returned HTTP {status}"),
-                    retryable: rate_limited
+                return Err(ResolverError::with_source_url(
+                    ResolverErrorCode::GitHubRequestFailed,
+                    format!("GitHub release request returned HTTP {status}"),
+                    rate_limited
                         || status.is_server_error()
                         || status == reqwest::StatusCode::REQUEST_TIMEOUT
                         || status == reqwest::StatusCode::TOO_MANY_REQUESTS,
-                    source_url: Some(current_url.to_string()),
-                });
+                    current_url.as_str(),
+                ));
             }
             let link = response
                 .headers()
@@ -300,22 +232,18 @@ impl GitHubReleaseResolver {
                 .map_err(|_| {
                     metadata_error("invalid GitHub pagination header", current_url.as_str())
                 })?;
-            let next_url = parse_next_link(link, current_url.as_str());
-            if next_url.is_none()
-                && link.is_some_and(|header| {
-                    // Keep the shared relation parser's handling of quoted parameters,
-                    // while distinguishing an invalid next URL from no next relation.
-                    let sanitized = LINK_TARGET_RE.replace_all(header, "<https://api.github.com/>");
-                    parse_next_link(Some(&sanitized), current_url.as_str()).is_some()
-                })
-            {
-                return Err(metadata_error(
-                    "invalid GitHub next-page URL",
-                    current_url.as_str(),
-                ));
-            }
+            let next_url = next_link_target(link)
+                .map(|target| current_url.join(target))
+                .transpose()
+                .map_err(|_| {
+                    metadata_error("invalid GitHub next-page URL", current_url.as_str())
+                })?;
             let body = response.bytes().map_err(|error| {
-                GitHubResolverError::request_failed(current_url.as_str(), &error)
+                ResolverError::request_failed(
+                    ResolverErrorCode::GitHubRequestFailed,
+                    current_url.as_str(),
+                    error,
+                )
             })?;
             let metadata = serde_json::from_slice::<Value>(&body).map_err(|error| {
                 metadata_error(
@@ -327,9 +255,7 @@ impl GitHubReleaseResolver {
             let Some(next_url) = next_url else {
                 break;
             };
-            current_url = Url::parse(&next_url).map_err(|_| {
-                metadata_error("invalid GitHub pagination URL", current_url.as_str())
-            })?;
+            current_url = next_url;
         }
         Ok(releases)
     }
@@ -344,27 +270,26 @@ impl RemoteResourceVersionResolver for GitHubReleaseResolver {
         required_assets: &[String],
     ) -> Result<String> {
         let current = parse_stable_version(current_version).ok_or_else(|| {
-            GitHubResolverError::permanent(
-                "incompatible_version_scheme",
+            ResolverError::permanent(
+                ResolverErrorCode::IncompatibleVersionScheme,
                 format!("GitHub resource pin {current_version} is not a stable numeric version"),
-                None,
             )
         })?;
         if !valid_project_identity(owner, repository) {
-            return Err(GitHubResolverError::permanent(
-                "github_release_metadata_invalid",
+            return Err(ResolverError::permanent(
+                ResolverErrorCode::GitHubReleaseMetadataInvalid,
                 "invalid GitHub project identity",
-                None,
             )
             .into());
         }
         let source_url = self.releases_url(owner, repository)?;
         let releases = self.releases(owner, repository, &source_url)?;
         if releases.is_empty() {
-            return Err(GitHubResolverError::permanent(
-                "github_release_version_unavailable",
+            return Err(ResolverError::with_source_url(
+                ResolverErrorCode::GitHubReleaseVersionUnavailable,
                 format!("no stable numeric GitHub releases found for {owner}/{repository}"),
-                Some(source_url.to_string()),
+                false,
+                source_url.as_str(),
             )
             .into());
         }
@@ -376,10 +301,11 @@ impl RemoteResourceVersionResolver for GitHubReleaseResolver {
                     .then_with(|| left.tag.cmp(&right.tag))
             })
             .ok_or_else(|| {
-                GitHubResolverError::permanent(
-                    "github_release_assets_missing",
+                ResolverError::with_source_url(
+                    ResolverErrorCode::GitHubReleaseAssetsMissing,
                     format!("no stable GitHub release includes every required asset for {owner}/{repository}"),
-                    Some(source_url.to_string()),
+                    false,
+                    source_url.as_str(),
                 )
             })?;
         if compare_numeric_versions(&selected.version, &current).is_gt() {
@@ -424,7 +350,7 @@ impl GitHubReleaseResolverBuilder {
             api_base_url: self
                 .api_base_url
                 .unwrap_or_else(|| "https://api.github.com".to_string()),
-            release_cache: Mutex::new(HashMap::new()),
+            release_cache: MetadataCache::default(),
         }
     }
 }
@@ -438,7 +364,7 @@ struct Release {
 fn parse_releases(
     metadata: &Value,
     source_url: &str,
-) -> std::result::Result<Vec<Release>, GitHubResolverError> {
+) -> std::result::Result<Vec<Release>, ResolverError> {
     let entries = metadata
         .as_array()
         .ok_or_else(|| metadata_error("GitHub release metadata must be an array", source_url))?;
@@ -490,11 +416,12 @@ fn parse_releases(
     Ok(releases)
 }
 
-fn metadata_error(message: impl Into<String>, source_url: &str) -> GitHubResolverError {
-    GitHubResolverError::permanent(
-        "github_release_metadata_invalid",
+fn metadata_error(message: impl Into<String>, source_url: &str) -> ResolverError {
+    ResolverError::with_source_url(
+        ResolverErrorCode::GitHubReleaseMetadataInvalid,
         message,
-        Some(source_url.to_string()),
+        false,
+        source_url,
     )
 }
 
@@ -509,7 +436,7 @@ fn trusted_page(candidate: &Url, initial_url: &Url) -> bool {
 fn begin_page(
     visited: &mut HashSet<String>,
     current_url: &Url,
-) -> std::result::Result<(), GitHubResolverError> {
+) -> std::result::Result<(), ResolverError> {
     if visited.len() >= MAX_RELEASE_PAGES {
         return Err(metadata_error(
             "GitHub release pagination exceeded its page limit",
