@@ -30,6 +30,7 @@ impl From<String> for RepoType {
 pub enum TargetKind {
     HelmRelease,
     ImageBinding,
+    RemoteResource,
 }
 
 impl TargetKind {
@@ -37,6 +38,7 @@ impl TargetKind {
         match self {
             Self::HelmRelease => "HelmRelease",
             Self::ImageBinding => "ImageBinding",
+            Self::RemoteResource => "RemoteResource",
         }
     }
 }
@@ -66,6 +68,15 @@ pub struct ImageReference {
     pub manifest_name: Option<String>,
     pub yaml_path: String,
     pub image: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteResourceTarget {
+    pub path: PathBuf,
+    pub document_index: usize,
+    pub resource_id: ResourceId,
+    pub yaml_path: String,
+    pub reference: crate::github::GitHubResourceReference,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +132,7 @@ pub struct Inventory {
     pub equivalent_repositories: BTreeMap<String, Vec<HelmRepository>>,
     pub chart_targets: Vec<HelmReleaseTarget>,
     pub image_bindings: Vec<ImageBinding>,
+    pub remote_resource_targets: Vec<RemoteResourceTarget>,
     pub helmreleases_without_chart_version: Vec<HelmReleaseTarget>,
     pub unresolved_chart_targets: Vec<HelmReleaseTarget>,
     pub image_references: Vec<ImageReference>,
@@ -138,6 +150,7 @@ impl Inventory {
             equivalent_repositories: BTreeMap::new(),
             chart_targets: Vec::new(),
             image_bindings: Vec::new(),
+            remote_resource_targets: Vec::new(),
             helmreleases_without_chart_version: Vec::new(),
             unresolved_chart_targets: Vec::new(),
             image_references: Vec::new(),
@@ -164,6 +177,7 @@ impl Inventory {
         self.chart_targets.len()
             + self.unresolved_chart_targets.len()
             + self.image_bindings.len()
+            + self.remote_resource_targets.len()
             + self.unchecked_version_declarations.len()
     }
 
@@ -227,6 +241,7 @@ impl Inventory {
             "repository_count": self.repository_count(),
             "chart_target_count": self.chart_targets.len(),
             "image_binding_count": self.image_bindings.len(),
+            "remote_resource_target_count": self.remote_resource_targets.len(),
             "helmreleases_without_chart_version_count": self.helmreleases_without_chart_version.len(),
             "unresolved_chart_target_count": self.unresolved_chart_targets.len(),
             "image_reference_count": self.image_references.len(),
@@ -265,6 +280,16 @@ impl Inventory {
                 "namespace": target.resource_id.namespace,
                 "yaml_path": target.yaml_path,
                 "image": target.image,
+            })).collect::<Vec<_>>(),
+            "remote_resource_targets": self.remote_resource_targets.iter().map(|target| json!({
+                "path": self.relative(&target.path),
+                "document_index": target.document_index,
+                "yaml_path": target.yaml_path,
+                "current_value": value_at_resource_target(self, target),
+                "owner": target.reference.owner,
+                "repository": target.reference.repository,
+                "current_version": target.reference.current_version,
+                "required_asset": target.reference.required_asset,
             })).collect::<Vec<_>>(),
             "helmreleases_without_chart_version": self.helmreleases_without_chart_version.iter().map(|target| json!({
                 "path": self.relative(&target.path),
@@ -307,6 +332,17 @@ impl Inventory {
             .to_string_lossy()
             .to_string()
     }
+}
+
+fn value_at_resource_target<'a>(
+    inventory: &'a Inventory,
+    target: &RemoteResourceTarget,
+) -> Option<&'a str> {
+    inventory
+        .manifest_documents
+        .get(&(target.path.clone(), target.document_index))
+        .and_then(|document| crate::scanner::value_at_path(document, &target.yaml_path))
+        .and_then(yaml_serde::Value::as_str)
 }
 
 fn repo_type_json_value(repo_type: &RepoType) -> String {

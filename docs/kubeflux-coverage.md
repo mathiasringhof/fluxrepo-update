@@ -4,12 +4,14 @@ Audited on 2026-10-04 against clean kubeflux commit
 [`f5459d8`](https://github.com/mathiasringhof/kubeflux/tree/f5459d8e0f1b7f3ba5dbc7559f9fc83b70235034)
 and updater `951a51f`. Paths below refer to that kubeflux snapshot, including inactive
 bases, diagnostics, and lab fixtures. This audits declarations and test coverage, not
-live update availability or deployed resources. No updater features were changed.
+live update availability or deployed resources. The inventory baseline below records
+the original audit; subsequent feature work is identified in the gap list.
 
 The opt-in [synthetic corpus](../coverage/kubeflux/README.md) exercises the CLI using
 local HTTP fixtures; the [status table](../coverage/kubeflux/STATUS.md) owns recorded
 results and links every case. A PASS can mean safe preservation; TODOs retain desired
-behavior that currently fails. U1–U15 remain open. T1–T4 identify regression examples,
+behavior that currently fails. U4 is now supported; the other U categories remain open.
+T1–T4 identify regression examples,
 not a claim of complete update support.
 
 ## Inventory baseline
@@ -58,13 +60,14 @@ executable.
   Test located discovery and updates within an explicit PostgreSQL/extension version
   family, with cross-family candidates and unrelated `Cluster` API groups excluded.
   Selection alone cannot establish upgrade compatibility.
-- [ ] <a id="u4"></a>**U4 — Kustomize remote pins.** Seven HTTP(S) resources are unchecked:
+- [x] <a id="u4"></a>**U4 — Kustomize remote pins.** The audit found seven unchecked HTTP(S) resources:
   two each in `infrastructure/base/{cdi,kubevirt}/kustomization.yaml`, three in
   `infrastructure/base/intel-gpu/kustomization.yaml`. Two scheme-less
   `github.com/metallb/metallb/config/native?ref=v0.15.3` entries in
-  `infrastructure/{base,testing}/metallb/kustomization.yaml` are missed.
-  Exercise release URLs and both ref spellings; coordinated resources must select one
-  release and retain each subdirectory/artifact path. Exclude local paths and comments.
+  `infrastructure/{base,testing}/metallb/kustomization.yaml` were missed.
+  Public GitHub release URLs and both ref spellings now select a common stable release
+  per file/project/current pin, verify all required assets, and retain each subdirectory
+  and artifact path. The three U4 corpus cases pass; local paths and comments are preserved.
 - [ ] <a id="u5"></a>**U5 — Digest/channel/commit updates.** Of 51 image bindings, 38 cannot
   currently be checked: 24 digest pins, 8 mutable, 4 tagless, `sha-4fd4faa`, and `arch-kde`.
   Sources include hermes, zfsreplication, ente/Valkey `image.tag` digests, smokeping,

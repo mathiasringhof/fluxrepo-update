@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,12 @@ class FixtureServer:
     def __init__(self, responses):
         self.requests = []
         self.errors = []
+        self.tls_directory = Path(__file__).resolve().parent / "tls"
+        self.tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        # These static credentials belong only to the loopback corpus fixture.
+        self.tls_context.load_cert_chain(
+            self.tls_directory / "github-api-cert.pem", self.tls_directory / "github-api-key.pem"
+        )
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -41,12 +48,29 @@ class FixtureServer:
                 super().send_error(code, message, explain)
 
             def do_CONNECT(self):
-                owner.errors.append(f"external HTTPS request: {self.path}")
-                self.send_error(502)
+                if self.path != "api.github.com:443" or isinstance(self.connection, ssl.SSLSocket):
+                    owner.errors.append(f"external HTTPS request: {self.path}")
+                    self.send_error(502)
+                    return
+                self.send_response(200, "Connection Established")
+                self.end_headers()
+                self.wfile.flush()
+                self.close_connection = True
+                try:
+                    with owner.tls_context.wrap_socket(self.connection, server_side=True) as connection:
+                        Handler(connection, self.client_address, self.server)
+                except ssl.SSLError as error:
+                    owner.errors.append(f"fixture TLS handshake failed: {error}")
 
             def do_GET(self):
                 owner.requests.append(self.path)
                 response = owner.responses.get(self.path) or owner.responses.get(urlsplit(self.path).path)
+                if isinstance(self.connection, ssl.SSLSocket) and self.headers.get("Host") not in (
+                    "api.github.com", "api.github.com:443"
+                ):
+                    owner.errors.append(f"unexpected HTTPS host: {self.headers.get('Host')}")
+                    self.send_error(502)
+                    return
                 if self.path.startswith(("http://", "https://")) or response is None:
                     owner.errors.append(f"unexpected HTTP request: {self.path}")
                     self.send_error(502)
@@ -84,6 +108,8 @@ class FixtureServer:
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
             environment[key] = environment[key.lower()] = self.origin
         environment["NO_PROXY"] = environment["no_proxy"] = "127.0.0.1,localhost"
+        # Reqwest's default native-tls/OpenSSL backend keeps certificate verification.
+        environment["SSL_CERT_FILE"] = str(self.tls_directory / "github-api-ca.pem")
         return environment
 
 

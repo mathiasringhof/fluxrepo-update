@@ -13,9 +13,12 @@ use yaml_edit::{Document as EditDocument, Scalar as EditScalar, ScalarValue, Yam
 use super::{ProgressObserver, ResolutionProgress};
 use crate::scanner::{edit_node_at_path, parse_yaml_documents, value_at_path, value_at_path_mut};
 
+#[cfg(test)]
+use crate::github::GitHubReleaseResolver;
+use crate::github::{GitHubResolverError, RemoteResourceVersionResolver};
 use crate::models::{
-    HelmReleaseTarget, ImageBinding, ImageBindingValueKind, Inventory, ResourceId, TargetKind,
-    UncheckedVersionDeclaration,
+    HelmReleaseTarget, ImageBinding, ImageBindingValueKind, Inventory, RemoteResourceTarget,
+    ResourceId, TargetKind, UncheckedVersionDeclaration,
 };
 use crate::resolvers::{
     ChartVersionResolver, ImageVersionResolver, ResolverError, ResolverErrorCode,
@@ -46,6 +49,24 @@ pub struct PlannedImageUpdate {
     pub current_version: String,
     pub latest_version: String,
     pub value_kind: ImageBindingValueKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteResourceChange {
+    pub document_index: usize,
+    pub yaml_path: String,
+    pub current_resource: String,
+    pub latest_resource: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlannedRemoteResourceUpdate {
+    pub path: PathBuf,
+    pub target_name: String,
+    pub current_version: String,
+    pub latest_version: String,
+    pub changes: Vec<RemoteResourceChange>,
+    identities: Option<Vec<(usize, ManifestIdentity)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +173,7 @@ impl ManifestIdentity {
 pub enum PlannedUpdate {
     Chart(PlannedChartUpdate),
     Image(PlannedImageUpdate),
+    RemoteResource(PlannedRemoteResourceUpdate),
 }
 
 impl PlannedUpdate {
@@ -162,6 +184,7 @@ impl PlannedUpdate {
                 .as_ref()
                 .is_some_and(|identity| !identity.sources.is_empty()),
             Self::Image(update) => update.manifest_identity.is_some(),
+            Self::RemoteResource(update) => update.identities.is_some(),
         }
     }
 
@@ -169,6 +192,7 @@ impl PlannedUpdate {
         match self {
             Self::Chart(update) => &update.path,
             Self::Image(update) => &update.path,
+            Self::RemoteResource(update) => &update.path,
         }
     }
 
@@ -176,6 +200,7 @@ impl PlannedUpdate {
         match self {
             Self::Chart(update) => update.document_index,
             Self::Image(update) => update.document_index,
+            Self::RemoteResource(update) => update.changes[0].document_index,
         }
     }
 
@@ -187,6 +212,7 @@ impl PlannedUpdate {
         match self {
             Self::Chart(_) => TargetKind::HelmRelease,
             Self::Image(_) => TargetKind::ImageBinding,
+            Self::RemoteResource(_) => TargetKind::RemoteResource,
         }
     }
 
@@ -194,6 +220,7 @@ impl PlannedUpdate {
         match self {
             Self::Chart(update) => &update.target_name,
             Self::Image(update) => &update.target_name,
+            Self::RemoteResource(update) => &update.target_name,
         }
     }
 
@@ -201,6 +228,7 @@ impl PlannedUpdate {
         match self {
             Self::Chart(update) => &update.current_version,
             Self::Image(update) => &update.current_version,
+            Self::RemoteResource(update) => &update.current_version,
         }
     }
 
@@ -208,6 +236,7 @@ impl PlannedUpdate {
         match self {
             Self::Chart(update) => &update.latest_version,
             Self::Image(update) => &update.latest_version,
+            Self::RemoteResource(update) => &update.latest_version,
         }
     }
 
@@ -238,10 +267,23 @@ impl PlannedUpdate {
                     update.latest_version.clone(),
                 ]);
             }
+            Self::RemoteResource(update) => {
+                parts.extend([
+                    update.current_version.clone(), update.latest_version.clone(),
+                    json!(update.changes.iter().map(|change| json!({
+                        "document_index": change.document_index, "yaml_path": change.yaml_path,
+                        "current_resource": change.current_resource, "latest_resource": change.latest_resource,
+                    })).collect::<Vec<_>>()).to_string(),
+                    update.identities.as_ref().map_or(JsonValue::Null, |identities| json!(identities.iter().map(|(index, identity)| json!({
+                        "document_index": index, "context": identity.selection_context(repo_root),
+                    })).collect::<Vec<_>>())).to_string(),
+                ]);
+            }
         }
         let identity = match self {
             Self::Chart(update) => &update.manifest_identity,
             Self::Image(update) => &update.manifest_identity,
+            Self::RemoteResource(_) => &None,
         };
         parts.push(
             identity
@@ -379,6 +421,17 @@ impl SkippedUpdate {
         if let Some(error) = error.downcast_ref::<ResolverError>() {
             return Self::with_reason(path, SkipReason::from_resolver_error(error));
         }
+        if let Some(error) = error.downcast_ref::<GitHubResolverError>() {
+            return Self::with_reason(
+                path,
+                SkipReason::new(
+                    error.to_string(),
+                    SkipReasonCode::from_github(error.reason_code()),
+                    error.retryable(),
+                    error.source_url().map(str::to_string),
+                ),
+            );
+        }
         Self::new(path, error.to_string())
     }
 
@@ -508,6 +561,10 @@ pub enum SkipReasonCode {
     UnparseableImageReference,
     UnsupportedImageSchema,
     UnsupportedVersionDeclaration,
+    GitHubRequestFailed,
+    GitHubReleaseAssetsMissing,
+    GitHubReleaseMetadataInvalid,
+    GitHubReleaseVersionUnavailable,
     Unclassified,
 }
 
@@ -531,7 +588,22 @@ impl SkipReasonCode {
             Self::UnparseableImageReference => "unparseable_image_reference",
             Self::UnsupportedImageSchema => "unsupported_image_schema",
             Self::UnsupportedVersionDeclaration => "unsupported_version_declaration",
+            Self::GitHubRequestFailed => "github_request_failed",
+            Self::GitHubReleaseAssetsMissing => "github_release_assets_missing",
+            Self::GitHubReleaseMetadataInvalid => "github_release_metadata_invalid",
+            Self::GitHubReleaseVersionUnavailable => "github_release_version_unavailable",
             Self::Unclassified => "unclassified",
+        }
+    }
+
+    fn from_github(code: &str) -> Self {
+        match code {
+            "github_request_failed" => Self::GitHubRequestFailed,
+            "github_release_assets_missing" => Self::GitHubReleaseAssetsMissing,
+            "github_release_metadata_invalid" => Self::GitHubReleaseMetadataInvalid,
+            "github_release_version_unavailable" => Self::GitHubReleaseVersionUnavailable,
+            "incompatible_version_scheme" => Self::IncompatibleVersionScheme,
+            _ => Self::Unclassified,
         }
     }
 }
@@ -567,6 +639,7 @@ impl Default for PlanOptions {
     }
 }
 
+#[cfg(test)]
 pub fn plan_updates(
     inventory: &Inventory,
     chart_resolver: &(dyn ChartVersionResolver + Sync),
@@ -574,7 +647,32 @@ pub fn plan_updates(
     options: PlanOptions,
     progress: Option<&mut ProgressObserver<'_>>,
 ) -> UpdateReport {
-    let outcomes = resolve_targets(inventory, chart_resolver, image_resolver, options, progress);
+    plan_updates_with_resources(
+        inventory,
+        chart_resolver,
+        image_resolver,
+        &GitHubReleaseResolver::default(),
+        options,
+        progress,
+    )
+}
+
+pub fn plan_updates_with_resources(
+    inventory: &Inventory,
+    chart_resolver: &(dyn ChartVersionResolver + Sync),
+    image_resolver: &(dyn ImageVersionResolver + Sync),
+    remote_resolver: &(dyn RemoteResourceVersionResolver + Sync),
+    options: PlanOptions,
+    progress: Option<&mut ProgressObserver<'_>>,
+) -> UpdateReport {
+    let outcomes = resolve_targets(
+        inventory,
+        chart_resolver,
+        image_resolver,
+        remote_resolver,
+        options,
+        progress,
+    );
     let mut planned = Vec::new();
     let mut skipped = Vec::new();
     let mut checked_count = 0;
@@ -585,6 +683,15 @@ pub fn plan_updates(
                 checked_count += 1;
             }
             ResolutionOutcome::Noop => checked_count += 1,
+            ResolutionOutcome::RemoteGroup {
+                update,
+                checked,
+                skipped: unresolved,
+            } => {
+                planned.extend(update);
+                checked_count += checked;
+                skipped.extend(unresolved);
+            }
             ResolutionOutcome::Skipped(reason) => skipped.push(reason),
         }
     }
@@ -595,6 +702,7 @@ pub fn plan_updates(
             match item {
                 PlannedUpdate::Image(update) => update.yaml_path.clone(),
                 PlannedUpdate::Chart(_) => String::new(),
+                PlannedUpdate::RemoteResource(update) => update.changes[0].yaml_path.clone(),
             },
         )
     });
@@ -610,14 +718,23 @@ enum ResolutionTask<'a> {
     UnresolvedChart(&'a HelmReleaseTarget),
     Image(&'a ImageBinding),
     Unchecked(&'a UncheckedVersionDeclaration),
+    RemoteGroup(Vec<&'a RemoteResourceTarget>),
 }
 
 impl ResolutionTask<'_> {
+    fn declaration_count(&self) -> usize {
+        match self {
+            Self::RemoteGroup(targets) => targets.len(),
+            _ => 1,
+        }
+    }
+
     fn path(&self) -> &Path {
         match self {
             Self::Chart(target) | Self::UnresolvedChart(target) => &target.path,
             Self::Image(target) => &target.path,
             Self::Unchecked(declaration) => &declaration.path,
+            Self::RemoteGroup(targets) => &targets[0].path,
         }
     }
 }
@@ -626,16 +743,22 @@ enum ResolutionOutcome {
     Planned(PlannedUpdate),
     Skipped(SkippedUpdate),
     Noop,
+    RemoteGroup {
+        update: Option<PlannedUpdate>,
+        checked: usize,
+        skipped: Vec<SkippedUpdate>,
+    },
 }
 
 fn resolve_targets(
     inventory: &Inventory,
     chart_resolver: &(dyn ChartVersionResolver + Sync),
     image_resolver: &(dyn ImageVersionResolver + Sync),
+    remote_resolver: &(dyn RemoteResourceVersionResolver + Sync),
     options: PlanOptions,
     progress: Option<&mut ProgressObserver<'_>>,
 ) -> Vec<ResolutionOutcome> {
-    let tasks = inventory
+    let mut tasks = inventory
         .chart_targets
         .iter()
         .map(ResolutionTask::Chart)
@@ -653,20 +776,40 @@ fn resolve_targets(
                 .map(ResolutionTask::Unchecked),
         )
         .collect::<Vec<_>>();
+    let mut groups = BTreeMap::new();
+    for target in &inventory.remote_resource_targets {
+        groups
+            .entry((
+                target.path.clone(),
+                target.reference.owner.to_ascii_lowercase(),
+                target.reference.repository.to_ascii_lowercase(),
+                target.reference.current_version.clone(),
+            ))
+            .or_insert_with(Vec::new)
+            .push(target);
+    }
+    tasks.extend(groups.into_values().map(ResolutionTask::RemoteGroup));
     if tasks.is_empty() {
         return Vec::new();
     }
 
     let progress = progress.map(|observer| Mutex::new((observer, 0)));
+    let declaration_count = tasks.iter().map(ResolutionTask::declaration_count).sum();
     let resolve = |task: &ResolutionTask<'_>| {
-        let outcome = resolve_task(inventory, task, chart_resolver, image_resolver);
+        let outcome = resolve_task(
+            inventory,
+            task,
+            chart_resolver,
+            image_resolver,
+            remote_resolver,
+        );
         if let Some(progress) = &progress {
             let mut progress = progress.lock().expect("progress observer lock");
-            progress.1 += 1;
+            progress.1 += task.declaration_count();
             let completed = progress.1;
             (progress.0)(ResolutionProgress {
                 completed,
-                total: tasks.len(),
+                total: declaration_count,
                 path: task.path(),
             });
         }
@@ -690,6 +833,7 @@ fn resolve_task(
     task: &ResolutionTask<'_>,
     chart_resolver: &dyn ChartVersionResolver,
     image_resolver: &dyn ImageVersionResolver,
+    remote_resolver: &dyn RemoteResourceVersionResolver,
 ) -> ResolutionOutcome {
     let mut outcome = match task {
         ResolutionTask::Chart(target) => resolve_chart_target(inventory, target, chart_resolver),
@@ -699,6 +843,9 @@ fn resolve_task(
         ResolutionTask::Image(target) => resolve_image_binding(inventory, target, image_resolver),
         ResolutionTask::Unchecked(declaration) => {
             ResolutionOutcome::Skipped(SkippedUpdate::unchecked_declaration(declaration))
+        }
+        ResolutionTask::RemoteGroup(targets) => {
+            resolve_remote_group(inventory, targets, remote_resolver)
         }
     };
     if let ResolutionOutcome::Skipped(skipped) = &mut outcome {
@@ -734,6 +881,9 @@ fn resolve_task(
                     ),
                 )
             }
+            ResolutionTask::RemoteGroup(_) => {
+                unreachable!("remote group skips already have declaration locations")
+            }
         };
         skipped.identity_suffix = Some(identity_suffix);
         skipped.document_index = Some(document_index);
@@ -747,6 +897,103 @@ fn resolve_task(
             .or_else(|| skipped.current_value.clone());
     }
     outcome
+}
+
+fn resolve_remote_group(
+    inventory: &Inventory,
+    targets: &[&RemoteResourceTarget],
+    resolver: &dyn RemoteResourceVersionResolver,
+) -> ResolutionOutcome {
+    let first = targets[0];
+    let owner = first.reference.owner.to_ascii_lowercase();
+    let repository = first.reference.repository.to_ascii_lowercase();
+    let current_version = &first.reference.current_version;
+    let assets = targets
+        .iter()
+        .filter_map(|target| target.reference.required_asset.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let latest_version = match resolver.resolve(&owner, &repository, current_version, &assets) {
+        Ok(version) => version,
+        Err(error) => {
+            let base = SkippedUpdate::from_resolution_error(Some(first.path.clone()), error);
+            let skipped = targets
+                .iter()
+                .map(|target| {
+                    let mut skip = base.clone();
+                    skip.document_index = Some(target.document_index);
+                    skip.yaml_path = Some(target.yaml_path.clone());
+                    skip.current_value = inventory
+                        .manifest_documents
+                        .get(&(target.path.clone(), target.document_index))
+                        .and_then(|document| value_at_path(document, &target.yaml_path))
+                        .and_then(yaml_serde::Value::as_str)
+                        .map(str::to_string);
+                    skip.identity_suffix = Some(format!(
+                        "RemoteResource:{}:{}:{}",
+                        target.document_index,
+                        target.yaml_path,
+                        skip.current_value.as_deref().unwrap_or_default()
+                    ));
+                    skip
+                })
+                .collect();
+            return ResolutionOutcome::RemoteGroup {
+                update: None,
+                checked: 0,
+                skipped,
+            };
+        }
+    };
+    if !is_newer_version(current_version, &latest_version) {
+        return ResolutionOutcome::RemoteGroup {
+            update: None,
+            checked: targets.len(),
+            skipped: Vec::new(),
+        };
+    }
+    let changes = targets
+        .iter()
+        .map(|target| RemoteResourceChange {
+            document_index: target.document_index,
+            yaml_path: target.yaml_path.clone(),
+            current_resource: target.reference.with_version(current_version),
+            latest_resource: target.reference.with_version(&latest_version),
+        })
+        .collect();
+    let mut file_documents = inventory
+        .manifest_documents
+        .keys()
+        .filter(|(path, _)| path == &first.path)
+        .map(|(_, index)| *index)
+        .collect::<Vec<_>>();
+    file_documents.sort_unstable();
+    let identities = file_documents
+        .into_iter()
+        .map(|index| {
+            ManifestIdentity::capture(
+                inventory,
+                &first.path,
+                index,
+                &first.resource_id,
+                &["resources".into(), "apiVersion".into()],
+            )
+            .map(|identity| (index, identity))
+        })
+        .collect::<Option<Vec<_>>>();
+    ResolutionOutcome::RemoteGroup {
+        update: Some(PlannedUpdate::RemoteResource(PlannedRemoteResourceUpdate {
+            path: first.path.clone(),
+            target_name: format!("{owner}/{repository}"),
+            current_version: current_version.clone(),
+            latest_version,
+            changes,
+            identities,
+        })),
+        checked: targets.len(),
+        skipped: Vec::new(),
+    }
 }
 
 fn resolve_chart_target(
@@ -968,6 +1215,39 @@ pub(crate) fn apply_planned_updates<'a>(
         let mut expected_documents = semantic_documents.clone();
         let mut edits = Vec::new();
         for update in updates {
+            if let PlannedUpdate::RemoteResource(remote) = update {
+                let identities = remote
+                    .identities
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("remote resource group lacks original identity"))?;
+                if semantic_documents.len() != identities.len() {
+                    return Err(anyhow!(
+                        "remote resource file documents changed after planning"
+                    ));
+                }
+                for (index, identity) in identities {
+                    identity.verify(semantic_documents.get(*index).ok_or_else(|| {
+                        anyhow!("remote resource document changed after planning")
+                    })?)?;
+                }
+                for change in &remote.changes {
+                    let document = documents.get(change.document_index).ok_or_else(|| {
+                        anyhow!("remote resource document changed after planning")
+                    })?;
+                    edits.push(checked_scalar_edit(
+                        document,
+                        &change.yaml_path,
+                        &change.current_resource,
+                        &change.latest_resource,
+                    )?);
+                    let expected_node = expected_documents
+                        .get_mut(change.document_index)
+                        .and_then(|document| value_at_path_mut(document, &change.yaml_path))
+                        .ok_or_else(|| anyhow!("remote resource field changed after planning"))?;
+                    *expected_node = yaml_serde::Value::String(change.latest_resource.clone());
+                }
+                continue;
+            }
             let document = documents.get(update.document_index()).ok_or_else(|| {
                 anyhow!(
                     "document index {} not found in {}",
@@ -1003,6 +1283,9 @@ pub(crate) fn apply_planned_updates<'a>(
                         replacement,
                         &image.manifest_identity,
                     )
+                }
+                PlannedUpdate::RemoteResource(_) => {
+                    unreachable!("remote groups were prepared above")
                 }
             };
             let semantic_document = semantic_documents

@@ -1,12 +1,12 @@
 # Synthetic kubeflux case status
 
-**2026-10-04 — 74 cases: 44 PASS, 30 TODO, 0 XPASS, 0 FAIL, 0 ERROR.**
+**2026-10-04 — 74 cases: 47 PASS, 27 TODO, 0 XPASS, 0 FAIL, 0 ERROR.**
 
 Recorded from `python3 coverage/kubeflux/run.py --json`. See the [runner guide](README.md)
 for reproduction and the [audit](../../docs/kubeflux-coverage.md) for source evidence.
 The corpus is opt-in and separate from the normal Rust suite and CI.
 
-The 44 PASS cases include 25 that apply updates and 19 preservation/current/skip cases.
+The 47 PASS cases include 28 that apply updates and 19 preservation/current/skip cases.
 TODOs retain desired behavior that still fails; neither a safe skip nor this synthetic
 snapshot proves kubeflux is current. Working invariants inside TODO cases must still pass.
 
@@ -52,14 +52,14 @@ snapshot proves kubeflux is current. Working invariants inside TODO cases must s
 | [postrenderer-image-discovery](cases/postrenderer-image-discovery/case.json) | TODO | An ordinary Helm image updates beside a precisely located unchecked JSON6902 patch image whose block scalar remains unchanged. | [U7](../../docs/kubeflux-coverage.md#u7) |
 | [python-requirement-pins](cases/python-requirement-pins/case.json) | TODO | Pinned Python test tools are separate dependency declarations. | [U11](../../docs/kubeflux-coverage.md#u11) |
 | [release-image-environment](cases/release-image-environment/case.json) | TODO | A controller image repeated in RELEASE_IMAGE is a separate declaration. | [U8](../../docs/kubeflux-coverage.md#u8) |
-| [remote-git-ref-update](cases/remote-git-ref-update/case.json) | TODO | Three coordinated Git refs advance to one release while retaining each selected subdirectory and local/commented resources. | [U4](../../docs/kubeflux-coverage.md#u4) |
-| [remote-release-resource-update](cases/remote-release-resource-update/case.json) | TODO | Two release artifact URLs move together to one newer release. | [U4](../../docs/kubeflux-coverage.md#u4) |
+| [remote-git-ref-update](cases/remote-git-ref-update/case.json) | PASS | Three coordinated Git refs advance to one release while retaining each selected subdirectory and local/commented resources. | [U4](../../docs/kubeflux-coverage.md#u4) |
+| [remote-release-resource-update](cases/remote-release-resource-update/case.json) | PASS | Two release artifact URLs move together to one newer release. | [U4](../../docs/kubeflux-coverage.md#u4) |
 | [report-all-requests-failed](cases/report-all-requests-failed/case.json) | TODO | A total metadata outage must have an automation-visible unsuccessful outcome. | [U13](../../docs/kubeflux-coverage.md#u13) |
 | [report-fully-current](cases/report-fully-current/case.json) | PASS | A fully checked current repository reports one checked declaration and no updates. | [U13](../../docs/kubeflux-coverage.md#u13) |
 | [report-invisible-dependency](cases/report-invisible-dependency/case.json) | TODO | A current ordinary image must not hide an undiscovered image-valued environment declaration. | [U13](../../docs/kubeflux-coverage.md#u13), [U8](../../docs/kubeflux-coverage.md#u8) |
 | [report-mixed-resolution](cases/report-mixed-resolution/case.json) | PASS | An unavailable chart source retains its skip while an independent image update applies. | [U13](../../docs/kubeflux-coverage.md#u13) |
 | [report-unsupported-only](cases/report-unsupported-only/case.json) | PASS | An explicit tag-only override remains visible as unchecked and unchanged. | [U13](../../docs/kubeflux-coverage.md#u13) |
-| [schemeless-kustomize-resource](cases/schemeless-kustomize-resource/case.json) | TODO | A scheme-less GitHub resource pin is a located unchecked declaration. | [U4](../../docs/kubeflux-coverage.md#u4) |
+| [schemeless-kustomize-resource](cases/schemeless-kustomize-resource/case.json) | PASS | A scheme-less GitHub resource pin advances while retaining its spelling and local resources. | [U4](../../docs/kubeflux-coverage.md#u4) |
 | [scope-exclusions](cases/scope-exclusions/case.json) | PASS | Eligible inactive .yml manifests update independently of the Kustomize graph; hidden directories, build caches, and non-YAML files remain byte-identical. | [T4](../../docs/kubeflux-coverage.md#t4) |
 | [script-binary-checksum-pins](cases/script-binary-checksum-pins/case.json) | TODO | Pinned executable and checksum download URLs are both visible, without treating a validation assertion as another install. | [U10](../../docs/kubeflux-coverage.md#u10) |
 | [script-mutable-download-boundary](cases/script-mutable-download-boundary/case.json) | TODO | A latest-release schema download remains an unknown runtime dependency; discovery must neither fetch the URL nor execute its shell pipeline. | [U10](../../docs/kubeflux-coverage.md#u10) |

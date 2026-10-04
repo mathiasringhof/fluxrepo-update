@@ -23,7 +23,8 @@ human status, color, and progress output. Interactive approval still prompts unl
 `--non-interactive` is set; see [modes](usage.md#choose-a-mode).
 
 Interactive approval includes the relative file, document number, resource, exact field,
-and chart/source or full image change. A plan containing only skipped targets reports
+and chart/source or full image change. GitHub groups show every member URL, document,
+and field. A plan containing only skipped targets reports
 that incomplete result instead of saying that no updates are required.
 Update output includes discovered, checked, and unchecked counts. Skips include the field
 and current value when available.
@@ -34,10 +35,11 @@ Top-level summary fields:
 
 - `repo_root`: absolute path to the scanned repository
 - `scope`: `repository_manifests`, including eligible untracked and inactive manifests
-- `discovered_count`: chart targets, unresolved chart targets, image bindings, and unsupported declarations
+- `discovered_count`: chart targets, unresolved chart targets, image bindings, remote resource targets, and unsupported declarations
 - `repository_count`: total discovered `HelmRepository` resources, including ambiguous sources
 - `chart_target_count`: releases with enough local chart identity to attempt resolution
 - `image_binding_count`: number of explicit workload or Helm-values image bindings
+- `remote_resource_target_count`: number of supported GitHub Kustomize resource pins
 - `helmreleases_without_chart_version_count`: number of `HelmRelease` resources that do
   not expose `spec.chart.spec.version`
 - `unresolved_chart_target_count`: number of releases that carry a version but still lack
@@ -71,7 +73,7 @@ Paths and descriptive metadata can differ. The representative also appears in `r
 ### `unchecked_version_declarations`
 
 Recognized declarations without supported checking: tag-only Helm `image.tag` overrides,
-CloudNativePG `spec.imageName`, and HTTP(S) Kustomize `resources` URLs. Each entry contains
+CloudNativePG `spec.imageName`, and unsupported remote Kustomize `resources` URLs. Each entry contains
 `path`, zero-based `document_index`, `yaml_path`, `current_value`, and `reason`.
 These declarations also appear in update `skipped` output and cannot be applied.
 Inventory does not perform remote checks; further targets can become skips during planning.
@@ -104,6 +106,12 @@ Each item describes an explicit workload or Helm-values image binding:
 Paths quote literal mapping keys when needed: `spec.values["a.b"].image` selects the
 key `a.b`, while `spec.values.a.b.image` selects nested keys. `[0]` denotes a sequence item.
 
+### `remote_resource_targets`
+
+Each supported GitHub pin includes `path`, zero-based `document_index`, `yaml_path`,
+`current_value`, `owner`, `repository`, `current_version`, and `required_asset` (or `null`
+for a Git ref). Inventory reports each declaration independently without network access.
+
 ### `helmreleases_without_chart_version`
 
 These are `HelmRelease` resources that do not expose `spec.chart.spec.version`, including
@@ -125,7 +133,7 @@ Top-level fields:
 - `non_interactive`: whether prompts were disabled
 - `scope`: `repository_manifests`
 - `summary`: counts for planned, applied, skipped, and changed files
-- `planned`: planned or applied chart and image updates
+- `planned`: planned or applied chart, image, and remote resource updates
 - `skipped`: targets that could not be resolved
 
 ### `summary`
@@ -141,6 +149,9 @@ Top-level fields:
 `discovered_count = checked_count + unchecked_count`. These coverage counts describe the
 whole run even when only some updates are applied. They do not measure deployment coverage
 or include declarations outside the scanner's supported shapes.
+
+GitHub resources grouped by file, project, and current pin count as one planned/applied
+update. Discovered, checked, and unchecked counts still count each resource declaration.
 
 Plan mode includes all proposed updates. Apply mode retains the existing output
 contract: `planned` and `planned_count` describe the applied subset, so unapproved
@@ -164,6 +175,11 @@ Each item includes:
 zero-based `document_index` of every source copy used). Inventory provides their URLs and namespaces.
 
 `ImageBinding` items also include `current_image` and `latest_image`.
+
+`RemoteResource` items name the GitHub project in `target_name` and include
+`resource_changes`, with each member's `document_index`, `yaml_path`, `current_resource`,
+and `latest_resource`. The top-level document and field locate the first member.
+One ID approves every member; all resource lists in the file bind that identity.
 
 `inherited_source` is retained for compatibility and is always `false`.
 
@@ -208,6 +224,10 @@ Current reason codes include:
 - `current_version_newer_than_source`
 - `chart_request_failed`
 - `registry_request_failed`
+- `github_request_failed`
+- `github_release_assets_missing`
+- `github_release_metadata_invalid`
+- `github_release_version_unavailable`
 - `mutable_image_tag`
 - `image_reference_missing_tag`
 - `image_reference_pinned_by_digest`

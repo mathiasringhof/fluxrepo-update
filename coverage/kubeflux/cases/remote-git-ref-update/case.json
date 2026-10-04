@@ -8,16 +8,24 @@
   "source": [
     "infrastructure/base/intel-gpu/kustomization.yaml"
   ],
-  "expectation": "todo",
-  "todo": "HTTPS Kustomize refs have no upstream version resolver or writer.",
+  "expectation": "pass",
   "command": "apply",
   "responses": {
-    "/repos/example/plugins/releases/latest": {
-      "json": {
-        "tag_name": "v2.0.0",
-        "prerelease": false,
-        "draft": false
-      }
+    "/repos/example/plugins/releases": {
+      "json": [
+        {
+          "tag_name": "v2.0.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": []
+        },
+        {
+          "tag_name": "v1.0.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": []
+        }
+      ]
     }
   },
   "checks": {
@@ -25,36 +33,55 @@
     "json": [
       {
         "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
         "equals": 3
       },
       {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
         "at": "/planned",
         "contains": {
           "path": "kustomization.yaml",
+          "document_index": 0,
+          "target_kind": "RemoteResource",
+          "current_version": "v1.0.0",
+          "latest_version": "v2.0.0"
+        }
+      },
+      {
+        "at": "/planned/0/resource_changes",
+        "contains": {
           "document_index": 0,
           "yaml_path": "resources[0]",
-          "current_version": "v1.0.0",
-          "latest_version": "v2.0.0"
+          "current_resource": "https://github.com/example/plugins/deployments/nfd?ref=v1.0.0",
+          "latest_resource": "https://github.com/example/plugins/deployments/nfd?ref=v2.0.0"
         }
       },
       {
-        "at": "/planned",
+        "at": "/planned/0/resource_changes",
         "contains": {
-          "path": "kustomization.yaml",
           "document_index": 0,
           "yaml_path": "resources[1]",
-          "current_version": "v1.0.0",
-          "latest_version": "v2.0.0"
+          "current_resource": "https://github.com/example/plugins/deployments/nfd/overlays/node-feature-rules?ref=v1.0.0",
+          "latest_resource": "https://github.com/example/plugins/deployments/nfd/overlays/node-feature-rules?ref=v2.0.0"
         }
       },
       {
-        "at": "/planned",
+        "at": "/planned/0/resource_changes",
         "contains": {
-          "path": "kustomization.yaml",
           "document_index": 0,
           "yaml_path": "resources[2]",
-          "current_version": "v1.0.0",
-          "latest_version": "v2.0.0"
+          "current_resource": "https://github.com/example/plugins/deployments/gpu_plugin/overlays/nfd_labeled_nodes?ref=v1.0.0",
+          "latest_resource": "https://github.com/example/plugins/deployments/gpu_plugin/overlays/nfd_labeled_nodes?ref=v2.0.0"
         }
       }
     ],

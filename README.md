@@ -1,11 +1,13 @@
 # fluxrepo-update
 
-Inspect FluxCD repositories and update explicit Helm chart and container-image versions.
+Inspect FluxCD repositories and update explicit Helm chart, container-image, and GitHub
+Kustomize resource versions.
 No `helm` or `yq` required.
 
 The CLI finds chart versions in `HelmRelease` manifests, images in standard Kubernetes
 workloads, and image values under `HelmRelease.spec.values`. It resolves public HTTP/OCI
-sources and edits approved YAML scalars while preserving comments and formatting.
+sources and public GitHub releases, then edits approved YAML scalars while preserving
+comments and formatting. Related resource URLs are reviewed and applied together.
 
 ## Install
 
@@ -29,7 +31,7 @@ fluxrepo-update update-helm /path/to/flux-repo --non-interactive
 ```
 
 Inventory works offline. Update planning needs network access for chart indexes and
-registry tags. Both commands accept `--json` for structured output.
+registry tags and GitHub releases. Both commands accept `--json` for structured output.
 
 To review and approve each update interactively:
 

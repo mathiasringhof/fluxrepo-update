@@ -19,6 +19,18 @@ repository manifests, including untracked files, not effective deployed versions
 - Recursive `image.repository`/`image.tag` mappings, with optional `image.registry`
 - Standard public Helm HTTP indexes, generic public OCI chart registries, and public
   container registries, including anonymous bearer-token challenges
+- Public GitHub `Kustomization.resources` release assets such as
+  `https://github.com/owner/repo/releases/download/v1.0.0/operator.yaml`, and HTTPS or
+  scheme-less `github.com/owner/repo/subpath?ref=v1.0.0` references
+
+GitHub pins use dotted numeric versions with an optional `v` prefix. Release metadata
+must describe a stable, non-draft release; selection never downgrades. References with
+the same file, case-insensitive project, and exact current pin select one common release
+containing all required asset names and form one approval group. Only the pin is edited;
+the asset path, subdirectory, `.git` suffix, and URL spelling are retained. The resources
+lists across all documents participate in selection identity and are rechecked on apply.
+GitHub pagination stays on the API origin; redirects are rejected by the default client.
+Git subdirectory contents are not fetched or validated.
 
 Latest stable version selection supports semantic, calendar, numeric, and recognized
 numeric-pattern releases. It excludes prereleases and mutable tags, permits cross-major
@@ -54,6 +66,8 @@ resolution failures rather than using a partial tag list.
 - Templated, mutable, tagless, digest-pinned images and recognized commit tags
 - Unknown image schemas and ambiguous `tag` or `version` fields
 - Private-source credential management
+- GitHub branch/commit refs, duplicate or extra query parameters, encoded or ambiguous
+  URLs, non-GitHub remote resources, and local resource paths
 - Generated `gotk-*` manifests directly inside a directory named `flux-system`
 - Files in hidden directories, cache directories, symlinks, and non-YAML files
 
@@ -65,18 +79,21 @@ The scanner also reports these declarations without checking or editing them:
 
 - `image.tag` mappings under Helm values without a local image repository
 - CloudNativePG `Cluster.spec.imageName`
-- HTTP(S) URLs in Kustomization `resources`, including release paths and `?ref=` pins
+- Unsupported HTTP(S) and scheme-less GitHub entries in Kustomization `resources`
 
 These entries include their file, document, field, current value, and reason. Digest-pinned
 image bindings continue to be reported as unchecked, even when they contain a version tag.
-Chart defaults and remote resources are not fetched to resolve these declarations.
-Other custom resource fields, arbitrary tag/version keys, non-HTTP resource references,
+Chart defaults and resource contents are not fetched to resolve these declarations.
+Other custom resource fields, arbitrary tag/version keys, non-GitHub scheme-less resource references,
 and inherited values without explicit declarations remain outside discovery.
 
 `discovered_count` counts recognized declarations, not every dependency in the repository.
 In an update report it equals `checked_count + unchecked_count`; successful checks include
 declarations with no available update. Unchecked counts include unsupported declarations
 and failed resolution attempts. Counts cover the whole run, including in selected apply mode.
+
+Planned and applied counts count approval groups; a GitHub group may contain several
+individually counted declarations. Failed groups report a located skip for each member.
 
 Apply mode prepares and validates every selected transformation before writing, including
 checking the scalar, resource identity, chart/source identity, and image/container identity

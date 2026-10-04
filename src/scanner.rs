@@ -7,7 +7,7 @@ use yaml_edit::{Document as EditDocument, YamlFile, YamlNode};
 
 use crate::models::{
     HelmReleaseTarget, HelmRepository, ImageBinding, ImageBindingValueKind, ImageReference,
-    Inventory, RepoType, ResourceId, UncheckedVersionDeclaration,
+    Inventory, RemoteResourceTarget, RepoType, ResourceId, UncheckedVersionDeclaration,
 };
 use yaml_serde::{Deserializer, Mapping, Value};
 
@@ -120,8 +120,32 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
             {
                 for (index, resource) in resources.iter().enumerate() {
                     if let Some(url) = resource.as_str()
-                        && (url.starts_with("https://") || url.starts_with("http://"))
+                        && (url.split_once("://").is_some_and(|(scheme, _)| {
+                            scheme.eq_ignore_ascii_case("https")
+                                || scheme.eq_ignore_ascii_case("http")
+                        }) || url.to_ascii_lowercase().starts_with("github.com/"))
                     {
+                        if let Some(reference) = crate::github::parse_github_resource(url) {
+                            inventory
+                                .remote_resource_targets
+                                .push(RemoteResourceTarget {
+                                    path: path.clone(),
+                                    document_index,
+                                    resource_id: parse_resource_id("Kustomization", mapping)
+                                        .unwrap_or_else(|| ResourceId {
+                                            kind: "Kustomization".into(),
+                                            name: path
+                                                .file_name()
+                                                .unwrap_or_default()
+                                                .to_string_lossy()
+                                                .into_owned(),
+                                            namespace: None,
+                                        }),
+                                    yaml_path: format!("resources[{index}]"),
+                                    reference,
+                                });
+                            continue;
+                        }
                         inventory.unchecked_version_declarations.push(
                             UncheckedVersionDeclaration {
                                 path: path.clone(),
@@ -129,7 +153,7 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
                                 yaml_path: format!("resources[{index}]"),
                                 current_value: url.into(),
                                 reason:
-                                    "remote Kustomize resource version checking is not supported"
+                                    "remote Kustomize resource is not a supported public GitHub release version pin"
                                         .into(),
                             },
                         );
@@ -144,6 +168,13 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
         .chart_targets
         .sort_by_key(|item| (item.path.clone(), item.document_index));
     inventory.image_bindings.sort_by_key(|item| {
+        (
+            item.path.clone(),
+            item.document_index,
+            item.yaml_path.clone(),
+        )
+    });
+    inventory.remote_resource_targets.sort_by_key(|item| {
         (
             item.path.clone(),
             item.document_index,

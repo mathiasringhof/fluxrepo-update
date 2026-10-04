@@ -65,6 +65,11 @@ CLI does not support; [output documentation](../../docs/output.md) defines the c
 `{{server}}` expands to the local HTTP origin; `{{registry}}` expands to its host:port.
 Placeholders work in repositories, expected files, responses, and check values.
 
+GitHub cases retain public `github.com` URLs. A local TLS proxy serves configured
+`api.github.com` release responses using the fixture-only CA and key under `tls/`;
+only the CLI subprocess receives that CA trust. Unexpected hosts, paths, and methods
+remain fixture errors, and no external network request is forwarded.
+
 Responses use optional `status` (default 200), `headers`, and either `json` or `text`.
 JSON checks use RFC 6901 pointers: `equals` compares exactly; `contains` finds an array
 element matching the supplied object fields. `checks.invariants` uses the same format

@@ -137,6 +137,67 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result["status"], "PASS", result)
         self.assertEqual(result["requests"], ["/v2/demo/app/tags/list?n=1000"])
 
+    def test_github_api_https_uses_a_verified_local_fixture(self):
+        path = "/repos/demo/app/releases?per_page=100"
+        self.spec["responses"] = {path: {"json": [{"tag_name": "v2.0.0"}]}}
+        self.spec["checks"] = {"exit_code": 0, "json": [
+            {"at": "/releases", "equals": [{"tag_name": "v2.0.0"}]}
+        ]}
+        self.write_case(
+            "import ssl, urllib.request\n"
+            "context = ssl.create_default_context()\n"
+            "assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED\n"
+            f"with urllib.request.urlopen('https://api.github.com{path}', context=context, timeout=5) as response:\n"
+            "    emit_report(releases=json.loads(response.read()))\n"
+        )
+        result = run.run_case(self.case, self.binary)
+        self.assertEqual(result["status"], "PASS", result)
+        self.assertEqual(result["requests"], [path])
+
+    def test_unconfigured_github_api_routes_are_runner_errors(self):
+        self.spec["responses"] = {"/repos/demo/app/releases": {"json": []}}
+        self.write_case(
+            "import sys, urllib.request, urllib.error\n"
+            "try:\n"
+            "    urllib.request.urlopen('https://api.github.com/repos/unconfigured/app/releases', timeout=5)\n"
+            "except urllib.error.URLError:\n"
+            "    pass\n"
+            "emit_report(summary={'applied_count': 1})\nsys.exit(20)\n"
+        )
+        result = run.run_case(self.case, self.binary)
+        self.assertEqual(result["status"], "ERROR", result)
+        self.assertIn("unexpected HTTP request: /repos/unconfigured/app/releases", result["error"])
+
+    def test_other_https_hosts_are_rejected_even_with_a_configured_path(self):
+        self.spec["responses"] = {"/repos/demo/app/releases": {"json": []}}
+        for authority in ("example.invalid", "api.github.com:444"):
+            with self.subTest(authority=authority):
+                self.write_case(
+                    "import sys, urllib.request, urllib.error\n"
+                    "try:\n"
+                    f"    urllib.request.urlopen('https://{authority}/repos/demo/app/releases', timeout=5)\n"
+                    "except urllib.error.URLError:\n"
+                    "    pass\n"
+                    "emit_report(summary={'applied_count': 1})\nsys.exit(20)\n"
+                )
+                result = run.run_case(self.case, self.binary)
+                self.assertEqual(result["status"], "ERROR", result)
+                self.assertIn(f"external HTTPS request: {authority}", result["error"])
+
+    def test_external_http_proxy_requests_are_still_rejected(self):
+        self.spec["responses"] = {"/repos/demo/app/releases": {"json": []}}
+        self.write_case(
+            "import sys, urllib.request, urllib.error\n"
+            "try:\n"
+            "    urllib.request.urlopen('http://api.github.com/repos/demo/app/releases', timeout=5)\n"
+            "except urllib.error.URLError:\n"
+            "    pass\n"
+            "emit_report(summary={'applied_count': 1})\nsys.exit(20)\n"
+        )
+        result = run.run_case(self.case, self.binary)
+        self.assertEqual(result["status"], "ERROR", result)
+        self.assertIn("unexpected HTTP request: http://api.github.com/", result["error"])
+
     def test_command_reports_todos_without_failing_unless_strict(self):
         self.spec.update(expectation="todo", todo="U7: unsupported declaration")
         self.write_case("emit_report(summary={'applied_count': 0})\n")

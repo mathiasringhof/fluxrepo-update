@@ -11,9 +11,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
+pub use self::implementation::RemoteResourceChange;
 use self::implementation::{
-    PlanOptions, PlannedUpdate, UpdateReport, apply_planned_updates, plan_updates,
+    PlanOptions, PlannedUpdate, UpdateReport, apply_planned_updates, plan_updates_with_resources,
 };
+use crate::github::{GitHubReleaseResolver, RemoteResourceVersionResolver};
 use crate::models::{Inventory, TargetKind};
 use crate::resolvers::{ChartVersionResolver, ImageVersionResolver};
 
@@ -127,6 +129,7 @@ impl UpdateReview<'_> {
                 .map_or("ImageBinding", |identity| {
                     identity.resource_id.kind.as_str()
                 }),
+            PlannedUpdate::RemoteResource(_) => "Kustomization",
         }
     }
 
@@ -134,20 +137,21 @@ impl UpdateReview<'_> {
         match self.update {
             PlannedUpdate::Chart(_) => "spec.chart.spec.version",
             PlannedUpdate::Image(update) => &update.yaml_path,
+            PlannedUpdate::RemoteResource(update) => &update.changes[0].yaml_path,
         }
     }
 
     pub fn chart_name(&self) -> Option<&str> {
         match self.update {
             PlannedUpdate::Chart(update) => Some(&update.chart_name),
-            PlannedUpdate::Image(_) => None,
+            PlannedUpdate::Image(_) | PlannedUpdate::RemoteResource(_) => None,
         }
     }
 
     pub fn repo_name(&self) -> Option<&str> {
         match self.update {
             PlannedUpdate::Chart(update) => Some(&update.repo_name),
-            PlannedUpdate::Image(_) => None,
+            PlannedUpdate::Image(_) | PlannedUpdate::RemoteResource(_) => None,
         }
     }
 
@@ -157,21 +161,28 @@ impl UpdateReview<'_> {
                 .manifest_identity
                 .as_ref()
                 .map_or_else(Vec::new, |identity| identity.source_locations()),
-            PlannedUpdate::Image(_) => Vec::new(),
+            PlannedUpdate::Image(_) | PlannedUpdate::RemoteResource(_) => Vec::new(),
         }
     }
 
     pub fn current_image(&self) -> Option<&str> {
         match self.update {
             PlannedUpdate::Image(update) => Some(&update.current_image),
-            PlannedUpdate::Chart(_) => None,
+            PlannedUpdate::Chart(_) | PlannedUpdate::RemoteResource(_) => None,
         }
     }
 
     pub fn latest_image(&self) -> Option<&str> {
         match self.update {
             PlannedUpdate::Image(update) => Some(&update.latest_image),
-            PlannedUpdate::Chart(_) => None,
+            PlannedUpdate::Chart(_) | PlannedUpdate::RemoteResource(_) => None,
+        }
+    }
+
+    pub fn remote_resource_changes(&self) -> &[RemoteResourceChange] {
+        match self.update {
+            PlannedUpdate::RemoteResource(update) => &update.changes,
+            PlannedUpdate::Chart(_) | PlannedUpdate::Image(_) => &[],
         }
     }
 }
@@ -234,8 +245,9 @@ pub type Approval<'a> = dyn FnMut(&[UpdateReview<'_>]) -> Result<Vec<UpdateSelec
 pub type ProgressObserver<'a> = dyn FnMut(ResolutionProgress<'_>) + Send + 'a;
 
 pub struct UpdateRun<'a> {
-    chart_resolver: &'a (dyn ChartVersionResolver + Sync),
-    image_resolver: &'a (dyn ImageVersionResolver + Sync),
+    charts: &'a (dyn ChartVersionResolver + Sync),
+    images: &'a (dyn ImageVersionResolver + Sync),
+    remote_resources: Option<&'a (dyn RemoteResourceVersionResolver + Sync)>,
 }
 
 impl<'a> UpdateRun<'a> {
@@ -244,9 +256,19 @@ impl<'a> UpdateRun<'a> {
         image_resolver: &'a (dyn ImageVersionResolver + Sync),
     ) -> Self {
         Self {
-            chart_resolver,
-            image_resolver,
+            charts: chart_resolver,
+            images: image_resolver,
+            remote_resources: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_remote_resource_resolver(
+        mut self,
+        resolver: &'a (dyn RemoteResourceVersionResolver + Sync),
+    ) -> Self {
+        self.remote_resources = Some(resolver);
+        self
     }
 
     pub fn execute(
@@ -256,10 +278,12 @@ impl<'a> UpdateRun<'a> {
         approval: &mut Approval<'_>,
         progress: Option<&mut ProgressObserver<'_>>,
     ) -> Result<UpdateRunOutcome> {
-        let report = plan_updates(
+        let default_remote_resolver = GitHubReleaseResolver::default();
+        let report = plan_updates_with_resources(
             inventory,
-            self.chart_resolver,
-            self.image_resolver,
+            self.charts,
+            self.images,
+            self.remote_resources.unwrap_or(&default_remote_resolver),
             PlanOptions::default(),
             progress,
         );

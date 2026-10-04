@@ -97,7 +97,7 @@ fn kustomization_files_without_kind_still_expose_remote_resources() {
     let inventory = scan_repo(temp.path()).unwrap().to_json_value();
     assert_eq!(inventory["discovered_count"], 1);
     assert_eq!(
-        inventory["unchecked_version_declarations"][0]["yaml_path"],
+        inventory["remote_resource_targets"][0]["yaml_path"],
         "resources[0]"
     );
 }

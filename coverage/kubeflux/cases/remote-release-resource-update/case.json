@@ -9,23 +9,46 @@
     "infrastructure/base/cdi/kustomization.yaml",
     "infrastructure/base/kubevirt/kustomization.yaml"
   ],
-  "expectation": "todo",
-  "todo": "HTTP release resources are only reported unchecked; release metadata resolution and coordinated URL edits are unsupported.",
+  "expectation": "pass",
   "command": "apply",
   "responses": {
-    "/repos/example/operator/releases/latest": {
-      "json": {
-        "tag_name": "v2.0.0",
-        "prerelease": false,
-        "draft": false
-      }
-    },
     "/repos/example/operator/releases": {
       "json": [
         {
-          "tag_name": "v2.0.0",
+          "tag_name": "v3.0.0",
+          "draft": false,
           "prerelease": false,
-          "draft": false
+          "assets": [
+            {
+              "name": "operator.yaml"
+            }
+          ]
+        },
+        {
+          "tag_name": "v2.0.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "operator.yaml"
+            },
+            {
+              "name": "custom-resource.yaml"
+            }
+          ]
+        },
+        {
+          "tag_name": "v1.0.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            {
+              "name": "operator.yaml"
+            },
+            {
+              "name": "custom-resource.yaml"
+            }
+          ]
         }
       ]
     }
@@ -35,6 +58,52 @@
     "json": [
       {
         "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/planned_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "kustomization.yaml",
+          "document_index": 0,
+          "target_kind": "RemoteResource",
+          "current_version": "v1.0.0",
+          "latest_version": "v2.0.0"
+        }
+      },
+      {
+        "at": "/planned/0/resource_changes",
+        "contains": {
+          "document_index": 0,
+          "yaml_path": "resources[0]",
+          "current_resource": "https://github.com/example/operator/releases/download/v1.0.0/operator.yaml",
+          "latest_resource": "https://github.com/example/operator/releases/download/v2.0.0/operator.yaml"
+        }
+      },
+      {
+        "at": "/planned/0/resource_changes",
+        "contains": {
+          "document_index": 0,
+          "yaml_path": "resources[1]",
+          "current_resource": "https://github.com/example/operator/releases/download/v1.0.0/custom-resource.yaml",
+          "latest_resource": "https://github.com/example/operator/releases/download/v2.0.0/custom-resource.yaml"
+        }
+      }
+    ],
+    "invariants": [
+      {
+        "at": "/summary/discovered_count",
         "equals": 2
       }
     ]

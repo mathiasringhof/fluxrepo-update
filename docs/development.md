@@ -35,6 +35,7 @@ or behavior. The public workflow is scan → resolve and plan → review/select 
 | --- | --- | --- |
 | Manifest discovery and source equivalence | [`scan_repo`](../src/scanner.rs), [inventory models](../src/models.rs) | [Scanner tests](../tests/rust_scanner.rs) |
 | Remote metadata and version selection | [Resolver traits and implementations](../src/resolvers.rs) | [Resolver tests](../tests/rust_resolvers.rs) |
+| GitHub resource pins and releases | [GitHub parser and resolver](../src/github.rs) | [GitHub tests](../tests/rust_github.rs), [resource workflow tests](../tests/rust_remote_resources.rs) |
 | Plan, selection, and application | [`UpdateRun::execute`](../src/update_run.rs) | [Update Run tests](../tests/rust_update_run.rs) |
 | Arguments, approval, and output | [`cli::run_with_args`](../src/cli.rs) | [CLI tests](../tests/rust_cli.rs) |
 | Full CLI workflows and YAML preservation | [Workflow tests](../tests/rust_workflows.rs) | Local HTTP fixtures and exact file comparisons |

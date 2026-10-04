@@ -76,10 +76,10 @@ fn cloudnativepg_images_are_visible_without_enabling_new_writes() {
 }
 
 #[test]
-fn remote_kustomize_resources_are_reported_without_fetching_or_editing_them() {
+fn unsupported_remote_kustomize_resources_are_reported_without_fetching_or_editing_them() {
     let temp = tempfile::tempdir().expect("temp dir");
     let path = temp.path().join("kustomization.yaml");
-    let original = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n- https://github.com/kubevirt/kubevirt/releases/download/v1.8.0/kubevirt-operator.yaml\n- https://github.com/kubevirt/containerized-data-importer/releases/download/v1.65.0/cdi-operator.yaml\n- https://github.com/intel/intel-device-plugins-for-kubernetes/deployments/nfd?ref=v0.34.1\n- local.yaml\n# - https://example.org/commented/v1.0.0.yaml\n";
+    let original = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n- https://downloads.example.org/kubevirt/kubevirt/releases/download/v1.8.0/kubevirt-operator.yaml\n- https://downloads.example.org/kubevirt/containerized-data-importer/releases/download/v1.65.0/cdi-operator.yaml\n- https://github.com/intel/intel-device-plugins-for-kubernetes/deployments/nfd?ref=main\n- local.yaml\n# - https://example.org/commented/v1.0.0.yaml\n";
     write_file(&path, original);
     let (code, stdout, stderr) = run_cli(
         &[
@@ -108,7 +108,7 @@ fn remote_kustomize_resources_are_reported_without_fetching_or_editing_them() {
         skipped[2]["current_value"]
             .as_str()
             .unwrap()
-            .ends_with("?ref=v0.34.1")
+            .ends_with("?ref=main")
     );
     assert_eq!(fs::read_to_string(path).unwrap(), original);
 }

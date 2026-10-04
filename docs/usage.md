@@ -2,7 +2,8 @@
 
 Use `inventory` to inspect discovered declarations without network access. Use
 `update-helm` to resolve available versions and optionally apply them. The latter
-updates chart versions and container images despite its historical command name.
+updates chart versions, container images, and GitHub Kustomize resource pins despite
+its historical command name.
 
 Examples use the installed binary. From a source checkout, replace `fluxrepo-update`
 with `cargo run --`.
@@ -17,7 +18,8 @@ fluxrepo-update update-helm /path/to/flux-repo --json --non-interactive
 
 Inventory text summarizes counts; JSON includes sources, targets, and unchecked
 declarations. A preview returns the available updates and skips without changing files.
-Planning requires access to public Helm indexes and OCI/container registries.
+Planning requires access to public Helm indexes, OCI/container registries, and GitHub
+release metadata.
 
 Each manifest is interpreted independently. A base version can be updated even when
 an overlay overrides it. Latest stable selection can cross major versions, so review
@@ -41,6 +43,11 @@ and `--apply-id` requires `--write`.
 Interactive approval shows the relative file, document, resource, and exact field.
 Chart prompts include source and chart identity; image prompts show the full old and
 new image. Press `y` to approve or `n` to skip.
+
+GitHub resource references in one file with the same project and current pin form one
+update, including across YAML documents. Approval shows every URL change and applies
+the entire group. The chosen release must contain every required release asset;
+subdirectories, asset names, and HTTPS or scheme-less spelling are retained.
 
 ## Apply selected updates
 

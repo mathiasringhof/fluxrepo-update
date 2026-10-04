@@ -10,6 +10,50 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 #[test]
+fn remote_resource_approval_shows_every_member_and_approves_one_group() {
+    struct Remote;
+    impl crate::github::RemoteResourceVersionResolver for Remote {
+        fn resolve(&self, _: &str, _: &str, _: &str, _: &[String]) -> anyhow::Result<String> {
+            Ok("v2.0.0".into())
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("kustomization.yaml"), "resources:\n- github.com/example/operator/one?ref=v1.0.0\n---\nresources:\n- https://github.com/example/operator/two?ref=v1.0.0\n").unwrap();
+    let charts = crate::resolvers::StaticVersionResolver::new(std::collections::HashMap::new());
+    let images =
+        crate::resolvers::StaticImageVersionResolver::new(std::collections::HashMap::new());
+    let outcome = crate::update_run::UpdateRun::new(&charts, &images)
+        .with_remote_resource_resolver(&Remote)
+        .execute(
+            &crate::scanner::scan_repo(temp.path()).unwrap(),
+            crate::update_run::UpdateRunMode::PlanOnly,
+            &mut |_| unreachable!(),
+            None,
+        )
+        .unwrap();
+    let mut output = Vec::new();
+    let approved = InteractiveApproval::plain(Cursor::new(b"y"))
+        .review(
+            &outcome.plan().review(),
+            &mut output,
+            temp.path(),
+            HumanOutput::plain(),
+        )
+        .unwrap();
+    assert_eq!(approved.len(), 1);
+    let output = String::from_utf8(output).unwrap();
+    assert_eq!(output.matches("[y/N]").count(), 1);
+    for detail in [
+        "document 1, resources[0]",
+        "document 2, resources[0]",
+        "github.com/example/operator/one?ref=v1.0.0 -> github.com/example/operator/one?ref=v2.0.0",
+        "https://github.com/example/operator/two?ref=v1.0.0 -> https://github.com/example/operator/two?ref=v2.0.0",
+    ] {
+        assert!(output.contains(detail), "missing {detail}: {output}");
+    }
+}
+
+#[test]
 fn interactive_json_disables_terminal_color_and_progress() {
     let charts = crate::resolvers::StaticVersionResolver::new(std::collections::HashMap::new());
     let images =

@@ -1,7 +1,7 @@
 {
   "id": "schemeless-kustomize-resource",
   "category": "remote-kustomize",
-  "description": "A scheme-less GitHub resource pin is a located unchecked declaration.",
+  "description": "A scheme-less GitHub resource pin advances while retaining its spelling and local resources.",
   "audit": [
     "U4"
   ],
@@ -9,24 +9,49 @@
     "infrastructure/base/metallb/kustomization.yaml",
     "infrastructure/testing/metallb/kustomization.yaml"
   ],
-  "expectation": "todo",
-  "todo": "The scanner recognizes only HTTP(S) remote resources and silently misses scheme-less GitHub refs.",
-  "command": "inventory",
-  "responses": {},
+  "expectation": "pass",
+  "command": "apply",
+  "responses": {
+    "/repos/example/network/releases": {
+      "json": [
+        {
+          "tag_name": "v0.16.0",
+          "draft": false,
+          "prerelease": false,
+          "assets": []
+        }
+      ]
+    }
+  },
   "checks": {
-    "exit_code": 0,
+    "exit_code": 20,
     "json": [
       {
-        "at": "/discovered_count",
+        "at": "/summary/applied_count",
         "equals": 1
       },
       {
-        "at": "/unchecked_version_declarations",
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/unchecked_count",
+        "equals": 0
+      },
+      {
+        "at": "/planned/0/resource_changes",
         "contains": {
-          "path": "kustomization.yaml",
-          "current_value": "github.com/example/network/config/native?ref=v0.15.3",
-          "yaml_path": "resources[0]"
+          "document_index": 0,
+          "yaml_path": "resources[0]",
+          "current_resource": "github.com/example/network/config/native?ref=v0.15.3",
+          "latest_resource": "github.com/example/network/config/native?ref=v0.16.0"
         }
+      }
+    ],
+    "invariants": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 1
       }
     ]
   }

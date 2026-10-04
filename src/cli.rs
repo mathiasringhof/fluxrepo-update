@@ -50,7 +50,7 @@ enum Commands {
         json_output: bool,
     },
     #[command(name = "update-helm")]
-    #[command(about = "Plan or apply HelmRelease and image binding updates")]
+    #[command(about = "Plan or apply Helm chart, image, and GitHub resource pin updates")]
     UpdateHelm(UpdateHelmArgs),
 }
 
@@ -255,6 +255,11 @@ fn inventory_command<W: Write>(
         )?;
         writeln!(stdout, "Chart targets: {}", inventory.chart_targets.len())?;
         writeln!(stdout, "Image bindings: {}", inventory.image_bindings.len())?;
+        writeln!(
+            stdout,
+            "Remote resource targets: {}",
+            inventory.remote_resource_targets.len()
+        )?;
         writeln!(
             stdout,
             "HelmReleases without chart version: {}",

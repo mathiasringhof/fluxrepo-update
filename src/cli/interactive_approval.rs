@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Read, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -205,6 +206,25 @@ fn render_prompt(update: &UpdateReview<'_>, repo_root: &Path, human_output: Huma
                 update.resource_kind(),
                 update.target_name(),
                 update.yaml_path()
+            )
+        }
+        TargetKind::RemoteResource => {
+            let mut changes = String::new();
+            for change in update.remote_resource_changes() {
+                write!(
+                    changes,
+                    "\n  document {}, {}: {} -> {}",
+                    change.document_index + 1,
+                    change.yaml_path,
+                    human_output.styled(&change.current_resource, AnsiStyle::Yellow),
+                    human_output.styled(&change.latest_resource, AnsiStyle::Green)
+                )
+                .expect("writing to a string");
+            }
+            format!(
+                "Kustomization GitHub {} ({} references){changes}",
+                update.target_name(),
+                update.remote_resource_changes().len()
             )
         }
     };

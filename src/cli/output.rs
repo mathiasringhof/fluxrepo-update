@@ -211,6 +211,12 @@ fn update_json(update: &UpdateReview<'_>, repo_root: &Path) -> serde_json::Value
             value["current_image"] = json!(update.current_image());
             value["latest_image"] = json!(update.latest_image());
         }
+        TargetKind::RemoteResource => {
+            value["resource_changes"] = json!(update.remote_resource_changes().iter().map(|change| json!({
+                "document_index": change.document_index, "yaml_path": change.yaml_path,
+                "current_resource": change.current_resource, "latest_resource": change.latest_resource,
+            })).collect::<Vec<_>>());
+        }
     }
     value
 }
@@ -272,6 +278,11 @@ fn render_update_line(
             "{path}: ImageBinding {} {} {current} -> {latest}",
             update.target_name(),
             update.yaml_path()
+        ),
+        TargetKind::RemoteResource => format!(
+            "{path}: RemoteResource {} ({} references) {current} -> {latest}",
+            update.target_name(),
+            update.remote_resource_changes().len()
         ),
     }
 }
