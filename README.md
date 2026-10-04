@@ -1,196 +1,61 @@
 # fluxrepo-update
 
-`fluxrepo-update` is a Rust CLI for inspecting a FluxCD repository and updating
-explicit Helm chart and container-image versions without depending on `helm` or `yq`.
+Inspect FluxCD repositories and update explicit Helm chart and container-image versions.
+No `helm` or `yq` required.
 
-It discovers manifest-local update targets through supported schemas:
+The CLI finds chart versions in `HelmRelease` manifests, images in standard Kubernetes
+workloads, and image values under `HelmRelease.spec.values`. It resolves public HTTP/OCI
+sources and edits approved YAML scalars while preserving comments and formatting.
 
-- explicit `HelmRelease.spec.chart.spec.version` values with source identity in the same manifest
-- `containers` and `initContainers` images in Deployments, StatefulSets, DaemonSets, Jobs,
-  CronJobs, and Pods
-- recursive scalar and `repository`/`tag` image bindings under `HelmRelease.spec.values`
-- public HTTP Helm repositories, generic public OCI chart repositories, and public container registries
+## Install
 
-## What It Does
+Download a prebuilt Linux binary from the
+[latest release](https://github.com/mathiasringhof/fluxrepo-update/releases/latest):
 
-The CLI has two commands:
-
-- `inventory`: scan a repository and report what the tool sees
-- `update-helm`: resolve latest stable chart and image versions, show a deterministic plan, and optionally apply it
-
-The tool edits:
-
-- `HelmRelease.spec.chart.spec.version`
-- standard workload PodSpec `containers` and `initContainers` image scalars
-- concrete scalar images and `image.repository`/`image.tag` mappings under `HelmRelease.spec.values`
-
-It leaves inherited, templated, mutable, tagless, digest-pinned, and unknown image schemas
-unchanged. Generated Flux bootstrap manifests are never edited.
-
-## Requirements
-
-Prebuilt Linux binaries do not require Rust. Download the archive for your architecture
-from the [latest release](https://github.com/mathiasringhof/fluxrepo-update/releases/latest):
-
-```bash
+```sh
 # x86_64; use aarch64-unknown-linux-gnu on 64-bit ARM
 curl -LO https://github.com/mathiasringhof/fluxrepo-update/releases/latest/download/fluxrepo-update-x86_64-unknown-linux-gnu.tar.gz
 tar -xzf fluxrepo-update-x86_64-unknown-linux-gnu.tar.gz
 sudo install fluxrepo-update /usr/local/bin/
 ```
 
-Building from source requires:
+To build from source, see [development](docs/development.md).
 
-- Rust `>=1.95`
-- Cargo
-- network access for `update-helm`, which fetches Helm indexes and OCI/container registry tags
+## Start with a preview
 
-## Quick Start
-
-Inspect a Flux repository:
-
-```bash
-cargo run -- inventory /path/to/flux-repo
-cargo run -- inventory /path/to/flux-repo --json
+```sh
+fluxrepo-update inventory /path/to/flux-repo
+fluxrepo-update update-helm /path/to/flux-repo --non-interactive
 ```
 
-JSON inventory includes discovered sources, update targets, unchecked version declarations,
-and skipped generated manifests. Equivalent source copies resolve together when their
-name, raw namespace, and full specification match; conflicting copies remain ambiguous.
+Inventory works offline. Update planning needs network access for chart indexes and
+registry tags. Both commands accept `--json` for structured output.
 
-Preview available updates without changing files:
+To review and approve each update interactively:
 
-```bash
-cargo run -- update-helm /path/to/flux-repo --non-interactive
-cargo run -- update-helm /path/to/flux-repo --json --non-interactive
+```sh
+fluxrepo-update update-helm /path/to/flux-repo
 ```
 
-Human `update-helm` output goes to stderr, uses relative paths, includes target details
-for each planned update, and shows terminal color/progress when stderr is interactive.
-`--json` keeps stdout to indented JSON and disables human progress/color output.
-Runtime failures after parsing are JSON objects on stderr when `--json` is present.
+For automation, `--non-interactive` only prints the plan. Add `--write` to apply it;
+use `--apply-id` to select reviewed items. See [usage](docs/usage.md) for these workflows
+and [output](docs/output.md#exit-codes) for exit codes (`10` means updates are available;
+`20` means updates were applied).
 
-Apply updates interactively:
+## Scope
 
-```bash
-cargo run -- update-helm /path/to/flux-repo
-```
+The tool reads individual repository manifests, including inactive bases and untracked
+YAML; it does not render Kustomize overlays or inspect deployed resources. Latest stable
+selection can cross major versions and does not check upgrade compatibility.
 
-Apply all planned updates non-interactively:
+Generated Flux bootstrap manifests and unsupported declarations remain unchanged.
+Inspect skipped targets: no planned updates does not mean every dependency was checked.
+See [coverage](docs/coverage.md) for supported forms, skip boundaries, and write recovery.
 
-```bash
-cargo run -- update-helm /path/to/flux-repo --write --non-interactive
-```
+## Reference
 
-Apply mode updates the targeted YAML scalar values in place, preserving surrounding
-formatting, comments, quote and block-scalar styles, and multi-document separators.
-It checks target and source identity and validates every selected edit before writing.
-
-Apply selected planned updates non-interactively:
-
-```bash
-cargo run -- update-helm /path/to/flux-repo --json --non-interactive
-cargo run -- update-helm /path/to/flux-repo --write --non-interactive --apply-id '<id-from-plan>'
-```
-
-Planned IDs now start with `v2:` and bind the reviewed resource, source, and image
-identity as well as versions. Rerun the preview to replace older `v1:` planned IDs.
-
-The tests include `tests/fixtures/kubeflux/`, a small fixture distilled from a real Flux
-repository. It is used for fixture-backed tests and local examples:
-
-```bash
-cargo run -- inventory tests/fixtures/kubeflux --json
-cargo run -- update-helm tests/fixtures/kubeflux --json --non-interactive
-```
-
-Run the separate [synthetic kubeflux corpus](coverage/kubeflux/README.md) to exercise
-supported behavior and explicit TODOs without accessing real registries:
-
-```bash
-cargo build --locked
-python3 coverage/kubeflux/run.py
-```
-
-The [case status](coverage/kubeflux/STATUS.md) distinguishes working updates, safe skips,
-and desired capabilities that still fail. This opt-in corpus is separate from the Rust
-suite and CI.
-
-Run the Rust test suite:
-
-```bash
-cargo fmt --all --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-```
-
-Enable the local pre-commit hook to run those same checks before each commit:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-## Safety And Modes
-
-`update-helm` has two distinct modes:
-
-- default human mode is interactive and writes the updates you approve
-- `--non-interactive` is agent mode and only prints the plan unless you also pass `--write`
-
-Mode summary:
-
-- Interactive apply:
-  - `cargo run -- update-helm /path/to/repo`
-  - prompts once per planned update; press `y` or `n` to answer, default is `No`
-- Non-interactive plan:
-  - `cargo run -- update-helm /path/to/repo --non-interactive`
-  - no prompts, no file changes
-- Non-interactive apply-all:
-  - `cargo run -- update-helm /path/to/repo --write --non-interactive`
-  - applies all planned updates without prompts
-- Non-interactive apply-selected:
-  - inspect `--json --non-interactive`, then pass one or more `--apply-id` values with `--write --non-interactive`
-  - applies only the selected planned updates without prompts
-
-Invalid combinations:
-
-- `--write` requires `--non-interactive`
-- `--apply-id` requires `--write`
-
-## Exit Codes
-
-- `0`: no updates applied, no updates available, or no updates approved
-- `2`: invalid arguments or a runtime/write failure
-- `10`: planning mode found updates
-- `20`: updates were applied
-
-See [docs/output.md](docs/output.md) for the JSON success and error shapes.
-
-## Current Coverage
-
-The scanner accepts `.yaml` and `.yml`, excludes hidden/cache directories and generated
-`flux-system/gotk-*` files, and treats every manifest independently. Resolution is
-best-effort: unresolved targets retain stable IDs and reason codes while other updates
-remain available. Latest stable selection supports semantic, calendar, and numeric versions,
-can cross major versions, excludes prereleases, and never proposes a downgrade. Image
-variant suffixes are preserved, and OCI chart build metadata is normalized correctly.
-
-Reports cover all eligible repository manifests, including untracked files and inactive
-bases; they do not describe deployed resources. Coverage counts distinguish discovered,
-checked, and unchecked declarations. Tag-only `image.tag` overrides, CloudNativePG
-`spec.imageName`, and HTTP(S) Kustomize resource URLs are visible as unchecked entries
-with their location, value, and reason. They remain unchanged; additional checks are deferred.
-
-The tool does not evaluate effective Kustomize overlays, update `chartRef`/`OCIRepository`
-versions, or prove that an upgrade is compatible with your chart values or cluster.
-Inspect skipped targets even when the command exits successfully; they were not checked
-completely. See [coverage](docs/coverage.md) for scope and recovery limits.
-
-## Docs
-
-- [Usage](docs/usage.md)
-- [Output](docs/output.md)
-- [Coverage](docs/coverage.md)
-- [kubeflux coverage audit and remaining TODOs](docs/kubeflux-coverage.md)
-- [Synthetic corpus and status](coverage/kubeflux/STATUS.md)
-- [Docs Index](docs/README.md)
+- [Usage](docs/usage.md): modes, selected updates, and recovery
+- [Output](docs/output.md): JSON fields, reason codes, and exit codes
+- [Coverage](docs/coverage.md): supported inputs and safety limits
+- [Development](docs/development.md): build, test, and code navigation
+- [kubeflux audit](docs/kubeflux-coverage.md): observed gaps and synthetic examples

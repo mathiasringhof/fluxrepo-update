@@ -6,6 +6,32 @@ use common::{fixture_root, write_file};
 use fluxrepo_update::scanner::scan_repo;
 
 #[test]
+fn scanner_excludes_only_bootstrap_files_directly_inside_flux_system() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let manifests = [
+        "clusters/demo/flux-system/gotk-components.yaml",
+        "clusters/demo/my-flux-system/gotk-app.yaml",
+        "clusters/demo/flux-system/gotk-apps/deployment.yaml",
+        "clusters/demo/flux-system/application.yaml",
+    ];
+    for path in manifests {
+        write_file(
+            &temp.path().join(path),
+            "kind: Pod\nmetadata: {name: app}\nspec:\n  containers:\n  - image: example/app:1.0.0\n",
+        );
+    }
+
+    let inventory = scan_repo(temp.path()).expect("scan");
+
+    assert_eq!(inventory.image_bindings.len(), 3);
+    assert_eq!(inventory.skipped_paths.len(), 1);
+    assert_eq!(
+        inventory.relative(&inventory.skipped_paths[0]),
+        manifests[0]
+    );
+}
+
+#[test]
 fn inventory_reports_unchecked_declarations_and_includes_inactive_manifests() {
     let temp = tempfile::tempdir().expect("temp dir");
     write_file(
@@ -381,6 +407,75 @@ spec:
         inventory.image_bindings[0].yaml_path,
         "spec.values.sharedImage.tag"
     );
+}
+
+#[test]
+fn scanner_preserves_image_locations_and_categories_in_nested_helm_values() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_file(
+        &temp.path().join("release.yaml"),
+        r#"kind: HelmRelease
+metadata: {name: app}
+spec:
+  values:
+    "nested.list":
+      - image: example/scalar:1.0.0
+      - image: {repository: example/mapped, tag: 2.0.0}
+      - image: {tag: 3.0.0}
+      - image: {repository: example/custom, version: 4.0.0}
+      - image:
+          children:
+            - image: {tag: 5.0.0}
+            - image: example/deep:6.0.0
+      - image: {tag: 7.0.0}
+"#,
+    );
+    let inventory = scan_repo(temp.path()).expect("scan");
+    let bindings = inventory
+        .image_bindings
+        .iter()
+        .map(|binding| (binding.yaml_path.as_str(), binding.image.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bindings,
+        [
+            (
+                r#"spec.values["nested.list"][0].image"#,
+                "example/scalar:1.0.0"
+            ),
+            (
+                r#"spec.values["nested.list"][1].image.tag"#,
+                "example/mapped:2.0.0"
+            ),
+            (
+                r#"spec.values["nested.list"][3].image"#,
+                "example/custom (version: 4.0.0)"
+            ),
+            (
+                r#"spec.values["nested.list"][4].image.children[1].image"#,
+                "example/deep:6.0.0"
+            ),
+        ]
+    );
+    assert_eq!(
+        inventory
+            .unchecked_version_declarations
+            .iter()
+            .map(|declaration| (
+                declaration.yaml_path.as_str(),
+                declaration.current_value.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (r#"spec.values["nested.list"][2].image.tag"#, "3.0.0"),
+            (
+                r#"spec.values["nested.list"][4].image.children[0].image.tag"#,
+                "5.0.0"
+            ),
+            (r#"spec.values["nested.list"][5].image.tag"#, "7.0.0"),
+        ]
+    );
+    assert_eq!(inventory.image_references.len(), 4);
 }
 
 #[cfg(unix)]

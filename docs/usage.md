@@ -1,161 +1,76 @@
 # Usage
 
-## Mental Model
+Use `inventory` to inspect discovered declarations without network access. Use
+`update-helm` to resolve available versions and optionally apply them. The latter
+updates chart versions and container images despite its historical command name.
 
-Use `inventory` to answer "what does this repository contain?".
+Examples use the installed binary. From a source checkout, replace `fluxrepo-update`
+with `cargo run --`.
 
-Use `update-helm` to answer "what version bumps are available?" and, if desired, apply
-those bumps.
+## Inspect and preview
 
-`update-helm` always scans the repository first, then resolves the latest chart versions
-and image-binding versions from public remote sources. It works on explicit values in
-individual manifests, so a base-file update may be overridden by a Kustomize overlay.
-Review upgrades for compatibility; latest stable can include a new major version.
-
-## Safe First Run
-
-Start with read-only commands:
-
-```bash
-cargo run -- inventory /path/to/flux-repo --json
-cargo run -- update-helm /path/to/flux-repo --json --non-interactive
+```sh
+fluxrepo-update inventory /path/to/flux-repo
+fluxrepo-update inventory /path/to/flux-repo --json
+fluxrepo-update update-helm /path/to/flux-repo --json --non-interactive
 ```
 
-That gives you:
+Inventory text summarizes counts; JSON includes sources, targets, and unchecked
+declarations. A preview returns the available updates and skips without changing files.
+Planning requires access to public Helm indexes and OCI/container registries.
 
-- the list of repositories and update targets the scanner found
-- the planned version bumps
-- any skipped targets and the reason they could not be resolved
+Each manifest is interpreted independently. A base version can be updated even when
+an overlay overrides it. Latest stable selection can cross major versions, so review
+chart values, application migrations, and cluster compatibility before applying.
 
-## Commands
+## Choose a mode
 
-### `inventory`
+Add these flags to `fluxrepo-update update-helm /path/to/flux-repo`:
 
-Summarizes what the scanner found in a repository.
+| Flags | Behavior |
+| --- | --- |
+| none | Prompt for each update and write approved changes; default answer is No. |
+| `--non-interactive` | Print the plan without prompts or writes. |
+| `--write --non-interactive` | Apply every planned update without prompts. |
+| `--write --non-interactive --apply-id '<id>'` | Apply only selected updates; repeat `--apply-id` for multiple items. |
 
-```bash
-cargo run -- inventory /path/to/flux-repo
-cargo run -- inventory /path/to/flux-repo --json
+`--json` controls report formatting; it does not disable interactive approval.
+Use `--non-interactive` in scripts and agents. `--write` requires `--non-interactive`,
+and `--apply-id` requires `--write`.
+
+Interactive approval shows the relative file, document, resource, and exact field.
+Chart prompts include source and chart identity; image prompts show the full old and
+new image. Press `y` to approve or `n` to skip.
+
+## Apply selected updates
+
+First inspect `planned[]` in a JSON preview. Pass each chosen `planned[].id` unchanged:
+
+```sh
+fluxrepo-update update-helm /path/to/flux-repo --json --non-interactive
+fluxrepo-update update-helm /path/to/flux-repo --write --non-interactive --apply-id '<id-from-plan>'
 ```
 
-Human-readable output includes counts for:
+IDs are opaque and bind the reviewed resource, source, image identity, and versions.
+Application plans again; unknown or stale IDs reject the entire selection without
+writing. Generate and review a fresh plan when the target or available version changes.
+See [selection IDs](output.md#planned) for the current format and migration rules.
 
-- `Repositories`
-- `Chart targets`
-- `Image bindings`
-- `HelmReleases without chart version`
-- `Unresolved chart targets`
-- `Image references`
-- `Skipped generated files`
+## Skips, errors, and recovery
 
-Use `--json` when you need the actual item lists instead of summary counts.
-`Repositories` counts every discovered source, including copies. JSON lists equivalent
-copies under `equivalent_repositories` and conflicting definitions under
-`ambiguous_repositories`; charts using an ambiguous name are skipped.
+Unresolved targets do not block independent updates. Inspect the report's `skipped`
+entries and coverage counts even when the command exits `0`. Missing or conflicting
+sources, failed requests, unsupported version schemes, and declarations that cannot be
+checked all leave update availability unknown. See [coverage](coverage.md) for supported
+forms and [output](output.md#skipped) for stable reason codes.
 
-### `update-helm`
+Apply prepares and validates all selected edits before writing. It rechecks target
+and source identities and rejects unintended YAML changes. Approved scalars are edited
+in place, preserving surrounding formatting and comments. An operating-system write
+failure can still leave earlier files changed; inspect the working tree and use Git
+for recovery. There is no automatic rollback, deployment, or reconciliation.
 
-Plans or applies explicit chart versions and image bindings.
-
-```bash
-cargo run -- update-helm /path/to/flux-repo
-cargo run -- update-helm /path/to/flux-repo --non-interactive
-cargo run -- update-helm /path/to/flux-repo --json --non-interactive
-cargo run -- update-helm /path/to/flux-repo --write --non-interactive
-cargo run -- update-helm /path/to/flux-repo --write --non-interactive --apply-id '<id-from-plan>'
-```
-
-Options:
-
-- `--json`: emit machine-readable output
-- `--write`: apply all planned updates without prompts; requires `--non-interactive`
-- `--apply-id <ID>`: apply one planned item by JSON plan ID; repeat for multiple items
-- `--non-interactive`: disable prompts
-
-Image bindings include standard workload `containers`/`initContainers` scalars and
-recursive scalar or `repository`/`tag` mappings under `HelmRelease.spec.values`.
-Mutable, templated, digest-pinned, tagless, blank, and unknown schemas remain unchanged.
-Apply mode edits the targeted YAML scalar in place so unrelated formatting, comments,
-quote and block-scalar styles, and multi-document separators stay intact. Literal mapping
-keys containing dots or brackets are addressed separately from nested paths.
-
-## Interactive Vs Automation Behavior
-
-Default behavior is for humans:
-
-- `cargo run -- update-helm /path/to/flux-repo`
-  prompts for each planned update; press `y` or `n` to approve or skip
-
-Each interactive approval identifies the file, document, resource, and field. Chart
-prompts include the source and chart; image prompts show the full old and new image.
-
-Agent mode is explicit:
-
-- `cargo run -- update-helm /path/to/flux-repo --non-interactive`
-  prints the plan and never modifies files
-- `cargo run -- update-helm /path/to/flux-repo --write --non-interactive`
-  applies all planned updates without prompts
-- `cargo run -- update-helm /path/to/flux-repo --write --non-interactive --apply-id '<id-from-plan>'`
-  applies only selected planned updates without prompts
-
-Recommended patterns:
-
-- Manual review with prompts:
-  - `cargo run -- update-helm /path/to/flux-repo`
-- Automation preview:
-  - `cargo run -- update-helm /path/to/flux-repo --json --non-interactive`
-- Automation apply-all:
-  - `cargo run -- update-helm /path/to/flux-repo --write --non-interactive`
-- Automation apply-selected:
-  - inspect `planned[].id` from `--json --non-interactive`
-  - pass each chosen ID as `--apply-id` with `--write --non-interactive`
-
-Treat IDs as opaque. Current planned IDs use `v2:` and include resource, chart source,
-and image/container identity as applicable. Older `v1:` planned IDs and IDs whose
-reviewed target or versions changed are rejected; generate and review a fresh plan.
-
-Before writing, apply rechecks the reviewed scalar and its identity, then parses the
-prepared YAML to verify that only approved values changed. All selected files must pass
-this preflight. Operating-system write failures can still leave earlier files changed;
-inspect the working tree and use Git for recovery.
-
-## Error Cases
-
-The CLI rejects these combinations:
-
-- `--write` without `--non-interactive`
-- `--apply-id` without `--write`
-- unknown or stale `--apply-id` values
-
-With `--json`, failures after argument parsing are reported as JSON on stderr with
-`error`, `message`, and `exit_code` fields.
-
-Unresolved targets are normal best-effort plan outcomes and do not block other updates.
-A skip can happen because:
-
-- the referenced `HelmRepository` is missing or has a known namespace mismatch
-  (`missing_helm_repository`)
-- conflicting `HelmRepository` definitions share the referenced name
-- the chart could not be found in the repository index
-- the remote repository could not be reached
-- the version scheme is unfamiliar or incomparable
-- the image tag is mutable or otherwise not comparable
-- the container registry could not list tags for the image
-- the image is templated, mutable, tagless, or digest-pinned
-- a tag-only override, CloudNativePG image, or remote Kustomize URL is recognized but not checked
-
-When every target is skipped, the output reports skipped targets rather than declaring
-the repository up to date. Exit code `0` does not mean every version was resolved;
-inspect `skipped` and its reason codes before treating a check as complete.
-
-Both commands identify their scope as repository manifests, including inactive bases and
-untracked YAML files. Update coverage counts distinguish discovered, checked, and unchecked
-declarations without changing exit codes. Equivalent source copies are accepted only when
-their name, raw namespace, and full specification match; namespace transformations are not evaluated.
-
-## Exit Codes
-
-- `0`: no updates applied, no updates found, or no updates approved
-- `2`: invalid arguments or a runtime/write failure
-- `10`: planning mode found updates
-- `20`: updates were applied
+With `--json`, runtime and mode-validation failures produce a structured error on
+stderr. Argument parsing keeps its normal text errors. Scripts must handle the
+[exit codes](output.md#exit-codes): `10` is a successful preview with updates and `20`
+is a successful apply, rather than a failure.

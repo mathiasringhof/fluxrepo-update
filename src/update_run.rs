@@ -8,13 +8,11 @@ pub use self::implementation::{SkipReasonCode, SkippedUpdate};
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use anyhow::{Result, bail};
 
 use self::implementation::{
     PlanOptions, PlannedUpdate, UpdateReport, apply_planned_updates, plan_updates,
-    plan_updates_with_progress,
 };
 use crate::models::{Inventory, TargetKind};
 use crate::resolvers::{ChartVersionResolver, ImageVersionResolver};
@@ -258,27 +256,13 @@ impl<'a> UpdateRun<'a> {
         approval: &mut Approval<'_>,
         progress: Option<&mut ProgressObserver<'_>>,
     ) -> Result<UpdateRunOutcome> {
-        let report = if let Some(observer) = progress {
-            let observer = Mutex::new((observer, 0));
-            plan_updates_with_progress(
-                inventory,
-                self.chart_resolver,
-                self.image_resolver,
-                PlanOptions::default(),
-                &|_, total, path| {
-                    let mut observer = observer.lock().expect("progress observer lock");
-                    observer.1 += 1;
-                    let completed = observer.1;
-                    (observer.0)(ResolutionProgress {
-                        completed,
-                        total,
-                        path,
-                    });
-                },
-            )
-        } else {
-            plan_updates(inventory, self.chart_resolver, self.image_resolver)
-        };
+        let report = plan_updates(
+            inventory,
+            self.chart_resolver,
+            self.image_resolver,
+            PlanOptions::default(),
+            progress,
+        );
         for update in &report.planned {
             if !update.has_original_identity() {
                 bail!(

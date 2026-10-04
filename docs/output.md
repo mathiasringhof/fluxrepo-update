@@ -19,7 +19,8 @@ apps/base/sonarr/deployment.yaml: ImageBinding sonarr spec.template.spec.contain
 
 When stderr is a terminal, `update-helm` colors paths cyan, current versions yellow, and
 latest versions green, and shows a compact resolving progress indicator. `--json` disables
-all human status, color, and progress output.
+human status, color, and progress output. Interactive approval still prompts unless
+`--non-interactive` is set; see [modes](usage.md#choose-a-mode).
 
 Interactive approval includes the relative file, document number, resource, exact field,
 and chart/source or full image change. A plan containing only skipped targets reports
@@ -105,14 +106,8 @@ key `a.b`, while `spec.values.a.b.image` selects nested keys. `[0]` denotes a se
 
 ### `helmreleases_without_chart_version`
 
-These are `HelmRelease` resources that do not expose `spec.chart.spec.version`. In this
-repository they are usually values-only overlays such as:
-
-- `apps/production/audiobookshelf/release-patch.yaml`
-- `apps/production/uptimekuma-values.yaml`
-
-This category can also include manifests that still name a chart and repository but omit
-the chart version, such as `apps/production/minecraft-bedrock/release.yaml`.
+These are `HelmRelease` resources that do not expose `spec.chart.spec.version`, including
+values-only overlays and releases that name a chart and repository but omit the version.
 
 Their chart versions are not edited. Supported explicit image bindings under their
 `spec.values` can still appear in the update plan.
@@ -243,7 +238,7 @@ Clap parse and help errors keep their normal text output.
 
 ## Exit Codes
 
-- `0`: no updates applied, no updates found, or no updates approved
+- `0`: successful inventory, or no updates applied, found, or approved
 - `2`: invalid arguments or a runtime/write failure
 - `10`: planning mode found updates
 - `20`: updates were applied

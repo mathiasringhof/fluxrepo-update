@@ -4,7 +4,7 @@ See the [kubeflux audit](kubeflux-coverage.md) for observed categories and remai
 update/discovery gaps, and the separate [executable corpus](../coverage/kubeflux/README.md)
 for local CLI examples and [recorded outcomes](../coverage/kubeflux/STATUS.md).
 
-`fluxrepo-update` scans user-authored `.yaml` and `.yml` Managed Manifests. Each manifest
+`fluxrepo-update` scans user-authored `.yaml` and `.yml` manifests. Each manifest
 is interpreted independently; the tool does not render Kustomize graphs or inherit chart
 identity and values from another file. An explicit base version can therefore be updated
 even when an overlay overrides it or no environment includes it. The scope is all eligible
@@ -21,7 +21,7 @@ repository manifests, including untracked files, not effective deployed versions
 - Standard public Helm HTTP indexes, generic public OCI chart registries, and public
   container registries, including anonymous bearer-token challenges
 
-Latest Stable Version selection supports semantic, calendar, numeric, and recognized
+Latest stable version selection supports semantic, calendar, numeric, and recognized
 numeric-pattern releases. It excludes prereleases and mutable tags, permits cross-major
 updates, and never proposes a downgrade. This is version selection, not a compatibility
 check for chart values, application migrations, or Kubernetes versions.
@@ -42,8 +42,9 @@ are not inferred from Kustomize configuration.
 All equivalent source copies participate in selection identity and are rechecked before
 applying updates. Kustomize namespace transformations remain unsupported.
 
-Within a run, targets share fetched metadata. Registry pagination cycles or more than
-1,000 pages are reported as resolution failures rather than using a partial tag list.
+Within a run, targets share fetched metadata. Registry tag lists follow `Link` headers
+with a `next` relation. Pagination cycles or more than 1,000 pages are reported as
+resolution failures rather than using a partial tag list.
 
 ## Left unchanged
 
@@ -54,7 +55,7 @@ Within a run, targets share fetched metadata. Registry pagination cycles or more
 - Templated, mutable, tagless, digest-pinned images and recognized commit tags
 - Unknown image schemas and ambiguous `tag` or `version` fields
 - Private-source credential management
-- Generated Flux bootstrap manifests under `clusters/*/flux-system/gotk-*`
+- Generated `gotk-*` manifests directly inside a directory named `flux-system`
 - Files in hidden directories, cache directories, symlinks, and non-YAML files
 
 Recognizable unresolved targets appear in the Update Plan with stable identities and
@@ -69,7 +70,7 @@ The scanner also reports these declarations without checking or editing them:
 
 These entries include their file, document, field, current value, and reason. Digest-pinned
 image bindings continue to be reported as unchecked, even when they contain a version tag.
-No chart-default inference, remote-resource fetching, or new version resolver is added.
+Chart defaults and remote resources are not fetched to resolve these declarations.
 Other custom resource fields, arbitrary tag/version keys, non-HTTP resource references,
 and inherited values without explicit declarations remain outside discovery.
 

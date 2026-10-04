@@ -6,7 +6,7 @@ use anyhow::anyhow;
 use fluxrepo_update::resolvers::{StaticImageVersionResolver, StaticVersionResolver};
 use fluxrepo_update::scanner::scan_repo;
 use fluxrepo_update::update_run::{
-    UpdateRun, UpdateRunMode, UpdateRunStatus, UpdateSelectionIdentity,
+    UpdateReview, UpdateRun, UpdateRunMode, UpdateRunStatus, UpdateSelectionIdentity,
 };
 
 fn chart_copies() -> tempfile::TempDir {
@@ -209,6 +209,166 @@ fn contents(root: &Path) -> Vec<String> {
     ["a.yaml", "b.yaml"]
         .map(|file| fs::read_to_string(root.join(file)).expect("read fixture"))
         .to_vec()
+}
+
+#[test]
+fn incomparable_image_results_retain_distinct_skipped_target_identities() {
+    let (temp, charts, _) = fixture();
+    let inventory = scan_repo(temp.path()).expect("scan");
+    let images = StaticImageVersionResolver::new(HashMap::from([
+        ("example/a:1.0.0".into(), "example/a".into()),
+        ("example/b:1.0.0".into(), "example/b".into()),
+    ]));
+    let outcome = UpdateRun::new(&charts, &images)
+        .execute(
+            &inventory,
+            UpdateRunMode::PlanOnly,
+            &mut |_| unreachable!(),
+            None,
+        )
+        .expect("retain unresolved image results");
+    let skipped = outcome.plan().skipped();
+    assert_eq!(skipped.len(), 4);
+    assert_ne!(
+        skipped[0].selection_id(&inventory.repo_root),
+        skipped[1].selection_id(&inventory.repo_root),
+        "two containers in the same manifest remain independently identifiable"
+    );
+    assert_eq!(skipped[0].yaml_path(), Some("spec.containers[0].image"));
+    assert_eq!(skipped[1].yaml_path(), Some("spec.containers[1].image"));
+    assert!(skipped.iter().all(|item| item.document_index() == Some(0)));
+    assert_eq!(skipped[0].current_value(), Some("example/a:1.0.0"));
+    assert_eq!(skipped[2].current_value(), Some("example/b:1.0.0"));
+}
+
+#[test]
+fn mixed_plans_keep_target_order_counts_and_complete_progress() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    for (name, text) in [
+        (
+            "a.yaml",
+            "kind: Pod\nmetadata: {name: pod}\nspec:\n  containers:\n  - {name: app, image: 'example/app:1.0.0'}\n  - {name: current, image: 'example/current:2.0.0'}\n  - {name: missing, image: 'example/missing:1.0.0'}\n",
+        ),
+        (
+            "b.yaml",
+            "kind: HelmRelease\nmetadata: {name: release}\nspec:\n  chart:\n    spec:\n      chart: demo\n      version: 1.0.0\n      sourceRef: {kind: HelmRepository, name: shared}\n  values: {image: 'example/values:1.0.0'}\n",
+        ),
+        (
+            "c.yaml",
+            "kind: HelmRelease\nmetadata: {name: incomplete}\nspec: {chart: {spec: {version: 7.0.0}}}\n",
+        ),
+        (
+            "d.yaml",
+            "kind: Kustomization\nresources: ['https://example.org/manifests/v1.0.0/install.yaml']\n",
+        ),
+        (
+            "source.yaml",
+            "kind: HelmRepository\nmetadata: {name: shared}\nspec: {url: 'https://charts.example.org'}\n",
+        ),
+    ] {
+        fs::write(temp.path().join(name), text).expect("write manifest");
+    }
+    let inventory = scan_repo(temp.path()).expect("scan");
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("shared".into(), "demo".into()),
+        "2.0.0".into(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::from([
+        ("example/app:1.0.0".into(), "example/app:2.0.0".into()),
+        (
+            "example/current:2.0.0".into(),
+            "example/current:2.0.0".into(),
+        ),
+        ("example/values:1.0.0".into(), "example/values:2.0.0".into()),
+    ]));
+    let run = UpdateRun::new(&charts, &images);
+    let mut progress = Vec::new();
+    let outcome = run
+        .execute(
+            &inventory,
+            UpdateRunMode::PlanOnly,
+            &mut |_| unreachable!(),
+            Some(&mut |event| {
+                progress.push((event.completed, event.total, inventory.relative(event.path)));
+            }),
+        )
+        .expect("plan mixed targets");
+
+    assert_eq!(outcome.plan().checked_count(), 4);
+    assert_eq!(
+        outcome
+            .plan()
+            .review()
+            .iter()
+            .map(|item| (
+                inventory.relative(item.path()),
+                item.yaml_path().to_string(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("a.yaml".into(), "spec.containers[0].image".into()),
+            ("b.yaml".into(), "spec.chart.spec.version".into()),
+            ("b.yaml".into(), "spec.values.image".into()),
+        ]
+    );
+    assert_eq!(
+        outcome
+            .plan()
+            .skipped()
+            .iter()
+            .map(|item| (
+                inventory.relative(item.path.as_deref().expect("target path")),
+                item.yaml_path().expect("target field"),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("c.yaml".into(), "spec.chart.spec.version"),
+            ("a.yaml".into(), "spec.containers[2].image"),
+            ("d.yaml".into(), "resources[0]"),
+        ]
+    );
+    assert_eq!(
+        progress
+            .iter()
+            .map(|(completed, total, _)| (*completed, *total))
+            .collect::<Vec<_>>(),
+        vec![(1, 7), (2, 7), (3, 7), (4, 7), (5, 7), (6, 7), (7, 7)]
+    );
+    let mut progress_paths = progress
+        .into_iter()
+        .map(|(_, _, path)| path)
+        .collect::<Vec<_>>();
+    progress_paths.sort();
+    assert_eq!(
+        progress_paths,
+        [
+            "a.yaml", "a.yaml", "a.yaml", "b.yaml", "b.yaml", "c.yaml", "d.yaml"
+        ]
+    );
+
+    let without_progress = run
+        .execute(
+            &inventory,
+            UpdateRunMode::PlanOnly,
+            &mut |_| unreachable!(),
+            None,
+        )
+        .expect("plan without progress");
+    assert_eq!(outcome.plan().skipped(), without_progress.plan().skipped());
+    assert_eq!(
+        outcome
+            .plan()
+            .review()
+            .iter()
+            .map(UpdateReview::identity)
+            .collect::<Vec<_>>(),
+        without_progress
+            .plan()
+            .review()
+            .iter()
+            .map(UpdateReview::identity)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

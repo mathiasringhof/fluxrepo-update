@@ -12,8 +12,7 @@ use std::time::Duration;
 
 use crate::update_run::implementation::{
     PlanOptions, PlannedChartUpdate, PlannedImageUpdate, PlannedUpdate, SkippedUpdate,
-    UpdateReport, apply_updates, plan_updates, plan_updates_with_options,
-    plan_updates_with_progress,
+    UpdateReport, apply_updates, plan_updates,
 };
 use common::{ResponseSpec, TestHttpServer, copy_fixture, write_file};
 use fluxrepo_update::models::{
@@ -41,7 +40,13 @@ fn plans_and_applies_chart_and_deployment_updates() {
         ("alpine:3.22".to_string(), "alpine:3.22.1".to_string()),
     ]));
 
-    let report = plan_updates(&inventory, &chart_resolver, &image_resolver);
+    let report = plan_updates(
+        &inventory,
+        &chart_resolver,
+        &image_resolver,
+        PlanOptions::default(),
+        None,
+    );
 
     assert!(report.planned.iter().any(|item| {
         item.path().strip_prefix(&repo_root).expect("relative path")
@@ -101,6 +106,8 @@ fn changes_only_manifest_local_chart_versions() {
         &inventory,
         &chart_resolver,
         &StaticImageVersionResolver::new(HashMap::new()),
+        PlanOptions::default(),
+        None,
     );
 
     let planned_paths = report
@@ -150,26 +157,25 @@ fn progress_reports_each_resolved_target() {
         "12.1.0".to_string(),
     )]));
     let image_resolver = StaticImageVersionResolver::new(HashMap::new());
-    let seen = std::sync::Mutex::new(Vec::new());
+    let mut seen = Vec::new();
 
-    let _report = plan_updates_with_progress(
+    let _report = plan_updates(
         &inventory,
         &chart_resolver,
         &image_resolver,
         PlanOptions { max_workers: 1 },
-        &|current, total, target_path| {
-            seen.lock().expect("progress lock").push((
-                current,
-                total,
-                target_path
+        Some(&mut |event| {
+            seen.push((
+                event.completed,
+                event.total,
+                event
+                    .path
                     .strip_prefix(&repo_root)
                     .expect("relative path")
                     .to_path_buf(),
             ));
-        },
+        }),
     );
-
-    let seen = seen.into_inner().expect("progress lock");
     let total_targets = inventory.declaration_count();
     assert_eq!(seen.len(), total_targets);
     assert_eq!(seen.first().map(|event| event.0), Some(1));
@@ -251,6 +257,8 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
                 "example/service:1.0.0".to_string(),
             ),
         ])),
+        PlanOptions::default(),
+        None,
     );
 
     assert!(report.planned.is_empty());
@@ -297,6 +305,8 @@ fn planning_reports_manifest_local_chart_versions_without_identity_as_unresolved
         &inventory,
         &StaticVersionResolver::new(HashMap::new()),
         &StaticImageVersionResolver::new(HashMap::new()),
+        PlanOptions::default(),
+        None,
     );
     let payload = crate::cli::plan_payload(&report);
 
@@ -352,6 +362,8 @@ fn update_report_serializes_retryable_chart_request_skip_with_source_url() {
         &inventory,
         &RepositoryChartResolver::default(),
         &StaticImageVersionResolver::new(HashMap::new()),
+        PlanOptions::default(),
+        None,
     );
     let payload = crate::cli::plan_payload(&report);
 
@@ -381,6 +393,8 @@ fn update_report_serializes_permanent_image_skip_codes() {
         &inventory,
         &StaticVersionResolver::new(HashMap::new()),
         &fluxrepo_update::resolvers::RegistryImageResolver::default(),
+        PlanOptions::default(),
+        None,
     );
     let payload = crate::cli::plan_payload(&report);
     let skipped = payload["skipped"].as_array().expect("skipped array");
@@ -460,6 +474,8 @@ fn resolves_multiple_image_bindings_concurrently() {
         &inventory,
         &StaticVersionResolver::new(HashMap::new()),
         &resolver,
+        PlanOptions::default(),
+        None,
     );
 
     assert_eq!(report.planned.len(), 4);
@@ -506,11 +522,12 @@ fn planning_options_can_force_sequential_resolution() {
         max_active_calls: AtomicUsize::new(0),
     };
 
-    let report = plan_updates_with_options(
+    let report = plan_updates(
         &inventory,
         &StaticVersionResolver::new(HashMap::new()),
         &resolver,
         PlanOptions { max_workers: 1 },
+        None,
     );
 
     assert_eq!(report.planned.len(), 3);
@@ -531,17 +548,19 @@ fn sequential_and_concurrent_plans_have_identical_order_ids_and_reasons() {
     ]));
     let chart_resolver = StaticVersionResolver::new(HashMap::new());
 
-    let sequential = plan_updates_with_options(
+    let sequential = plan_updates(
         &inventory,
         &chart_resolver,
         &resolver,
         PlanOptions { max_workers: 1 },
+        None,
     );
-    let concurrent = plan_updates_with_options(
+    let concurrent = plan_updates(
         &inventory,
         &chart_resolver,
         &resolver,
         PlanOptions { max_workers: 4 },
+        None,
     );
 
     assert_eq!(
@@ -598,6 +617,8 @@ fn preserves_input_order_for_skipped_image_bindings() {
         &inventory,
         &StaticVersionResolver::new(HashMap::new()),
         &DelayedImageResolver,
+        PlanOptions::default(),
+        None,
     );
 
     assert_eq!(
@@ -1175,6 +1196,8 @@ fn apply_updates_rejects_changed_chart_and_source_identity() {
                 "2.0.0".into(),
             )])),
             &StaticImageVersionResolver::new(HashMap::new()),
+            PlanOptions::default(),
+            None,
         );
         assert_eq!(report.planned.len(), 1);
         let changed = original.replace(old, new);
@@ -1192,6 +1215,8 @@ fn plan_test_images(root: &Path, current: &str, latest: &str) -> UpdateReport {
             current.to_string(),
             latest.to_string(),
         )])),
+        PlanOptions::default(),
+        None,
     )
 }
 
@@ -1210,10 +1235,22 @@ fn selection_ids_reject_changed_chart_source_identity() {
             "2.0.0".into(),
         )]));
         let empty = StaticImageVersionResolver::new(HashMap::new());
-        let before = plan_updates(&scan_repo(temp.path()).expect("scan"), &resolver, &empty);
+        let before = plan_updates(
+            &scan_repo(temp.path()).expect("scan"),
+            &resolver,
+            &empty,
+            PlanOptions::default(),
+            None,
+        );
         assert_eq!(before.planned.len(), 1);
         write_file(&path, &original.replace(old, new));
-        let after = plan_updates(&scan_repo(temp.path()).expect("rescan"), &resolver, &empty);
+        let after = plan_updates(
+            &scan_repo(temp.path()).expect("rescan"),
+            &resolver,
+            &empty,
+            PlanOptions::default(),
+            None,
+        );
         assert_eq!(after.planned.len(), 1);
         assert_ne!(
             before.planned[0].selection_id(temp.path()),
@@ -1294,8 +1331,20 @@ fn selection_ids_are_stable_across_repository_relocation_and_mapping_order() {
         "2.0.0".into(),
     )]));
     let empty = StaticImageVersionResolver::new(HashMap::new());
-    let before = plan_updates(&scan_repo(first.path()).expect("scan"), &resolver, &empty);
-    let after = plan_updates(&scan_repo(second.path()).expect("scan"), &resolver, &empty);
+    let before = plan_updates(
+        &scan_repo(first.path()).expect("scan"),
+        &resolver,
+        &empty,
+        PlanOptions::default(),
+        None,
+    );
+    let after = plan_updates(
+        &scan_repo(second.path()).expect("scan"),
+        &resolver,
+        &empty,
+        PlanOptions::default(),
+        None,
+    );
     assert_eq!(before.planned.len(), 1);
     assert_eq!(after.planned.len(), 1);
     assert_eq!(
@@ -1335,6 +1384,8 @@ fn planning_rejects_explicit_chart_source_namespace_mismatches() {
                 "2.0.0".into(),
             )])),
             &StaticImageVersionResolver::new(HashMap::new()),
+            PlanOptions::default(),
+            None,
         );
         assert!(
             report.planned.is_empty(),
@@ -1380,6 +1431,8 @@ fn planning_accepts_matching_cross_namespace_and_unspecified_chart_sources() {
                 "2.0.0".into(),
             )])),
             &StaticImageVersionResolver::new(HashMap::new()),
+            PlanOptions::default(),
+            None,
         );
         assert_eq!(report.planned.len(), 1);
         assert!(report.skipped.is_empty());

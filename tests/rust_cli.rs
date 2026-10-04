@@ -685,6 +685,33 @@ fn update_helm_write_requires_non_interactive() {
 }
 
 #[test]
+fn invalid_update_modes_are_reported_before_accessing_the_repository() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let missing = temp.path().join("missing");
+    for (flags, required) in [
+        (vec!["--write"], "--non-interactive"),
+        (vec!["--apply-id", "selected"], "--write"),
+    ] {
+        let mut args = vec![
+            "fluxrepo-update",
+            "update-helm",
+            missing.to_str().expect("repo path"),
+            "--json",
+        ];
+        args.extend(flags);
+        let (code, stdout, stderr) = run_cli(&args, "", &StaticResolverFactory::default());
+        let payload: Value = serde_json::from_str(&stderr).expect("JSON error");
+
+        assert_eq!(code, 2);
+        assert!(stdout.is_empty());
+        assert_eq!(payload["error"], "invalid_arguments");
+        assert_eq!(payload["exit_code"], 2);
+        assert!(payload["message"].as_str().unwrap().contains(required));
+        assert!(!missing.exists());
+    }
+}
+
+#[test]
 fn update_helm_json_write_requires_non_interactive_error_is_structured() {
     let (code, stdout, stderr) = run_cli(
         &[

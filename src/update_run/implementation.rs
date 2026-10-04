@@ -10,6 +10,7 @@ use rayon::prelude::*;
 use serde_json::{Value as JsonValue, json};
 use yaml_edit::{Document as EditDocument, Scalar as EditScalar, ScalarValue, YamlFile};
 
+use super::{ProgressObserver, ResolutionProgress};
 use crate::scanner::{edit_node_at_path, parse_yaml_documents, value_at_path, value_at_path_mut};
 
 use crate::models::{
@@ -347,7 +348,7 @@ pub struct SkippedUpdate {
 
 impl SkippedUpdate {
     fn unchecked_declaration(declaration: &UncheckedVersionDeclaration) -> Self {
-        let mut skipped = Self::with_reason(
+        Self::with_reason(
             Some(declaration.path.clone()),
             SkipReason::new(
                 &declaration.reason,
@@ -356,16 +357,6 @@ impl SkippedUpdate {
                 None,
             ),
         )
-        .with_target_identity(
-            format!(
-                "VersionDeclaration:{}:{}:{}",
-                declaration.document_index, declaration.yaml_path, declaration.current_value
-            ),
-            &declaration.yaml_path,
-        );
-        skipped.current_value = Some(declaration.current_value.clone());
-        skipped.document_index = Some(declaration.document_index);
-        skipped
     }
 
     pub fn new(path: Option<PathBuf>, reason: impl Into<String>) -> Self {
@@ -401,25 +392,6 @@ impl SkippedUpdate {
                 None,
             ),
         )
-        .with_target_identity(
-            format!(
-                "HelmRelease:{}:{}:{}",
-                target.document_index,
-                target.resource_id.name,
-                target.current_version.as_deref().unwrap_or_default()
-            ),
-            "spec.chart.spec.version",
-        )
-    }
-
-    fn from_image_resolution_error(target: &ImageBinding, error: anyhow::Error) -> Self {
-        Self::from_resolution_error(Some(target.path.clone()), error).with_target_identity(
-            format!(
-                "ImageBinding:{}:{}:{}:{}",
-                target.document_index, target.resource_id.name, target.yaml_path, target.image
-            ),
-            &target.yaml_path,
-        )
     }
 
     fn unsupported_image_schema(target: &ImageBinding) -> Self {
@@ -432,31 +404,6 @@ impl SkippedUpdate {
                 None,
             ),
         )
-        .with_target_identity(
-            format!(
-                "ImageBinding:{}:{}:{}:{}",
-                target.document_index, target.resource_id.name, target.yaml_path, target.image
-            ),
-            &target.yaml_path,
-        )
-    }
-
-    fn from_chart_resolution_error(target: &HelmReleaseTarget, error: anyhow::Error) -> Self {
-        Self::from_resolution_error(Some(target.path.clone()), error).with_target_identity(
-            format!(
-                "HelmRelease:{}:{}:{}",
-                target.document_index,
-                target.resource_id.name,
-                target.current_version.as_deref().unwrap_or_default()
-            ),
-            "spec.chart.spec.version",
-        )
-    }
-
-    fn with_target_identity(mut self, identity_suffix: String, yaml_path: &str) -> Self {
-        self.identity_suffix = Some(identity_suffix);
-        self.yaml_path = Some(yaml_path.to_string());
-        self
     }
 
     fn with_reason(path: Option<PathBuf>, reason: SkipReason) -> Self {
@@ -614,8 +561,6 @@ pub struct PlanOptions {
     pub max_workers: usize,
 }
 
-pub type ProgressCallback<'a> = dyn Fn(usize, usize, &Path) + Sync + 'a;
-
 impl Default for PlanOptions {
     fn default() -> Self {
         Self { max_workers: 8 }
@@ -626,67 +571,23 @@ pub fn plan_updates(
     inventory: &Inventory,
     chart_resolver: &(dyn ChartVersionResolver + Sync),
     image_resolver: &(dyn ImageVersionResolver + Sync),
-) -> UpdateReport {
-    plan_updates_with_options(
-        inventory,
-        chart_resolver,
-        image_resolver,
-        PlanOptions::default(),
-    )
-}
-
-pub fn plan_updates_with_options(
-    inventory: &Inventory,
-    chart_resolver: &(dyn ChartVersionResolver + Sync),
-    image_resolver: &(dyn ImageVersionResolver + Sync),
     options: PlanOptions,
+    progress: Option<&mut ProgressObserver<'_>>,
 ) -> UpdateReport {
-    plan_updates_with_optional_progress(inventory, chart_resolver, image_resolver, options, None)
-}
-
-pub fn plan_updates_with_progress(
-    inventory: &Inventory,
-    chart_resolver: &(dyn ChartVersionResolver + Sync),
-    image_resolver: &(dyn ImageVersionResolver + Sync),
-    options: PlanOptions,
-    progress_callback: &ProgressCallback<'_>,
-) -> UpdateReport {
-    plan_updates_with_optional_progress(
-        inventory,
-        chart_resolver,
-        image_resolver,
-        options,
-        Some(progress_callback),
-    )
-}
-
-fn plan_updates_with_optional_progress(
-    inventory: &Inventory,
-    chart_resolver: &(dyn ChartVersionResolver + Sync),
-    image_resolver: &(dyn ImageVersionResolver + Sync),
-    options: PlanOptions,
-    progress_callback: Option<&ProgressCallback<'_>>,
-) -> UpdateReport {
-    let mut indexed_outcomes = resolve_targets(
-        inventory,
-        chart_resolver,
-        image_resolver,
-        options,
-        progress_callback,
-    );
-    indexed_outcomes.sort_by_key(|(index, _)| *index);
-    let checked_count = indexed_outcomes
-        .iter()
-        .filter(|(_, outcome)| !matches!(outcome, ResolutionOutcome::Skipped(_)))
-        .count();
-
-    let mut planned = indexed_outcomes
-        .iter()
-        .filter_map(|(_, outcome)| match outcome {
-            ResolutionOutcome::Planned(update) => Some(update.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let outcomes = resolve_targets(inventory, chart_resolver, image_resolver, options, progress);
+    let mut planned = Vec::new();
+    let mut skipped = Vec::new();
+    let mut checked_count = 0;
+    for outcome in outcomes {
+        match outcome {
+            ResolutionOutcome::Planned(update) => {
+                planned.push(update);
+                checked_count += 1;
+            }
+            ResolutionOutcome::Noop => checked_count += 1,
+            ResolutionOutcome::Skipped(reason) => skipped.push(reason),
+        }
+    }
     planned.sort_by_key(|item| {
         (
             item.path().to_path_buf(),
@@ -697,14 +598,6 @@ fn plan_updates_with_optional_progress(
             },
         )
     });
-    let skipped = indexed_outcomes
-        .into_iter()
-        .filter_map(|(_, outcome)| match outcome {
-            ResolutionOutcome::Skipped(reason) => Some(reason),
-            _ => None,
-        })
-        .collect();
-
     UpdateReport {
         planned,
         skipped,
@@ -713,18 +606,18 @@ fn plan_updates_with_optional_progress(
 }
 
 enum ResolutionTask<'a> {
-    Chart(usize, &'a HelmReleaseTarget),
-    UnresolvedChart(usize, &'a HelmReleaseTarget),
-    Image(usize, &'a ImageBinding),
-    Unchecked(usize, &'a UncheckedVersionDeclaration),
+    Chart(&'a HelmReleaseTarget),
+    UnresolvedChart(&'a HelmReleaseTarget),
+    Image(&'a ImageBinding),
+    Unchecked(&'a UncheckedVersionDeclaration),
 }
 
 impl ResolutionTask<'_> {
     fn path(&self) -> &Path {
         match self {
-            Self::Chart(_, target) | Self::UnresolvedChart(_, target) => &target.path,
-            Self::Image(_, target) => &target.path,
-            Self::Unchecked(_, declaration) => &declaration.path,
+            Self::Chart(target) | Self::UnresolvedChart(target) => &target.path,
+            Self::Image(target) => &target.path,
+            Self::Unchecked(declaration) => &declaration.path,
         }
     }
 }
@@ -740,88 +633,56 @@ fn resolve_targets(
     chart_resolver: &(dyn ChartVersionResolver + Sync),
     image_resolver: &(dyn ImageVersionResolver + Sync),
     options: PlanOptions,
-    progress_callback: Option<&ProgressCallback<'_>>,
-) -> Vec<(usize, ResolutionOutcome)> {
-    let chart_count = inventory.chart_targets.len();
-    let unresolved_chart_count = inventory.unresolved_chart_targets.len();
+    progress: Option<&mut ProgressObserver<'_>>,
+) -> Vec<ResolutionOutcome> {
     let tasks = inventory
         .chart_targets
         .iter()
-        .enumerate()
-        .map(|(index, target)| ResolutionTask::Chart(index, target))
+        .map(ResolutionTask::Chart)
         .chain(
             inventory
                 .unresolved_chart_targets
                 .iter()
-                .enumerate()
-                .map(|(index, target)| {
-                    ResolutionTask::UnresolvedChart(chart_count + index, target)
-                }),
+                .map(ResolutionTask::UnresolvedChart),
         )
-        .chain(
-            inventory
-                .image_bindings
-                .iter()
-                .enumerate()
-                .map(|(index, target)| {
-                    ResolutionTask::Image(chart_count + unresolved_chart_count + index, target)
-                }),
-        )
+        .chain(inventory.image_bindings.iter().map(ResolutionTask::Image))
         .chain(
             inventory
                 .unchecked_version_declarations
                 .iter()
-                .enumerate()
-                .map(|(index, declaration)| {
-                    ResolutionTask::Unchecked(
-                        chart_count
-                            + unresolved_chart_count
-                            + inventory.image_bindings.len()
-                            + index,
-                        declaration,
-                    )
-                }),
+                .map(ResolutionTask::Unchecked),
         )
         .collect::<Vec<_>>();
     if tasks.is_empty() {
         return Vec::new();
     }
 
+    let progress = progress.map(|observer| Mutex::new((observer, 0)));
+    let resolve = |task: &ResolutionTask<'_>| {
+        let outcome = resolve_task(inventory, task, chart_resolver, image_resolver);
+        if let Some(progress) = &progress {
+            let mut progress = progress.lock().expect("progress observer lock");
+            progress.1 += 1;
+            let completed = progress.1;
+            (progress.0)(ResolutionProgress {
+                completed,
+                total: tasks.len(),
+                path: task.path(),
+            });
+        }
+        outcome
+    };
     let worker_count = options.max_workers.max(1).min(tasks.len());
     if worker_count == 1 {
-        return tasks
-            .iter()
-            .enumerate()
-            .map(|(completed, task)| {
-                let outcome = resolve_task(inventory, task, chart_resolver, image_resolver);
-                if let Some(callback) = progress_callback {
-                    callback(completed + 1, tasks.len(), task.path());
-                }
-                outcome
-            })
-            .collect();
+        return tasks.iter().map(resolve).collect();
     }
-
-    let completed_tasks = Mutex::new(0usize);
     let pool = ThreadPoolBuilder::new()
         .num_threads(worker_count)
         .build()
         .expect("rayon thread pool");
 
-    pool.install(|| {
-        tasks
-            .par_iter()
-            .map(|task| {
-                let outcome = resolve_task(inventory, task, chart_resolver, image_resolver);
-                if let Some(callback) = progress_callback {
-                    let mut completed = completed_tasks.lock().expect("progress lock");
-                    *completed += 1;
-                    callback(*completed, tasks.len(), task.path());
-                }
-                outcome
-            })
-            .collect()
-    })
+    // Collecting an indexed parallel iterator preserves task order.
+    pool.install(|| tasks.par_iter().map(resolve).collect())
 }
 
 fn resolve_task(
@@ -829,35 +690,52 @@ fn resolve_task(
     task: &ResolutionTask<'_>,
     chart_resolver: &dyn ChartVersionResolver,
     image_resolver: &dyn ImageVersionResolver,
-) -> (usize, ResolutionOutcome) {
-    let (index, mut outcome) = match task {
-        ResolutionTask::Chart(index, target) => (
-            *index,
-            resolve_chart_target(inventory, target, chart_resolver),
-        ),
-        ResolutionTask::UnresolvedChart(index, target) => (
-            *index,
-            ResolutionOutcome::Skipped(SkippedUpdate::unresolved_chart(target)),
-        ),
-        ResolutionTask::Image(index, target) => (
-            *index,
-            resolve_image_binding(inventory, target, image_resolver),
-        ),
-        ResolutionTask::Unchecked(index, declaration) => (
-            *index,
-            ResolutionOutcome::Skipped(SkippedUpdate::unchecked_declaration(declaration)),
-        ),
+) -> ResolutionOutcome {
+    let mut outcome = match task {
+        ResolutionTask::Chart(target) => resolve_chart_target(inventory, target, chart_resolver),
+        ResolutionTask::UnresolvedChart(target) => {
+            ResolutionOutcome::Skipped(SkippedUpdate::unresolved_chart(target))
+        }
+        ResolutionTask::Image(target) => resolve_image_binding(inventory, target, image_resolver),
+        ResolutionTask::Unchecked(declaration) => {
+            ResolutionOutcome::Skipped(SkippedUpdate::unchecked_declaration(declaration))
+        }
     };
     if let ResolutionOutcome::Skipped(skipped) = &mut outcome {
-        let (document_index, yaml_path) = match task {
-            ResolutionTask::Chart(_, target) | ResolutionTask::UnresolvedChart(_, target) => {
-                (target.document_index, "spec.chart.spec.version")
-            }
-            ResolutionTask::Image(_, target) => (target.document_index, target.yaml_path.as_str()),
-            ResolutionTask::Unchecked(_, declaration) => {
-                (declaration.document_index, declaration.yaml_path.as_str())
+        let (document_index, yaml_path, identity_suffix) = match task {
+            ResolutionTask::Chart(target) | ResolutionTask::UnresolvedChart(target) => (
+                target.document_index,
+                "spec.chart.spec.version",
+                format!(
+                    "HelmRelease:{}:{}:{}",
+                    target.document_index,
+                    target.resource_id.name,
+                    target.current_version.as_deref().unwrap_or_default()
+                ),
+            ),
+            ResolutionTask::Image(target) => (
+                target.document_index,
+                target.yaml_path.as_str(),
+                format!(
+                    "ImageBinding:{}:{}:{}:{}",
+                    target.document_index, target.resource_id.name, target.yaml_path, target.image
+                ),
+            ),
+            ResolutionTask::Unchecked(declaration) => {
+                skipped.current_value = Some(declaration.current_value.clone());
+                (
+                    declaration.document_index,
+                    declaration.yaml_path.as_str(),
+                    format!(
+                        "VersionDeclaration:{}:{}:{}",
+                        declaration.document_index,
+                        declaration.yaml_path,
+                        declaration.current_value
+                    ),
+                )
             }
         };
+        skipped.identity_suffix = Some(identity_suffix);
         skipped.document_index = Some(document_index);
         skipped.yaml_path = Some(yaml_path.into());
         skipped.current_value = inventory
@@ -868,7 +746,7 @@ fn resolve_task(
             .map(str::to_string)
             .or_else(|| skipped.current_value.clone());
     }
-    (index, outcome)
+    outcome
 }
 
 fn resolve_chart_target(
@@ -878,43 +756,24 @@ fn resolve_chart_target(
 ) -> ResolutionOutcome {
     let repo_name = target.repo_name.as_deref().unwrap_or_default();
     if let Some(sources) = inventory.ambiguous_repositories.get(repo_name) {
-        return ResolutionOutcome::Skipped(
-            SkippedUpdate::with_reason(
-                Some(target.path.clone()),
-                SkipReason::new(
-                    format!(
-                        "ambiguous HelmRepository {repo_name}: {} manifests share this name; inspect inventory --json for source locations",
-                        sources.len()
-                    ),
-                    SkipReasonCode::AmbiguousHelmRepository,
-                    false,
-                    None,
-                ),
-            )
-            .with_target_identity(
+        return ResolutionOutcome::Skipped(SkippedUpdate::with_reason(
+            Some(target.path.clone()),
+            SkipReason::new(
                 format!(
-                    "HelmRelease:{}:{}:{}",
-                    target.document_index,
-                    target.resource_id.name,
-                    target.current_version.as_deref().unwrap_or_default()
+                    "ambiguous HelmRepository {repo_name}: {} manifests share this name; inspect inventory --json for source locations",
+                    sources.len()
                 ),
-                "spec.chart.spec.version",
+                SkipReasonCode::AmbiguousHelmRepository,
+                false,
+                None,
             ),
-        );
+        ));
     }
     let Some(repository) = inventory.repositories.get(repo_name) else {
-        return ResolutionOutcome::Skipped(
-            SkippedUpdate::missing_helm_repository(Some(target.path.clone()), repo_name)
-                .with_target_identity(
-                    format!(
-                        "HelmRelease:{}:{}:{}",
-                        target.document_index,
-                        target.resource_id.name,
-                        target.current_version.as_deref().unwrap_or_default()
-                    ),
-                    "spec.chart.spec.version",
-                ),
-        );
+        return ResolutionOutcome::Skipped(SkippedUpdate::missing_helm_repository(
+            Some(target.path.clone()),
+            repo_name,
+        ));
     };
 
     let expected_namespace = inventory
@@ -926,20 +785,17 @@ fn resolve_chart_target(
     if let (Some(expected), Some(found)) = (expected_namespace, repository.namespace.as_deref())
         && expected != found
     {
-        return ResolutionOutcome::Skipped(
-            SkippedUpdate::with_reason(
-                Some(target.path.clone()),
-                SkipReason::new(
-                    format!("HelmRepository namespace mismatch: expected {expected}/{repo_name}, found {found}/{repo_name}"),
-                    SkipReasonCode::MissingHelmRepository,
-                    false,
-                    None,
+        return ResolutionOutcome::Skipped(SkippedUpdate::with_reason(
+            Some(target.path.clone()),
+            SkipReason::new(
+                format!(
+                    "HelmRepository namespace mismatch: expected {expected}/{repo_name}, found {found}/{repo_name}"
                 ),
-            ).with_target_identity(
-                format!("HelmRelease:{}:{}:{}", target.document_index, target.resource_id.name, target.current_version.as_deref().unwrap_or_default()),
-                "spec.chart.spec.version",
+                SkipReasonCode::MissingHelmRepository,
+                false,
+                None,
             ),
-        );
+        ));
     }
 
     let latest_version = match resolver.resolve(
@@ -949,8 +805,9 @@ fn resolve_chart_target(
     ) {
         Ok(version) => version,
         Err(error) => {
-            return ResolutionOutcome::Skipped(SkippedUpdate::from_chart_resolution_error(
-                target, error,
+            return ResolutionOutcome::Skipped(SkippedUpdate::from_resolution_error(
+                Some(target.path.clone()),
+                error,
             ));
         }
     };
@@ -1009,8 +866,9 @@ fn resolve_image_binding(
     let latest_image = match resolver.resolve(&target.image) {
         Ok(image) => image,
         Err(error) => {
-            return ResolutionOutcome::Skipped(SkippedUpdate::from_image_resolution_error(
-                target, error,
+            return ResolutionOutcome::Skipped(SkippedUpdate::from_resolution_error(
+                Some(target.path.clone()),
+                error,
             ));
         }
     };

@@ -54,8 +54,13 @@ impl<Key: Eq + Hash, Value> MetadataCache<Key, Value> {
 
 static AUTH_PAIR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"([A-Za-z]+)="([^"]*)""#).expect("auth regex"));
-static LINK_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"<([^>]+)>\s*;\s*rel="next""#).expect("link regex"));
+static LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"<([^>]*)>((?:[^",<]|"(?:\\.|[^"\\])*")*)"#).expect("link regex")
+});
+static LINK_PARAM_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#";\s*([^\s=;]+)\s*(?:=\s*(?:"((?:\\.|[^"\\])*)"|([^;\s]+)))?"#)
+        .expect("link parameter regex")
+});
 static DATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{8}$").expect("date regex"));
 static PARTS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)").expect("parts regex"));
 static COMMIT_TAG_RE: LazyLock<Regex> =
@@ -891,20 +896,23 @@ fn registry_scheme(registry: &str) -> &'static str {
 }
 
 pub fn parse_next_link(link_header: Option<&str>, current_url: &str) -> Option<String> {
-    let link_header = link_header?;
-    let next_url = LINK_RE.captures(link_header)?.get(1)?.as_str();
-    if next_url.starts_with("http://") || next_url.starts_with("https://") {
-        return Some(next_url.to_string());
-    }
-
-    let base = Url::parse(current_url).ok()?;
-    if next_url.starts_with('/') {
-        return base.join(next_url).ok().map(|url| url.to_string());
-    }
-    if next_url.contains('?') && !next_url.starts_with('.') {
-        return base.join(next_url).ok().map(|url| url.to_string());
-    }
-    base.join(next_url).ok().map(|url| url.to_string())
+    let next = LINK_RE.captures_iter(link_header?).find(|link| {
+        LINK_PARAM_RE
+            .captures_iter(&link[2])
+            .find(|parameter| parameter[1].eq_ignore_ascii_case("rel"))
+            .and_then(|parameter| parameter.get(2).or_else(|| parameter.get(3)))
+            .is_some_and(|relations| {
+                relations
+                    .as_str()
+                    .split_ascii_whitespace()
+                    .any(|relation| relation.eq_ignore_ascii_case("next"))
+            })
+    })?;
+    Url::parse(current_url)
+        .ok()?
+        .join(&next[1])
+        .ok()
+        .map(|url| url.to_string())
 }
 
 pub fn select_comparable_tags<'a>(current_tag: &str, tags: &[&'a str]) -> Vec<&'a str> {

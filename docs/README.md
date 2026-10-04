@@ -1,18 +1,15 @@
-# Docs
+# Documentation
 
-These docs are organized around how you use the tool:
+Start with the [quick start](../README.md), then choose the reference for your task:
 
-- [usage.md](usage.md): command guide, interactive approval, selected updates, and recovery
-- [output.md](output.md): JSON contracts, ambiguous sources, versioned selection IDs, and skips
-- [coverage.md](coverage.md): supported versions and YAML, manifest-local limits, and safety checks
-- [kubeflux-coverage.md](kubeflux-coverage.md): repository audit, executable examples, and remaining capability TODOs
+| Task | Read |
+| --- | --- |
+| Preview, approve, or automate updates | [Usage](usage.md) |
+| Consume JSON, skips, or exit codes | [Output](output.md) |
+| Check supported schemas and safety limits | [Coverage](coverage.md) |
+| Build, test, or navigate the implementation | [Development](development.md) |
+| Investigate observed coverage gaps | [kubeflux audit](kubeflux-coverage.md) |
+| Run or extend synthetic CLI examples | [Corpus guide](../coverage/kubeflux/README.md) and [recorded results](../coverage/kubeflux/STATUS.md) |
 
-- [Synthetic corpus](../coverage/kubeflux/README.md): separate CLI examples with local fixtures
-- [Corpus status](../coverage/kubeflux/STATUS.md): per-case PASS/TODO results
-
-Suggested reading order for a new user:
-
-1. [README.md](../README.md)
-2. [usage.md](usage.md)
-3. [coverage.md](coverage.md)
-4. [output.md](output.md)
+Agents start at [AGENTS.md](../AGENTS.md); domain terminology and design decisions are
+linked through [domain guidance](agents/domain.md).

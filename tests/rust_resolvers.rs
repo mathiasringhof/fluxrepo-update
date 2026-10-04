@@ -591,6 +591,31 @@ fn registry_resolver_caches_resolved_image() {
 }
 
 #[test]
+fn registry_pagination_follows_standard_link_relations() {
+    for link in [
+        "<?last=1.0.0>; rel=next",
+        "<?last=1.0.0>; type=application/json; rel=next",
+        "<?last=1.0.0>; REL = \"alternate NEXT\"; title=\"Page 2\"",
+        "<?last=0.9.0>; rel=prev, <?last=1.0.0>; rel=next",
+        "<?last=0.9.0>; title=\"Ignore, ; rel=next\"; rel=prev, <?last=1.0.0>; rel=next",
+    ] {
+        let server = TestHttpServer::new(vec![
+            ResponseSpec::new(200, r#"{"tags":["1.0.0"]}"#).header("Link", link),
+            ResponseSpec::new(200, r#"{"tags":["2.0.0"]}"#),
+        ]);
+        let host = server.base_url.trim_start_matches("http://");
+        let latest = RegistryImageResolver::default()
+            .resolve(&format!("{host}/app:1.0.0"))
+            .expect("resolve paginated tags");
+
+        assert_eq!(latest, format!("{host}/app:2.0.0"), "Link: {link}");
+        let requests = server.finish();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].path, "/v2/app/tags/list?last=1.0.0");
+    }
+}
+
+#[test]
 fn permanent_http_errors_are_not_retryable() {
     for (status, retryable) in [
         (401, false),

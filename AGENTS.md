@@ -7,16 +7,9 @@
 - Do not edit generated Flux manifests such as `clusters/*/flux-system/gotk-*` unless explicitly requested.
 - Keep docs concise: update `README.md` and files in `docs/` when behavior or scope changes.
 
-## Agent skills
+## Read when needed
 
-### Issue tracker
-
-Issues are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Triage uses the five default canonical labels. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Domain documentation uses a single-context layout. See `docs/agents/domain.md`.
+- Code changes: [development guide](docs/development.md) for module boundaries, test seams, and local setup.
+- Architecture, terminology, or behavior changes: [domain guidance](docs/agents/domain.md) for the glossary and decisions.
+- CLI behavior or scope: [docs index](docs/README.md) routes to the authoritative user reference.
+- Issue work: [GitHub conventions](docs/agents/issue-tracker.md); triage uses [canonical labels](docs/agents/triage-labels.md).

@@ -201,7 +201,13 @@ fn collect_yaml_files(path: &Path, results: &mut Vec<PathBuf>) -> Result<()> {
 }
 
 fn is_skipped_path(path: &Path) -> bool {
-    path.to_string_lossy().contains("flux-system/gotk-")
+    path.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "flux-system")
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("gotk-"))
 }
 
 fn load_yaml_documents(path: &Path) -> Result<Vec<Value>> {
@@ -250,9 +256,7 @@ fn parse_helmrelease(
     document_index: usize,
     document: &Mapping,
 ) -> Option<HelmReleaseTarget> {
-    let metadata = mapping_field(document, "metadata")?;
-    let name = string_field(metadata, "name")?;
-    let namespace = string_field(metadata, "namespace");
+    let resource_id = parse_resource_id("HelmRelease", document)?;
     let source_kind = nested_string(document, &["spec", "chart", "spec", "sourceRef", "kind"]);
     let repo_name = if source_kind.as_deref() == Some("HelmRepository") {
         nested_string(document, &["spec", "chart", "spec", "sourceRef", "name"])
@@ -263,16 +267,21 @@ fn parse_helmrelease(
     Some(HelmReleaseTarget {
         path: path.to_path_buf(),
         document_index,
-        resource_id: ResourceId {
-            kind: "HelmRelease".to_string(),
-            name,
-            namespace,
-        },
+        resource_id,
         chart_name: nested_string(document, &["spec", "chart", "spec", "chart"]),
         current_version: nested_string(document, &["spec", "chart", "spec", "version"]),
         repo_name,
         source_path: Some(path.to_path_buf()),
         source_is_inherited: false,
+    })
+}
+
+fn parse_resource_id(kind: &str, document: &Mapping) -> Option<ResourceId> {
+    let metadata = mapping_field(document, "metadata")?;
+    Some(ResourceId {
+        kind: kind.to_string(),
+        name: string_field(metadata, "name")?,
+        namespace: string_field(metadata, "namespace"),
     })
 }
 
@@ -283,22 +292,30 @@ fn parse_workload_targets(
     document: &Mapping,
     value: &Value,
 ) -> Vec<ImageBinding> {
-    let Some(metadata) = mapping_field(document, "metadata") else {
+    let Some(resource_id) = parse_resource_id(kind, document) else {
         return Vec::new();
     };
-    let Some(name) = string_field(metadata, "name") else {
-        return Vec::new();
+    let podspec_path = match kind {
+        "Pod" => "spec",
+        "CronJob" => "spec.jobTemplate.spec.template.spec",
+        _ => "spec.template.spec",
     };
-    let namespace = string_field(metadata, "namespace");
-    let resource_id = ResourceId {
-        kind: kind.to_string(),
-        name,
-        namespace,
-    };
-
-    iter_scalar_images(value)
+    ["containers", "initContainers"]
         .into_iter()
-        .filter(|(yaml_path, _)| is_workload_image_path(kind, yaml_path))
+        .flat_map(|field| {
+            let containers_path = format!("{podspec_path}.{field}");
+            value_at_path(value, &containers_path)
+                .and_then(Value::as_sequence)
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .filter_map(move |(index, container)| {
+                    Some((
+                        format!("{containers_path}[{index}].image"),
+                        container.get("image")?.as_str()?.to_string(),
+                    ))
+                })
+        })
         .map(|(yaml_path, image)| ImageBinding {
             path: path.to_path_buf(),
             document_index,
@@ -316,23 +333,10 @@ fn parse_helm_value_targets(
     document: &Mapping,
     value: &Value,
 ) -> Vec<ImageBinding> {
-    let Some(metadata) = mapping_field(document, "metadata") else {
+    let Some(resource_id) = parse_resource_id("HelmRelease", document) else {
         return Vec::new();
     };
-    let Some(name) = string_field(metadata, "name") else {
-        return Vec::new();
-    };
-    let resource_id = ResourceId {
-        kind: "HelmRelease".to_string(),
-        name,
-        namespace: string_field(metadata, "namespace"),
-    };
-    let Some(values) = value
-        .as_mapping()
-        .and_then(|root| root.get(Value::String("spec".to_string())))
-        .and_then(Value::as_mapping)
-        .and_then(|spec| spec.get(Value::String("values".to_string())))
-    else {
+    let Some(values) = value_at_path(value, "spec.values") else {
         return Vec::new();
     };
 
@@ -356,8 +360,8 @@ fn collect_helm_value_bindings(
     path: &str,
     results: &mut Vec<(String, String, ImageBindingValueKind)>,
 ) {
-    match value {
-        Value::Mapping(mapping) => {
+    walk_yaml(value, path, None, &mut |value, path, key| {
+        if let Some(mapping) = value.as_mapping() {
             if let Some(image) = concrete_image_mapping(mapping) {
                 results.push((format!("{path}.tag"), image, ImageBindingValueKind::Tag));
             } else if let Some(image) = recognizable_unsupported_image_mapping(mapping) {
@@ -367,52 +371,49 @@ fn collect_helm_value_bindings(
                     ImageBindingValueKind::UnsupportedSchema,
                 ));
             }
-            for (key, child) in mapping {
-                let Some(key) = key.as_str() else {
-                    continue;
-                };
-                let child_path = append_yaml_key(path, key);
-                if key == "image"
-                    && let Some(image) = child.as_str()
-                {
-                    results.push((
-                        child_path.clone(),
-                        image.to_string(),
-                        ImageBindingValueKind::ImageReference,
-                    ));
-                }
-                collect_helm_value_bindings(child, &child_path, results);
-            }
         }
-        Value::Sequence(items) => {
-            for (index, child) in items.iter().enumerate() {
-                collect_helm_value_bindings(child, &format!("{path}[{index}]"), results);
-            }
+        if key == Some("image")
+            && let Some(image) = value.as_str()
+        {
+            results.push((
+                path.to_string(),
+                image.to_string(),
+                ImageBindingValueKind::ImageReference,
+            ));
         }
-        _ => {}
-    }
+    });
 }
 
 fn collect_tag_only_overrides(value: &Value, path: &str, results: &mut Vec<(String, String)>) {
+    walk_yaml(value, path, None, &mut |value, path, key| {
+        if key == Some("image")
+            && let Some(image) = value.as_mapping()
+            && string_field(image, "repository")
+                .is_none_or(|repository| repository.trim().is_empty())
+            && let Some(tag) = string_field(image, "tag")
+        {
+            results.push((format!("{path}.tag"), tag));
+        }
+    });
+}
+
+fn walk_yaml(
+    value: &Value,
+    path: &str,
+    key: Option<&str>,
+    visit: &mut impl FnMut(&Value, &str, Option<&str>),
+) {
+    visit(value, path, key);
     match value {
         Value::Mapping(mapping) => {
             for (key, child) in mapping {
                 let Some(key) = key.as_str() else { continue };
-                let child_path = append_yaml_key(path, key);
-                if key == "image"
-                    && let Some(image) = child.as_mapping()
-                    && string_field(image, "repository")
-                        .is_none_or(|repository| repository.trim().is_empty())
-                    && let Some(tag) = string_field(image, "tag")
-                {
-                    results.push((format!("{child_path}.tag"), tag));
-                }
-                collect_tag_only_overrides(child, &child_path, results);
+                walk_yaml(child, &append_yaml_key(path, key), Some(key), visit);
             }
         }
         Value::Sequence(items) => {
             for (index, child) in items.iter().enumerate() {
-                collect_tag_only_overrides(child, &format!("{path}[{index}]"), results);
+                walk_yaml(child, &format!("{path}[{index}]"), None, visit);
             }
         }
         _ => {}
@@ -480,78 +481,27 @@ fn parse_image_references(
 
 fn iter_images(value: &Value) -> Vec<(String, String)> {
     let mut results = Vec::new();
-    collect_images(value, "", &mut results);
-    results
-}
-
-fn iter_scalar_images(value: &Value) -> Vec<(String, String)> {
-    let mut results = Vec::new();
-    collect_scalar_images(value, "", &mut results);
-    results
-}
-
-fn collect_scalar_images(value: &Value, path: &str, results: &mut Vec<(String, String)>) {
-    match value {
-        Value::Mapping(mapping) => {
-            for (key, child) in mapping {
-                let Some(key_text) = key.as_str() else {
-                    continue;
-                };
-                let child_path = append_yaml_key(path, key_text);
-                if key_text == "image" {
-                    if let Some(image) = child.as_str() {
-                        results.push((child_path.clone(), image.to_string()));
-                    }
-                } else {
-                    collect_scalar_images(child, &child_path, results);
-                }
-            }
-        }
-        Value::Sequence(items) => {
-            for (index, child) in items.iter().enumerate() {
-                collect_scalar_images(child, &format!("{path}[{index}]"), results);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_images(value: &Value, path: &str, results: &mut Vec<(String, String)>) {
-    match value {
-        Value::Mapping(mapping) => {
+    walk_yaml(value, "", None, &mut |value, path, key| {
+        if let Some(mapping) = value.as_mapping() {
             if let Some(image) = concrete_image_mapping(mapping) {
                 results.push((path.to_string(), image));
-            }
-            for (key, child) in mapping {
-                let Some(key_text) = key.as_str() else {
-                    continue;
+            } else if key == Some("image")
+                && let Some(repository) = string_field(mapping, "repository")
+            {
+                let rendered = match string_field(mapping, "tag") {
+                    Some(tag) if !tag.is_empty() => format!("{repository}:{tag}"),
+                    _ => repository,
                 };
-                let child_path = append_yaml_key(path, key_text);
-
-                if key_text == "image" {
-                    if let Some(image) = child.as_str() {
-                        results.push((child_path.clone(), image.to_string()));
-                    } else if let Some(image_mapping) = child.as_mapping()
-                        && concrete_image_mapping(image_mapping).is_none()
-                        && let Some(repository) = string_field(image_mapping, "repository")
-                    {
-                        let rendered = match string_field(image_mapping, "tag") {
-                            Some(tag) if !tag.is_empty() => format!("{repository}:{tag}"),
-                            _ => repository,
-                        };
-                        results.push((child_path.clone(), rendered));
-                    }
-                }
-                collect_images(child, &child_path, results);
+                results.push((path.to_string(), rendered));
             }
         }
-        Value::Sequence(items) => {
-            for (index, child) in items.iter().enumerate() {
-                collect_images(child, &format!("{path}[{index}]"), results);
-            }
+        if key == Some("image")
+            && let Some(image) = value.as_str()
+        {
+            results.push((path.to_string(), image.to_string()));
         }
-        _ => {}
-    }
+    });
+    results
 }
 
 fn is_podspec_kind(kind: &str) -> bool {
@@ -559,26 +509,6 @@ fn is_podspec_kind(kind: &str) -> bool {
         kind,
         "Deployment" | "StatefulSet" | "DaemonSet" | "Job" | "CronJob" | "Pod"
     )
-}
-
-fn is_workload_image_path(kind: &str, yaml_path: &str) -> bool {
-    let podspec_path = match kind {
-        "Pod" => "spec",
-        "CronJob" => "spec.jobTemplate.spec.template.spec",
-        _ => "spec.template.spec",
-    };
-    ["containers", "initContainers"].into_iter().any(|field| {
-        let prefix = format!("{podspec_path}.{field}[");
-        let Some(remainder) = yaml_path.strip_prefix(&prefix) else {
-            return false;
-        };
-        let Some((index, suffix)) = remainder.split_once(']') else {
-            return false;
-        };
-        !index.is_empty()
-            && index.chars().all(|character| character.is_ascii_digit())
-            && suffix == ".image"
-    })
 }
 
 fn nested_string(document: &Mapping, path: &[&str]) -> Option<String> {
