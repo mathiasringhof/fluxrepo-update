@@ -1,7 +1,7 @@
 {
   "id": "cnpg-image-update",
   "category": "custom-resource-images",
-  "description": "A CNPG image updates within the same PostgreSQL and extension version shape.",
+  "description": "Select an extension 0.4 patch within PostgreSQL major 16; preserve unrelated Cluster API groups.",
   "audit": [
     "U3"
   ],
@@ -9,7 +9,7 @@
     "apps/production/immich/cloudnative-pg.yaml"
   ],
   "expectation": "todo",
-  "todo": "CloudNativePG imageName is visible but no registry resolution or field editing is supported.",
+  "todo": "CNPG imageName lacks resolution/editing. This proposed selection policy stays within PostgreSQL major 16 and extension 0.4; PostgreSQL patch upgrade selection is not specified here.",
   "command": "apply",
   "responses": {
     "/v2/demo/postgres/tags/list": {
@@ -17,7 +17,9 @@
         "name": "demo/postgres",
         "tags": [
           "16.9-0.4.3",
-          "16.9-0.4.4"
+          "16.9-0.4.4",
+          "16.9-0.5.0",
+          "17.1-0.4.9"
         ]
       }
     }
@@ -27,6 +29,22 @@
     "json": [
       {
         "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "database.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.imageName",
+          "current_version": "16.9-0.4.3",
+          "latest_version": "16.9-0.4.4"
+        }
+      }
+    ],
+    "invariants": [
+      {
+        "at": "/summary/discovered_count",
         "equals": 1
       }
     ]

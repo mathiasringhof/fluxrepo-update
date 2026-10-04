@@ -99,6 +99,9 @@ impl TestHttpServer {
                 let Some((mut stream, _)) = accept_until(&listener, deadline) else {
                     break;
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("set accepted test connection blocking");
                 let request = read_request(&mut stream);
                 thread_requests.lock().expect("request lock").push(request);
                 write_response(&mut stream, response);

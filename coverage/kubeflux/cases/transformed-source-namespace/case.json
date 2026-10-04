@@ -1,17 +1,20 @@
 {
   "id": "transformed-source-namespace",
   "category": "kustomize-source-identity",
-  "description": "A namespace transform makes a chart source match its release.",
+  "description": "Equivalent sources transformed in two environments resolve both releases while a transformed conflicting source remains unchecked.",
   "audit": [
     "U1"
   ],
   "source": [
     "apps/production/jellyfin/release.yaml",
     "apps/production/jellyfin/repository.yaml",
-    "apps/production/jellyfin/kustomization.yaml"
+    "apps/production/jellyfin/kustomization.yaml",
+    "apps/testing/jellyfin/release.yaml",
+    "apps/testing/jellyfin/repository.yaml",
+    "apps/testing/jellyfin/kustomization.yaml"
   ],
   "expectation": "todo",
-  "todo": "Raw namespaces currently prevent resolving the source transformed into the release namespace.",
+  "todo": "Namespace transformations are not applied to source identity; equivalent and genuinely conflicting transformed sources must retain separate outcomes.",
   "command": "apply",
   "responses": {
     "/charts/index.yaml": {
@@ -23,7 +26,71 @@
     "json": [
       {
         "at": "/summary/applied_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/checked_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/unchecked_count",
         "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "production/release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0",
+          "sources": [
+            {
+              "path": "production/source.yaml",
+              "document_index": 0
+            },
+            {
+              "path": "testing/source.yaml",
+              "document_index": 0
+            }
+          ]
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "testing/release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0",
+          "sources": [
+            {
+              "path": "production/source.yaml",
+              "document_index": 0
+            },
+            {
+              "path": "testing/source.yaml",
+              "document_index": 0
+            }
+          ]
+        }
+      }
+    ],
+    "invariants": [
+      {
+        "at": "/summary/discovered_count",
+        "equals": 3
+      },
+      {
+        "at": "/skipped",
+        "contains": {
+          "path": "conflict-a/release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.chart.spec.version",
+          "reason_code": "ambiguous_helm_repository",
+          "retryable": false
+        }
       }
     ]
   }

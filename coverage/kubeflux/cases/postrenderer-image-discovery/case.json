@@ -1,7 +1,7 @@
 {
   "id": "postrenderer-image-discovery",
   "category": "embedded-images",
-  "description": "An image in an inline JSON6902 patch is visible without editing the block scalar.",
+  "description": "An ordinary Helm image updates beside a precisely located unchecked JSON6902 patch image whose block scalar remains unchanged.",
   "audit": [
     "U7"
   ],
@@ -10,21 +10,56 @@
   ],
   "expectation": "todo",
   "todo": "Post-renderer block strings are not parsed for embedded workload images.",
-  "command": "inventory",
-  "responses": {},
+  "command": "apply",
+  "responses": {
+    "/v2/demo/helper/tags/list": {
+      "json": {
+        "tags": [
+          "1.0.0",
+          "2.0.0"
+        ]
+      }
+    }
+  },
   "checks": {
-    "exit_code": 0,
+    "exit_code": 20,
     "json": [
       {
-        "at": "/discovered_count",
+        "at": "/summary/discovered_count",
+        "equals": 2
+      },
+      {
+        "at": "/summary/unchecked_count",
         "equals": 1
       },
       {
-        "at": "/unchecked_version_declarations",
+        "at": "/skipped",
         "contains": {
           "path": "release.yaml",
+          "document_index": 0,
           "current_value": "example/busybox:1.36",
-          "yaml_path": "spec.postRenderers[0].kustomize.patches[0].patch"
+          "yaml_path": "spec.postRenderers[0].kustomize.patches[0].patch",
+          "embedded_yaml_path": "[0].value[0].image"
+        }
+      }
+    ],
+    "invariants": [
+      {
+        "at": "/summary/checked_count",
+        "equals": 1
+      },
+      {
+        "at": "/summary/applied_count",
+        "equals": 1
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "release.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.values.image.tag",
+          "current_version": "1.0.0",
+          "latest_version": "2.0.0"
         }
       }
     ]

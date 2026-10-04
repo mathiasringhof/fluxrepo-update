@@ -1,0 +1,5 @@
+apiVersion: database.example.test/v1
+kind: Cluster
+metadata: {name: unrelated}
+spec:
+  imageName: "{{registry}}/demo/unrelated:99.0.0"

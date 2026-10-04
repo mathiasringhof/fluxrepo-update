@@ -1,7 +1,7 @@
 {
   "id": "generated-bootstrap-excluded",
   "category": "generated-bootstrap",
-  "description": "Generated Flux bootstrap files stay excluded and byte-identical.",
+  "description": "Generated Flux bootstrap files remain byte-identical during apply, including if future inventory reports them as read-only dependencies.",
   "audit": [
     "U12"
   ],
@@ -10,20 +10,26 @@
   ],
   "expectation": "pass",
   "todo": "",
-  "command": "inventory",
+  "command": "apply",
   "responses": {},
   "checks": {
     "exit_code": 0,
     "json": [
       {
-        "at": "/discovered_count",
+        "at": "/summary/planned_count",
         "equals": 0
       },
       {
-        "at": "/skipped_paths",
-        "equals": [
-          "clusters/demo/flux-system/gotk-components.yaml"
-        ]
+        "at": "/summary/applied_count",
+        "equals": 0
+      },
+      {
+        "at": "/summary/changed_file_count",
+        "equals": 0
+      },
+      {
+        "at": "/planned",
+        "equals": []
       }
     ]
   }

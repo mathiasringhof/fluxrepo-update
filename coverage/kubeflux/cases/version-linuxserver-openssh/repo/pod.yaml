@@ -5,3 +5,7 @@ spec:
   containers:
   - name: app
     image: "{{registry}}/demo/app:version-10.3_p1-r0" # retained comment
+  - name: patch
+    image: "{{registry}}/demo/patch:version-10.3_p2-r0"
+  - name: revision
+    image: "{{registry}}/demo/revision:version-10.3_p1-r2"

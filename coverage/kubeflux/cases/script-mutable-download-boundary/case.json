@@ -1,0 +1,42 @@
+{
+  "id": "script-mutable-download-boundary",
+  "category": "executable-dependencies",
+  "description": "A latest-release schema download remains an unknown runtime dependency; discovery must neither fetch the URL nor execute its shell pipeline.",
+  "audit": [
+    "U10"
+  ],
+  "source": [
+    "scripts/validate.sh"
+  ],
+  "expectation": "todo",
+  "todo": "Mutable download URLs inside scripts are outside discovery. Report the located upstream dependency with unknown availability, without inventing a release or expanding downloaded content.",
+  "command": "inventory",
+  "responses": {},
+  "checks": {
+    "exit_code": 0,
+    "json": [
+      {
+        "at": "/discovered_count",
+        "equals": 1
+      },
+      {
+        "at": "/unchecked_version_declarations",
+        "contains": {
+          "path": "scripts/validate.sh",
+          "line_number": 2,
+          "current_value": "{{server}}/example/flux/releases/latest/download/crd-schemas.tar.gz"
+        }
+      }
+    ],
+    "invariants": [
+      {
+        "at": "/chart_targets",
+        "equals": []
+      },
+      {
+        "at": "/image_bindings",
+        "equals": []
+      }
+    ]
+  }
+}

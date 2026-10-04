@@ -37,7 +37,17 @@ class RunnerTests(unittest.TestCase):
 
     def write_case(self, program):
         (self.case / "case.json").write_text(json.dumps(self.spec))
-        self.binary.write_text("#!/usr/bin/env python3\n" + program)
+        self.binary.write_text(
+            "#!/usr/bin/env python3\nimport json\n"
+            "def emit_report(**fields):\n"
+            "    report = {'mode': 'apply', 'summary': {'discovered_count': 1, "
+            "'checked_count': 1, 'unchecked_count': 0, 'planned_count': 0, "
+            "'applied_count': 0, 'skipped_count': 0, 'changed_file_count': 0}, "
+            "'planned': [], 'skipped': []}\n"
+            "    report['summary'].update(fields.pop('summary', {}))\n"
+            "    report.update(fields)\n"
+            "    print(json.dumps(report))\n" + program
+        )
         self.binary.chmod(0o755)
 
     def test_checks_real_cli_output_and_exact_written_files(self):
@@ -46,7 +56,7 @@ class RunnerTests(unittest.TestCase):
         self.write_case(
             "import sys\nfrom pathlib import Path\n"
             "(Path(sys.argv[2]) / 'pod.yaml').write_text('image: demo:2.0.0\\n')\n"
-            "print('{\"summary\": {\"applied_count\": 1}}')\n"
+            "emit_report(summary={'applied_count': 1})\n"
             "sys.exit(20)\n"
         )
         result = run.run_case(self.case, self.binary)
@@ -58,20 +68,23 @@ class RunnerTests(unittest.TestCase):
 
     def test_known_gap_is_todo_until_the_desired_checks_pass(self):
         self.spec.update(expectation="todo", todo="U7: embedded patch images are missed")
-        self.write_case("print('{\"summary\": {\"applied_count\": 0}}')\n")
+        self.write_case("emit_report(mode='plan', summary={'applied_count': 0})\n")
         result = run.run_case(self.case, self.binary)
         self.assertEqual(result["status"], "TODO", result)
         self.assertEqual(result["todo"], self.spec["todo"])
         self.assertTrue(result["mismatches"])
         self.write_case(
-            "import sys\nprint('{\"summary\": {\"applied_count\": 1}}')\nsys.exit(20)\n"
+            "import sys\nemit_report(summary={'applied_count': 1})\nsys.exit(20)\n"
         )
         result = run.run_case(self.case, self.binary)
         self.assertEqual(result["status"], "XPASS", result)
 
     def test_runtime_and_protocol_errors_cannot_hide_as_todos(self):
         self.spec.update(expectation="todo", todo="U7: unsupported declaration")
-        for code, output in [(2, '{}'), (101, '{}'), (0, 'not JSON')]:
+        for code, output in [
+            (2, '{}'), (101, '{}'), (0, 'not JSON'), (0, '{}'),
+            (0, '{"runtime_error": {}}'),
+        ]:
             with self.subTest(code=code, output=output):
                 self.write_case(f"import sys\nprint({output!r})\nsys.exit({code})\n")
                 result = run.run_case(self.case, self.binary)
@@ -84,18 +97,31 @@ class RunnerTests(unittest.TestCase):
             "exit_code": 0,
             "json": [{"at": "/unchecked_version_declarations/0/current_value", "equals": "demo:1.0.0"}],
         }
-        self.write_case("print('{\"unchecked_version_declarations\": []}')\n")
+        self.write_case("emit_report(unchecked_version_declarations=[])\n")
         result = run.run_case(self.case, self.binary)
         self.assertEqual(result["status"], "TODO", result)
         self.assertIn("missing", result["mismatches"][0])
+
+    def test_todos_cannot_hide_regressions_in_working_invariants(self):
+        self.spec.update(expectation="todo", todo="U7: embedded image not discovered")
+        self.spec["checks"]["invariants"] = [
+            {"at": "/summary/checked_count", "equals": 1}
+        ]
+        for checked, status in [(0, "FAIL"), (1, "TODO")]:
+            with self.subTest(checked=checked):
+                self.write_case(f"emit_report(summary={{'checked_count': {checked}}})\n")
+                result = run.run_case(self.case, self.binary)
+                self.assertEqual(result["status"], status, result)
+                if status == "FAIL":
+                    self.assertTrue(any("invariant" in item for item in result["mismatches"]))
 
     def test_partial_array_checks_match_fields_on_the_same_declaration(self):
         self.spec["checks"] = {"exit_code": 0, "json": [{
             "at": "/planned", "contains": {"path": "pod.yaml", "latest_version": "2.0.0"}
         }]}
-        self.write_case("print('{\"planned\": [{\"path\": \"pod.yaml\", \"latest_version\": \"2.0.0\", \"id\": \"opaque\"}]}')\n")
+        self.write_case("emit_report(planned=[{'path': 'pod.yaml', 'latest_version': '2.0.0', 'id': 'opaque'}])\n")
         self.assertEqual(run.run_case(self.case, self.binary)["status"], "PASS")
-        self.write_case("print('{\"planned\": [{\"path\": \"pod.yaml\", \"latest_version\": \"1.0.0\"}, {\"path\": \"other.yaml\", \"latest_version\": \"2.0.0\"}]}')\n")
+        self.write_case("emit_report(planned=[{'path': 'pod.yaml', 'latest_version': '1.0.0'}, {'path': 'other.yaml', 'latest_version': '2.0.0'}])\n")
         self.assertEqual(run.run_case(self.case, self.binary)["status"], "FAIL")
 
     def test_local_responses_and_placeholders_exercise_the_http_boundary(self):
@@ -105,7 +131,7 @@ class RunnerTests(unittest.TestCase):
         self.write_case(
             "import sys, urllib.request\nfrom pathlib import Path\n"
             "origin = (Path(sys.argv[2]) / 'origin.txt').read_text()\n"
-            "print(urllib.request.urlopen(origin + '/v2/demo/app/tags/list?n=1000').read().decode())\n"
+            "emit_report(**json.loads(urllib.request.urlopen(origin + '/v2/demo/app/tags/list?n=1000').read()))\n"
         )
         result = run.run_case(self.case, self.binary)
         self.assertEqual(result["status"], "PASS", result)
@@ -113,7 +139,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_command_reports_todos_without_failing_unless_strict(self):
         self.spec.update(expectation="todo", todo="U7: unsupported declaration")
-        self.write_case("print('{\"summary\": {\"applied_count\": 0}}')\n")
+        self.write_case("emit_report(summary={'applied_count': 0})\n")
         args = [sys.executable, run.__file__, "--cases", str(self.root), "--binary", str(self.binary), "--json"]
         normal = subprocess.run(args, capture_output=True, text=True, check=False)
         self.assertEqual(normal.returncode, 0, normal.stderr)
@@ -127,7 +153,7 @@ class RunnerTests(unittest.TestCase):
         self.write_case(
             "import sys\nfrom pathlib import Path\n"
             "(Path(sys.argv[2]) / 'pod.yaml').write_text('unrelated: damaged\\n')\n"
-            "print('{\"summary\": {\"applied_count\": 0}}')\n"
+            "emit_report(summary={'applied_count': 0})\n"
         )
         result = run.run_case(self.case, self.binary)
         self.assertEqual(result["status"], "FAIL", result)
@@ -143,7 +169,7 @@ class RunnerTests(unittest.TestCase):
             self.write_case(
                 "import sys\nfrom pathlib import Path\n"
                 f"(Path(sys.argv[2]) / 'pod.yaml').write_text('image: demo:{tag}\\n')\n"
-                "print('{\"summary\": {\"applied_count\": 1}}')\nsys.exit(20)\n"
+                "emit_report(summary={'applied_count': 1})\nsys.exit(20)\n"
             )
             result = run.run_case(self.case, self.binary)
             self.assertEqual(result["status"], status, result)
@@ -159,7 +185,7 @@ class RunnerTests(unittest.TestCase):
         ]:
             with self.subTest(invalid=invalid):
                 self.spec = {**original, **invalid}
-                self.write_case("print('{\"summary\": {\"applied_count\": 1}}')\n")
+                self.write_case("emit_report(summary={'applied_count': 1})\n")
                 self.assertEqual(run.run_case(self.case, self.binary)["status"], "ERROR")
 
     def test_only_the_documented_structured_runtime_error_is_a_known_gap(self):
@@ -176,8 +202,11 @@ class RunnerTests(unittest.TestCase):
 
     def test_incomplete_check_can_require_a_nonzero_outcome_without_pinning_a_code(self):
         self.spec.update(expectation="todo", todo="U13: total resolution failure exits zero")
-        self.spec["checks"] = {"exit_code_not": 0, "json": [{"at": "/summary/checked_count", "equals": 0}]}
-        self.write_case("print('{\"summary\": {\"checked_count\": 0}}')\n")
+        self.spec["checks"] = {
+            "exit_code_not": 0, "json": [],
+            "invariants": [{"at": "/summary/checked_count", "equals": 0}],
+        }
+        self.write_case("emit_report(summary={'checked_count': 0})\n")
         result = run.run_case(self.case, self.binary)
         self.assertEqual(result["status"], "TODO", result)
         self.assertTrue(any("exit code" in item for item in result["mismatches"]))
@@ -187,7 +216,7 @@ class RunnerTests(unittest.TestCase):
         self.write_case(
             "import sys\nfrom pathlib import Path\n"
             "(Path(sys.argv[2]) / 'pod.yaml').unlink()\n"
-            "print('{\"summary\": {\"applied_count\": 0}}')\n"
+            "emit_report(summary={'applied_count': 0})\n"
         )
         result = run.run_case(self.case, self.binary)
         self.assertEqual(result["status"], "FAIL", result)
@@ -209,8 +238,7 @@ class RunnerTests(unittest.TestCase):
     def test_nonzero_completeness_outcomes_can_pass_when_they_keep_a_valid_report(self):
         self.spec.update(expectation="todo", todo="U13: total failure needs a nonzero outcome")
         self.spec["checks"] = {"exit_code_not": 0, "json": [{"at": "/summary/checked_count", "equals": 0}]}
-        report = {"mode": "plan", "summary": {"checked_count": 0}, "planned": [], "skipped": []}
-        self.write_case(f"import sys\nprint({json.dumps(report)!r})\nsys.exit(1)\n")
+        self.write_case("import sys\nemit_report(summary={'checked_count': 0})\nsys.exit(1)\n")
         result = run.run_case(self.case, self.binary)
         self.assertEqual(result["status"], "XPASS", result)
 
@@ -221,7 +249,7 @@ class RunnerTests(unittest.TestCase):
             "origin = (Path(sys.argv[2]) / 'origin.txt').read_text()\n"
             "try:\n    urllib.request.urlopen(urllib.request.Request(origin + '/upload', data=b'x'))\n"
             "except urllib.error.HTTPError:\n    pass\n"
-            "print('{\"summary\": {\"applied_count\": 1}}')\nsys.exit(20)\n"
+            "emit_report(summary={'applied_count': 1})\nsys.exit(20)\n"
         )
         result = run.run_case(self.case, self.binary)
         self.assertEqual(result["status"], "ERROR", result)
@@ -232,7 +260,7 @@ class RunnerTests(unittest.TestCase):
             "import sys\nfrom pathlib import Path\n"
             "path = Path(sys.argv[2]) / 'pod.yaml'\n"
             "path.unlink()\npath.symlink_to('copy.txt')\n"
-            "print('{\"summary\": {\"applied_count\": 1}}')\nsys.exit(20)\n"
+            "emit_report(summary={'applied_count': 1})\nsys.exit(20)\n"
         )
         result = run.run_case(self.case, self.binary)
         self.assertEqual(result["status"], "ERROR", result)

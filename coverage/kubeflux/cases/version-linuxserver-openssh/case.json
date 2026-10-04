@@ -1,7 +1,7 @@
 {
   "id": "version-linuxserver-openssh",
   "category": "version-families",
-  "description": "LinuxServer OpenSSH versions compare all numeric components while preserving the version/p/r spelling.",
+  "description": "LinuxServer OpenSSH selection compares the base version, _p component, and -r component numerically while preserving published spelling.",
   "audit": [
     "T3"
   ],
@@ -22,6 +22,24 @@
           "latest"
         ]
       }
+    },
+    "/v2/demo/patch/tags/list": {
+      "json": {
+        "tags": [
+          "version-10.3_p2-r0",
+          "version-10.3_p9-r20",
+          "version-10.3_p10-r0"
+        ]
+      }
+    },
+    "/v2/demo/revision/tags/list": {
+      "json": {
+        "tags": [
+          "version-10.3_p1-r2",
+          "version-10.3_p1-r9",
+          "version-10.3_p1-r10"
+        ]
+      }
     }
   },
   "checks": {
@@ -29,11 +47,11 @@
     "json": [
       {
         "at": "/summary/discovered_count",
-        "equals": 1
+        "equals": 3
       },
       {
         "at": "/summary/checked_count",
-        "equals": 1
+        "equals": 3
       },
       {
         "at": "/summary/unchecked_count",
@@ -41,11 +59,11 @@
       },
       {
         "at": "/summary/planned_count",
-        "equals": 1
+        "equals": 3
       },
       {
         "at": "/summary/applied_count",
-        "equals": 1
+        "equals": 3
       },
       {
         "at": "/planned",
@@ -56,6 +74,28 @@
           "current_version": "version-10.3_p1-r0",
           "latest_version": "version-10.4_p1-r0",
           "latest_image": "{{registry}}/demo/app:version-10.4_p1-r0"
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[1].image",
+          "current_version": "version-10.3_p2-r0",
+          "latest_version": "version-10.3_p10-r0",
+          "latest_image": "{{registry}}/demo/patch:version-10.3_p10-r0"
+        }
+      },
+      {
+        "at": "/planned",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[2].image",
+          "current_version": "version-10.3_p1-r2",
+          "latest_version": "version-10.3_p1-r10",
+          "latest_image": "{{registry}}/demo/revision:version-10.3_p1-r10"
         }
       }
     ]

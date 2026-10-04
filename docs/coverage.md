@@ -1,8 +1,7 @@
 # Coverage
 
-See the [kubeflux audit](kubeflux-coverage.md) for observed categories and remaining
-update/discovery gaps, and the separate [executable corpus](../coverage/kubeflux/README.md)
-for local CLI examples and [recorded outcomes](../coverage/kubeflux/STATUS.md).
+The [kubeflux audit](kubeflux-coverage.md) maps this scope to real declarations and
+executable examples of remaining gaps.
 
 `fluxrepo-update` scans user-authored `.yaml` and `.yml` manifests. Each manifest
 is interpreted independently; the tool does not render Kustomize graphs or inherit chart

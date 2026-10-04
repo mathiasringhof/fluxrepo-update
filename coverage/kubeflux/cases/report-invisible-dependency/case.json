@@ -29,11 +29,21 @@
         "equals": 2
       },
       {
-        "at": "/summary/checked_count",
+        "at": "/summary/unchecked_count",
         "equals": 1
       },
       {
-        "at": "/summary/unchecked_count",
+        "at": "/skipped",
+        "contains": {
+          "path": "pod.yaml",
+          "yaml_path": "spec.containers[0].env[0].value",
+          "current_value": "{{registry}}/demo/receiver:1.0.0"
+        }
+      }
+    ],
+    "invariants": [
+      {
+        "at": "/summary/checked_count",
         "equals": 1
       },
       {
@@ -43,14 +53,6 @@
       {
         "at": "/summary/applied_count",
         "equals": 0
-      },
-      {
-        "at": "/skipped",
-        "contains": {
-          "path": "pod.yaml",
-          "yaml_path": "spec.containers[0].env[0].value",
-          "current_value": "{{registry}}/demo/receiver:1.0.0"
-        }
       }
     ]
   }

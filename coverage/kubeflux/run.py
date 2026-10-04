@@ -164,9 +164,12 @@ def validate_case(spec, case_dir):
     exit_code = checks.get("exit_code", checks.get("exit_code_not"))
     if type(exit_code) is not int or not 0 <= exit_code <= 255:
         raise ValueError("exit code checks require an integer from 0 to 255")
-    if not isinstance(checks["json"], list) or not checks["json"]:
+    invariants = checks.get("invariants", [])
+    if not isinstance(checks["json"], list) or not isinstance(invariants, list):
+        raise ValueError("json and invariants must be lists of structured output checks")
+    if not checks["json"] and not invariants:
         raise ValueError("at least one structured output check is required")
-    for check in checks["json"]:
+    for check in checks["json"] + invariants:
         if not isinstance(check, dict):
             raise ValueError("each JSON check must be an object")
         if ("equals" in check) == ("contains" in check):
@@ -232,6 +235,43 @@ def run_case(case_dir, binary):
         return {"id": case_dir.name, "status": "ERROR", "error": str(error)}
 
 
+def validate_report(report, command):
+    if not isinstance(report, dict) or "error" in report:
+        raise ValueError("CLI did not produce a JSON report object")
+    if command == "inventory":
+        counts = report
+        count_fields = ("discovered_count",)
+        arrays = ("chart_targets", "image_bindings", "unchecked_version_declarations")
+    else:
+        if report.get("mode") not in ("plan", "apply") or not isinstance(report.get("summary"), dict):
+            raise ValueError("CLI report has an invalid mode or summary")
+        counts = report["summary"]
+        count_fields = ("discovered_count", "checked_count", "unchecked_count",
+                        "planned_count", "applied_count", "skipped_count", "changed_file_count")
+        arrays = ("planned", "skipped")
+    if any(type(counts.get(field)) is not int or counts[field] < 0 for field in count_fields):
+        raise ValueError("CLI report is missing nonnegative integer counts")
+    if any(not isinstance(report.get(field), list)
+           or any(not isinstance(item, dict) for item in report[field]) for field in arrays):
+        raise ValueError("CLI report is missing declaration arrays")
+
+
+def check_json(report, checks):
+    mismatches = []
+    for check in checks:
+        try:
+            actual = at_pointer(report, check["at"])
+        except (KeyError, IndexError, TypeError):
+            mismatches.append(f"{check['at']}: missing; expected {check.get('equals', check.get('contains'))!r}")
+            continue
+        if "equals" in check:
+            if not matches(actual, check["equals"], partial=False):
+                mismatches.append(f"{check['at']}: expected {check['equals']!r}, got {actual!r}")
+        elif not isinstance(actual, list) or not any(matches(item, check["contains"]) for item in actual):
+            mismatches.append(f"{check['at']}: no declaration matches {check['contains']!r}; got {actual!r}")
+    return mismatches
+
+
 def execute_case(case_dir, binary):
     spec = json.loads((case_dir / "case.json").read_text())
     validate_case(spec, case_dir)
@@ -256,6 +296,7 @@ def execute_case(case_dir, binary):
         if server.errors:
             raise RuntimeError("; ".join(server.errors))
         mismatches = []
+        known_runtime_failure = False
         observed = json.loads(process.stdout) if process.stdout.strip() else None
         new_outcome_code = (
             "exit_code_not" in spec["checks"] and 0 < process.returncode < 126
@@ -275,31 +316,24 @@ def execute_case(case_dir, binary):
                     and known["message_contains"] in error.get("message", "")):
                 raise RuntimeError(f"CLI exited {process.returncode}: {process.stderr or process.stdout}")
             observed = {"runtime_error": error}
+            known_runtime_failure = True
             mismatches.append(f"known updater failure: {error['message']}")
-        if not isinstance(observed, dict) or "error" in observed:
-            raise ValueError("CLI did not produce a JSON report object")
+        if not known_runtime_failure:
+            validate_report(observed, spec["command"])
         checks = spec["checks"]
         if "exit_code" in checks and process.returncode != checks["exit_code"]:
             mismatches.append(f"exit code: expected {checks['exit_code']}, got {process.returncode}")
         if "exit_code_not" in checks and process.returncode == checks["exit_code_not"]:
             mismatches.append(f"exit code: expected a value other than {checks['exit_code_not']}, got {process.returncode}")
-        for check in checks["json"]:
-            try:
-                actual = at_pointer(observed, check["at"])
-            except (KeyError, IndexError, TypeError):
-                mismatches.append(f"{check['at']}: missing; expected {check.get('equals', check.get('contains'))!r}")
-                continue
-            if "equals" in check:
-                if not matches(actual, check["equals"], partial=False):
-                    mismatches.append(f"{check['at']}: expected {check['equals']!r}, got {actual!r}")
-            elif not isinstance(actual, list) or not any(matches(item, check["contains"]) for item in actual):
-                mismatches.append(f"{check['at']}: no declaration matches {check['contains']!r}; got {actual!r}")
+        mismatches.extend(check_json(observed, checks["json"]))
+        invariant_mismatches = check_json(observed, checks.get("invariants", []))
+        mismatches.extend(f"invariant {message}" for message in invariant_mismatches)
         actual_files = files_in(repo)
         unexpected_edits = False
         for path in sorted(expected.keys() | actual_files.keys()):
             if expected.get(path) != actual_files.get(path):
                 mismatches.append(f"file differs: {path}")
-            if ("runtime_error" in observed or expected.get(path) != actual_files.get(path)) and (
+            if (known_runtime_failure or expected.get(path) != actual_files.get(path)) and (
                 original.get(path) != actual_files.get(path)
                 and (path not in known_actual or known_actual[path] != actual_files.get(path))
             ):
@@ -307,7 +341,7 @@ def execute_case(case_dir, binary):
                 mismatches.append(f"unexpected edit: {path}")
         known_gap = spec["expectation"] == "todo"
         status = ("TODO" if known_gap else "FAIL") if mismatches else ("XPASS" if known_gap else "PASS")
-        if unexpected_edits:
+        if unexpected_edits or invariant_mismatches:
             status = "FAIL"
         return {
             "id": spec["id"],

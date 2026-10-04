@@ -25,7 +25,9 @@
         "contains": {
           "path": "pod.yaml",
           "current_value": "linuxserver/mods:universal-package-install",
-          "yaml_path": "spec.containers[0].env[0].value"
+          "yaml_path": "spec.containers[0].env[0].value",
+          "document_index": 0,
+          "token_index": 0
         }
       },
       {
@@ -33,7 +35,9 @@
         "contains": {
           "path": "pod.yaml",
           "current_value": "ghcr.io/example/docker-mod:main",
-          "yaml_path": "spec.containers[0].env[0].value"
+          "yaml_path": "spec.containers[0].env[0].value",
+          "document_index": 0,
+          "token_index": 1
         }
       },
       {
@@ -41,7 +45,24 @@
         "contains": {
           "path": "pod.yaml",
           "current_value": "linuxserver/mods:openssh-server-git",
-          "yaml_path": "spec.containers[0].env[0].value"
+          "yaml_path": "spec.containers[0].env[0].value",
+          "document_index": 0,
+          "token_index": 2
+        }
+      }
+    ],
+    "invariants": [
+      {
+        "at": "/image_binding_count",
+        "equals": 1
+      },
+      {
+        "at": "/image_bindings",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[0].image",
+          "image": "example/shell:latest"
         }
       }
     ]

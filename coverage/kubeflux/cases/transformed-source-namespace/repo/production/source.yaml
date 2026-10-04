@@ -1,0 +1,9 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: demo
+  namespace: flux-system
+  labels: {environment: production}
+spec:
+  interval: 1h
+  url: "{{server}}/charts"

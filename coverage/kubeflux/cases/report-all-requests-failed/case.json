@@ -19,7 +19,8 @@
   },
   "checks": {
     "exit_code_not": 0,
-    "json": [
+    "json": [],
+    "invariants": [
       {
         "at": "/summary/discovered_count",
         "equals": 1

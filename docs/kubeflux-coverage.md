@@ -2,222 +2,157 @@
 
 Audited on 2026-10-04 against clean kubeflux commit
 [`f5459d8`](https://github.com/mathiasringhof/kubeflux/tree/f5459d8e0f1b7f3ba5dbc7559f9fc83b70235034)
-and fluxrepo-update `951a51f`. Paths below are relative to that kubeflux snapshot.
-This is a declaration and test-coverage audit, not a live check for newer releases.
-Inactive bases, diagnostics, and lab fixtures are included; inclusion does not imply deployment.
+and updater `951a51f`. Paths below refer to that kubeflux snapshot, including inactive
+bases, diagnostics, and lab fixtures. This audits declarations and test coverage, not
+live update availability or deployed resources. No updater features were changed.
 
-## Run the synthetic examples
-
-The [opt-in corpus](../coverage/kubeflux/README.md) exercises these categories through
-actual CLI calls against temporary repositories and local HTTP fixtures. It is separate
-from `cargo test` and CI; the existing Rust tests are unchanged.
-
-```sh
-cargo build --locked
-python3 coverage/kubeflux/run.py
-python3 coverage/kubeflux/run.py --case helm-values-lists
-python3 coverage/kubeflux/run.py --strict
-```
-
-The [2026-10-04 results](../coverage/kubeflux/STATUS.md) record **73 cases: 44 PASS,
-29 TODO, and no FAIL, ERROR, or XPASS**. TODO cases retain the desired behavior and
-expose current gaps; they do not count as supported updates. A preservation PASS proves
-safe skipping, not a check for newer versions. U1–U15 remain open; T1–T4 now have
-executable examples. No updater features were changed.
+The opt-in [synthetic corpus](../coverage/kubeflux/README.md) exercises the CLI using
+local HTTP fixtures; the [status table](../coverage/kubeflux/STATUS.md) owns recorded
+results and links every case. A PASS can mean safe preservation; TODOs retain desired
+behavior that currently fails. U1–U15 remain open. T1–T4 identify regression examples,
+not a claim of complete update support.
 
 ## Inventory baseline
 
-The snapshot has 573 tracked YAML files, including six excluded generated Flux files.
-The scanner reports **98 Version Declarations**:
+Of 573 tracked YAML files, six generated Flux files are excluded. There are 63
+HelmReleases (31 without a local chart version), 25 HelmRepositories, and three groups
+of equivalent repeated sources. The scanner reports **98 Version Declarations**:
 
-| Declaration | Count | Meaning |
+| Declaration | Count | Breakdown |
 | --- | ---: | --- |
-| Explicit chart versions | 32 | Manifest-local chart/source identity is present; resolution can still fail. |
+| Explicit chart versions | 32 | Local chart/source identity is present; resolution can still fail. |
 | Image bindings | 51 | 13 versioned, 24 digest-pinned, 8 mutable, 4 tagless, 1 commit tag, 1 unversioned flavor. |
 | Unchecked declarations | 15 | 6 tag-only Helm overrides, 2 CloudNativePG images, 7 HTTP(S) Kustomize resources. |
 
-There are 63 HelmReleases (31 lack a local chart version) and 25 HelmRepository
-declarations. Three repeated source groups are equivalent; none is ambiguous.
-These counts describe recognized declarations, **not all dependencies**. Silently missed
-declarations contribute to neither `discovered_count` nor `unchecked_count`; declarations
-already reported as unchecked do count.
+These are recognized declarations, not all dependencies. Silent misses appear in neither
+`discovered_count` nor `unchecked_count`. See [product coverage](coverage.md) for counting,
+resolution, and write semantics.
 
-## Categories and coverage evidence
+Existing Rust evidence covers HTTP/OCI charts, all six workload kinds and both container
+lists, recursive Helm values, repeated sources, unchecked declarations, and preservation:
+[workflows](../tests/rust_workflows.rs), [scanner](../tests/rust_scanner.rs),
+[resolvers](../tests/rust_resolvers.rs), and [update runs](../tests/rust_update_run.rs).
+Real examples include audiobookshelf/TrueCharts charts, sonarr Deployment, kube-vip
+DaemonSet, mediabackup CronJob, hermes Jobs/StatefulSet, Jellyfin image lists, and nginx
+extra containers. The corpus makes these shapes and the following gaps independently
+executable.
 
-Existing Rust tests are linked by file; names identify the behavioral case. The
-[corpus status table](../coverage/kubeflux/STATUS.md) links every additional executable
-example to its audit item. A tested skip is coverage of the current boundary, not
-evidence that update availability was checked.
+## Open gaps
 
-| Category | kubeflux example | Existing evidence / remaining gap |
-| --- | --- | --- |
-| HTTP and OCI Helm charts | `apps/base/audiobookshelf/release.yaml`; `infrastructure/base/sources/truecharts.yaml` | [Workflows](../tests/rust_workflows.rs): `update_helm_workflow_plans_and_applies_from_local_remotes`; [resolvers](../tests/rust_resolvers.rs): `repository_chart_resolver_resolves_generic_oci_repositories_by_protocol`. |
-| Repeated chart sources | backube, jellyfin, openebs-zfs across environments | [Update Run](../tests/rust_update_run.rs): `equivalent_source_copies_allow_each_manifest_to_update`, `differing_source_specs_or_namespaces_remain_ambiguous`. Namespace transforms remain TODO U1. |
-| Values-only and incomplete overlays | `apps/production/audiobookshelf/release-patch.yaml` | [Scanner](../tests/rust_scanner.rs): `scanner_keeps_values_only_overlays_out_of_chart_targets`, `scanner_does_not_inherit_chart_identity_for_patch_versions`. No cross-file inference; U2. |
-| Workload containers and init containers | sonarr Deployment, kube-vip DaemonSet, mediabackup CronJob, hermes Jobs | [Workflows](../tests/rust_workflows.rs): `update_helm_workflow_applies_all_standard_podspec_image_bindings` covers all six supported kinds and both container lists. |
-| Recursive Helm image scalars and mappings | Jellyfin `image.repository/tag`; Immich nested Valkey mapping | [Workflows](../tests/rust_workflows.rs): `update_helm_workflow_updates_recursive_mapping_and_scalar_helm_values`; shared tags and optional registry also have scanner tests. List examples are implemented under T1; U15 records an apply failure. |
-| Tag-only Helm overrides | Immich, OpenEBS, ente-auth | [Workflows](../tests/rust_workflows.rs): `tag_only_image_overrides_are_visible_and_never_written`; visible but unchecked, U2. |
-| CloudNativePG images | `apps/{production,apptesting}/immich/cloudnative-pg.yaml` | [Workflows](../tests/rust_workflows.rs): `cloudnativepg_images_are_visible_without_enabling_new_writes`; U3. |
-| Remote Kustomize resources | CDI, KubeVirt, Intel GPU; scheme-less MetalLB | [Workflows](../tests/rust_workflows.rs): `remote_kustomize_resources_are_reported_without_fetching_or_editing_them` covers HTTPS release and ref URLs. Scheme-less refs are missed; U4. |
-| Digest, mutable, tagless, commit, and flavor images | hermes, zfsreplication, smokeping, tvproxy, zfs_exporter, webtop-privacy | [Resolvers](../tests/rust_resolvers.rs): `registry_resolver_rejects_unsupported_image_references_before_network`; [workflows](../tests/rust_workflows.rs): `update_helm_workflow_reports_conservative_helm_value_skips`. T2 now exercises the exact forms; updates remain U5. |
-| Version families and suffixes | sonarr `version-4.0.19.2979`, openssh `version-10.3_p1-r0`, webtop `20260830` | [Resolvers](../tests/rust_resolvers.rs): `newer_version_supports_linuxserver_style_tags`, `image_tag_variants_preserve_flavor_and_architecture`, `version_comparison_stays_within_comparable_families`. T3 exercises real selection; U6 remains open. |
-| Inline patch images | Immich post-renderer init container | No discovery; executable TODO [U7](#u7). |
-| Images in environment values | zfsreplication `RELEASE_IMAGE`; openssh/webtop `DOCKER_MODS` | No discovery; executable TODO [U8](#u8). |
-| VM disks, ISO versions, and image channels | KubeVirt VirtualMachine and CDI DataVolume | No discovery; executable TODO [U9](#u9). |
-| Script-generated resources and downloaded binaries | lab runner ConfigMap source scripts | Non-YAML source and embedded code are not inspected; executable TODO [U10](#u10). |
-| Tool/package pins | `tests/requirements.txt`; virtctl checksum | Outside discovery; executable TODO [U11](#u11). |
-| Grafana dashboard revisions and channels | smartctl dashboard revision; unpoller dashboard URLs | No discovery; executable TODO [U14](#u14). |
-| Vendored bundles and generated Flux | kubevirt-manager bundle; six `gotk-*` files | Ordinary bundle image is found; bundle refresh is not. [Workflows](../tests/rust_workflows.rs): `update_helm_write_workflow_keeps_unsupported_and_generated_files_untouched`; U12. |
-| Scope and reporting | inactive uptimekuma base; skipped declarations | [Scanner](../tests/rust_scanner.rs): `inventory_reports_unchecked_declarations_and_includes_inactive_manifests`; [workflows](../tests/rust_workflows.rs): `coverage_counts_include_current_and_unchecked_declarations_in_plan_and_apply`. T4 examples preserve exclusions; U13 remains open. |
-
-## TODO: unsupported updates and known failures
-
-Each open item has executable examples in the [corpus](../coverage/kubeflux/STATUS.md).
-The desired checks specify discovery, updates, or preservation as appropriate; passing a
-preservation guard does not implement the feature. These examples do not enable new writes.
-
-- [ ] <a id="u1"></a>**U1 — Effective Kustomize source namespaces** ([#16](https://github.com/mathiasringhof/fluxrepo-update/issues/16)).
-  Jellyfin releases in `apps/{production,testing,apptesting}/jellyfin/release.yaml`
-  reference `jellyfin`, while raw sources use `flux-system` and Kustomize transforms
-  both into `jellyfin`. Synthetic: two environments with equivalent sources and a
-  namespace transform resolve correctly; a genuinely conflicting source stays unresolved.
-- [ ] <a id="u2"></a>**U2 — Inherited chart/image identity and defaults.** Six explicit `image.tag`
-  overrides lack local repositories: two in `apps/base/immich/release.yaml`, one each
-  in `infrastructure/{production,testing}/openebs/release.yaml`, and one each in
-  `apps/base/ente-auth/release.yaml` and `apps/apptesting/ente-auth/release-patch.yaml`.
-  Synthetic: base plus tag-only overlay and chart-default image; retain provenance and
-  report unknown identity until it can be established. Preserve tag-only digest pins.
-  Missing/blank versions are not proof of current dependencies. Secret `valuesFrom`
-  references are opaque; no plaintext image override was observed there. The
-  [unknown-default guard](../coverage/kubeflux/cases/chart-default-image-unknown/case.json)
-  proves explicit overrides stay visible and unchanged; it does not expand unavailable
-  chart contents or discover dependencies hidden in chart defaults.
-- [ ] <a id="u3"></a>**U3 — CloudNativePG `Cluster.spec.imageName`.** Two Immich manifests use
-  `ghcr.io/tensorchord/cloudnative-vectorchord:16.9-0.4.3`. Synthetic: report a known
-  newer image through its exact field under an explicit PostgreSQL/extension version
-  selection policy, without promising upgrade compatibility; exclude unrelated `Cluster`
-  API groups.
-- [ ] <a id="u4"></a>**U4 — Kustomize remote version pins.** Seven HTTP(S) entries are reported but
-  unchecked: two each in `infrastructure/base/{cdi,kubevirt}/kustomization.yaml` and
-  three in `infrastructure/base/intel-gpu/kustomization.yaml`. Two
+- [ ] <a id="u1"></a>**U1 — Effective Kustomize namespaces** ([#16](https://github.com/mathiasringhof/fluxrepo-update/issues/16)).
+  `apps/{production,testing,apptesting}/jellyfin/release.yaml` references namespace
+  `jellyfin`; raw `repository.yaml` uses `flux-system`, transformed by each
+  `kustomization.yaml`. Exercise equivalent sources across transformed environments
+  together, and keep genuinely conflicting sources unresolved.
+- [ ] <a id="u2"></a>**U2 — Inherited identity and chart defaults.** Six tag-only overrides:
+  two in `apps/base/immich/release.yaml`, one each in
+  `infrastructure/{production,testing}/openebs/release.yaml`,
+  `apps/base/ente-auth/release.yaml`, and `apps/apptesting/ente-auth/release-patch.yaml`.
+  Values-only overlays also occur in `apps/production/audiobookshelf/release-patch.yaml`.
+  Test base/overlay provenance and unresolved defaults; preserve tag-only digest pins
+  and opaque Secret `valuesFrom`. A missing/blank version is not proof of currency.
+  The unknown-default preservation guard does not expand chart contents.
+- [ ] <a id="u3"></a>**U3 — CloudNativePG images.**
+  `apps/{production,apptesting}/immich/cloudnative-pg.yaml` uses
+  `Cluster.spec.imageName: ghcr.io/tensorchord/cloudnative-vectorchord:16.9-0.4.3`.
+  Test located discovery and updates within an explicit PostgreSQL/extension version
+  family, with cross-family candidates and unrelated `Cluster` API groups excluded.
+  Selection alone cannot establish upgrade compatibility.
+- [ ] <a id="u4"></a>**U4 — Kustomize remote pins.** Seven HTTP(S) resources are unchecked:
+  two each in `infrastructure/base/{cdi,kubevirt}/kustomization.yaml`, three in
+  `infrastructure/base/intel-gpu/kustomization.yaml`. Two scheme-less
   `github.com/metallb/metallb/config/native?ref=v0.15.3` entries in
-  `infrastructure/{base,testing}/metallb/kustomization.yaml` are silently missed.
-  Synthetic: release URLs, HTTPS refs, and scheme-less refs become located declarations;
-  coordinated URLs retain the same selected release. Local paths and comments stay excluded.
-- [ ] <a id="u5"></a>**U5 — Digest/channel/commit image updates.** The 51 bindings include 38 that
-  cannot currently be checked: 24 digest pins, 8 mutable tags, 4 tagless references,
-  `sha-4fd4faa`, and `arch-kde`. Examples include hermes tag+digest, zfsreplication
-  digest-only, ente/Valkey digests embedded in `image.tag`, `latest`, `main`, `busybox`,
-  and a tagless registry with a port. Synthetic: each remains visible and unchanged;
-  any future digest refresh or channel policy preserves the pin and never invents a tag.
-- [ ] <a id="u6"></a>**U6 — Stable release/channel selection** ([#15](https://github.com/mathiasringhof/fluxrepo-update/issues/15)).
-  Three Jellyfin image declarations can be offered unstable timestamp builds.
-  Synthetic registry: current `10.11.8`, candidates `10.11.8`, `12.1`, `2026092811`;
-  never propose the timestamp as a stable upgrade. Keep valid calendar-to-calendar
-  updates. Also establish expected chart handling for cert-manager `v1.21.1`,
-  rke2-multus `v4.3.017`, and unpoller `2.11.2-Chart6`; a prerelease/chart suffix must
-  follow chart rules, not image-variant rules (T3).
-- [ ] <a id="u7"></a>**U7 — Images inside post-renderer patch strings.**
+  `infrastructure/{base,testing}/metallb/kustomization.yaml` are missed.
+  Exercise release URLs and both ref spellings; coordinated resources must select one
+  release and retain each subdirectory/artifact path. Exclude local paths and comments.
+- [ ] <a id="u5"></a>**U5 — Digest/channel/commit updates.** Of 51 image bindings, 38 cannot
+  currently be checked: 24 digest pins, 8 mutable, 4 tagless, `sha-4fd4faa`, and `arch-kde`.
+  Sources include hermes, zfsreplication, ente/Valkey `image.tag` digests, smokeping,
+  loki/syslog-ng, tvproxy's tagless host:port, zfs_exporter, and webtop-privacy.
+  Test visibility and preservation of each form. Future digest refresh/channel policies
+  must retain pins, avoid invented tags, and coordinate repeated references.
+- [ ] <a id="u6"></a>**U6 — Stable release selection** ([#15](https://github.com/mathiasringhof/fluxrepo-update/issues/15)).
+  Three Jellyfin images can select unstable timestamp builds. Given current `10.11.8`
+  and candidates `10.11.8`, `12.1`, `2026092811`, prefer the stable semantic release;
+  retain valid calendar-to-calendar updates. Chart rules must also handle
+  cert-manager `v1.21.1`, rke2-multus `v4.3.017`, and unpoller `2.11.2-Chart6` (T3).
+- [ ] <a id="u7"></a>**U7 — Post-renderer patch strings.**
   `apps/apptesting/immich/release-patch.yaml` embeds `busybox:1.36` in
-  `spec.postRenderers[0].kustomize.patches[0].patch`, a JSON6902 add of init containers.
-  Synthetic: one ordinary image plus this block-string image; discover both with distinct
-  locations, initially reporting the patch image unchecked. Future writes must preserve
-  the outer scalar style and validate both inner patch and outer manifest.
+  `spec.postRenderers[0].kustomize.patches[0].patch`, a JSON6902 init-container add.
+  Discover both an adjacent ordinary image and the patch image with distinct outer/inner
+  locations. Initially report the latter unchecked; preserve and validate both YAML layers.
 - [ ] <a id="u8"></a>**U8 — Image-valued environment variables.**
-  `apps/base/zfsreplication/deployment.yaml` repeats the controller digest in
-  `env[RELEASE_IMAGE].value`. `apps/production/{openssh,webtop}/deployment.yaml` have
-  `DOCKER_MODS` values with three and one image references respectively.
-  Synthetic: repeated digest plus pipe-separated refs, with arbitrary environment text
-  as a negative control. Discover through an explicit schema, retain each token's location,
-  and keep coordinated references consistent before permitting edits.
-- [ ] <a id="u9"></a>**U9 — VM image sources.** Eight `DataVolume.spec.source.http.url` declarations
-  occur in `kubevirt/production/vms/{k3s-apptesting,haos,wgvm}/rootdisk-dv.yaml`,
+  `apps/base/zfsreplication/deployment.yaml` repeats its controller digest in
+  `env[RELEASE_IMAGE].value`. `DOCKER_MODS` has three tokens in
+  `apps/production/openssh/deployment.yaml`, one in `apps/production/webtop/deployment.yaml`,
+  and one in `apps/apptesting/webtop-privacy/deployment.yaml`.
+  Test single/pipe-separated tokens with distinct positions and arbitrary text as a
+  negative control. Coordinated references must stay consistent before edits are enabled.
+- [ ] <a id="u9"></a>**U9 — VM image sources.** Eight `DataVolume.spec.source.http.url`
+  declarations occur in `kubevirt/production/vms/{k3s-apptesting,haos,wgvm}/rootdisk-dv.yaml`,
   `kubevirt/production/lab/vms/resources.yaml` (three documents), and
   `kubevirt/testing/{wgvm-ubuntu-import-dv,vm-102-import-dv}.yaml`.
-  Five use Ubuntu `noble/current`; three are private imported disks with no known
-  upstream version. ISO paths occur in `kubevirt/{apptesting,testing}/ubnt3-autoinstall-test.yaml`
-  (`24.04.4`) and `kubevirt/testing/debian-vm/debian.yaml` (`13.1.0`). Synthetic:
-  explicit ISO version, mutable cloud image URL, opaque private disk URL, and an ordinary
-  writable disk path. Report provenance/unknown availability; never interpret VM IDs as versions
-  or rewrite a disk path without a provisioned replacement.
-- [ ] <a id="u10"></a>**U10 — Dependencies inside executable content.**
-  `kubevirt/production/lab/runner/run.py` downloads K3s `v1.35.8+k3s1` and its checksum
-  file and builds Pods with `busybox:1.37.0`; `directrouting.py` builds a digest-pinned
-  Python Pod. ConfigMap generators package these source files; version assertions also
-  occur in runner/gate scripts. Synthetic: generated ConfigMap source plus embedded code,
-  coupled binary/checksum URLs, and runtime-generated Pod images. Establish an explicit
-  extraction/provenance boundary; do not execute scripts to discover dependencies.
-  Unpinned cloud-init/install scripts and package-manager commands also have unknown
-  runtime dependency versions, rather than an editable version declaration.
-- [ ] <a id="u11"></a>**U11 — Repository tooling dependencies.** `tests/requirements.txt` pins
+  Five use Ubuntu `noble/current`; three are opaque private imports. ISO paths occur in
+  `kubevirt/{apptesting,testing}/ubnt3-autoinstall-test.yaml` (`24.04.4`) and
+  `kubevirt/testing/debian-vm/debian.yaml` (`13.1.0`). Test provenance/unknown availability;
+  exclude VM IDs and ordinary disk paths, and require a provisioned replacement before
+  rewriting a local ISO path.
+- [ ] <a id="u10"></a>**U10 — Executable content.**
+  `kubevirt/production/lab/runner/run.py` downloads K3s `v1.35.8+k3s1` plus its checksum
+  file and builds `busybox:1.37.0` Pods; `directrouting.py` builds digest-pinned Python
+  Pods. ConfigMap generators package these scripts; runner/gate scripts assert versions.
+  `scripts/validate.sh` downloads Flux schemas through `releases/latest/download`.
+  Test generated resources, coupled downloads, and mutable URLs with source locations,
+  without executing code or treating validation assertions as additional installs.
+  Unpinned cloud-init/install scripts and package-manager commands have unknown runtime
+  versions, not editable version declarations.
+- [ ] <a id="u11"></a>**U11 — Tool/package pins.** `tests/requirements.txt` pins
   `PyYAML==6.0.3` and `cel-python==0.5.0`; `scripts/lab/guest.py` pins virtctl by checksum
-  without a release identity. Synthetic: two requirement pins plus an opaque checksum;
-  report these as an explicit scope extension or delegate them to a package/tool updater.
-  Do not infer a release from a checksum.
-- [ ] <a id="u12"></a>**U12 — Whole bundles and Flux bootstrap upgrades.**
-  `apps/apptesting/kubevirt-manager/bundled-v1.5.3.yaml` contains image `1.5.4` while
-  filename and version labels/selectors still identify `1.5.3`. Its image update is not
-  a bundle/CRD refresh. Six generated `clusters/*/flux-system/gotk-*` files contain
-  twelve controller images and Flux versions `2.7.5`, `2.8.5`, `2.8.6`.
-  Synthetic: bundle metadata and image disagree; generated files remain byte-identical.
-  Track upstream bundle and bootstrap refresh separately; generated files stay excluded
-  from automatic edits under the repository rules.
+  without a release identity. Report these through an explicit scope extension or
+  delegate to a package/tool updater; never infer a release from a checksum.
+- [ ] <a id="u12"></a>**U12 — Bundles and Flux bootstrap.**
+  `apps/apptesting/kubevirt-manager/bundled-v1.5.3.yaml` contains image `1.5.4` but
+  `1.5.3` bundle labels/selectors. Six generated `clusters/*/flux-system/gotk-*` files
+  contain twelve controller images and Flux `2.7.5`, `2.8.5`, `2.8.6`.
+  Track bundle/bootstrap upgrades separately from image updates. Generated files must
+  remain excluded from automatic edits and byte-identical even when another image updates.
 - [ ] <a id="u13"></a>**U13 — Completeness and failed resolution** ([#18](https://github.com/mathiasringhof/fluxrepo-update/issues/18)).
-  Recognized counts already distinguish checked and unchecked declarations, but misses
-  above are absent from both. Synthetic: fully current, all requests fail, mixed success,
-  unsupported-only, and an undiscovered category. Define a completeness signal without
-  treating exit zero or zero planned updates as proof of repository-wide currency.
-- [ ] <a id="u14"></a>**U14 — Grafana dashboard revisions.**
+  Recognized counts separate checked/unchecked declarations but omit silent misses.
+  Exercise current, all-failed, mixed, unsupported-only, and undiscovered dependencies.
+  Exit zero or zero planned updates must not imply repository-wide currency.
+- [ ] <a id="u14"></a>**U14 — Grafana dashboards.**
   `apps/{production,apptesting}/kube-prometheus-stack/kube-prometheus-stack-values.yaml`
   pins `spec.values.grafana.dashboards.default.smartctl_exporter` with `gnetId: 22604`
-  and `revision: 2`. Production also has five unpoller dashboard URLs ending in
-  `/revisions/latest/download`. Synthetic: a dashboard ID/revision pair, a mutable
-  dashboard URL, and unrelated numeric/revision fields. Discover the explicit revision
-  and report unknown availability for the channel; preserve dashboard identity and do
-  not interpret `gnetId` itself as a version.
-- [ ] <a id="u15"></a>**U15 — Applying valid YAML with indentless lists.** The synthetic exercise
-  exposed a writer failure after discovery and planning: valid sibling block sequences
-  can produce a false missing-path/changed-target error during apply. This is an
-  additional correctness gap, not another dependency category in the kubeflux inventory.
-  [Workload lists](../coverage/kubeflux/cases/yaml-indentless-workload-lists/case.json)
-  and [Helm values lists](../coverage/kubeflux/cases/yaml-indentless-helm-values-lists/case.json)
-  require all selected images to update while preserving YAML style and unrelated fields.
-  Both remain TODO; their expected output retains the desired edits.
+  and `revision: 2`. Production has five unpoller URLs ending `/revisions/latest/download`.
+  Discover revision pins and unknown channel availability; preserve dashboard identity
+  and exclude `gnetId` and unrelated numeric/revision fields from version selection.
+- [ ] <a id="u15"></a>**U15 — Applying indentless lists.** Valid sibling block sequences
+  can plan successfully but fail apply with a false missing-path/changed-target error.
+  The workload and Helm-values cases require all selected images to update while
+  preserving style and neighbors. This is a writer bug exposed by the corpus, not an
+  additional kubeflux dependency category.
 
-## Implemented synthetic cases for existing behavior
+## Regression examples
 
-T1–T4 are implemented in the separate corpus through the public CLI, with local HTTP
-registry/index responses for version selection and byte-for-byte apply checks. Checked
-boxes mean the examples exist, not that every desired capability passes; the
-[status table](../coverage/kubeflux/STATUS.md) records each outcome.
+- [x] <a id="t1"></a>**T1 — Helm values lists/scalars/mappings.** Jellyfin/nginx
+  `initContainers[]` and `extraContainers[]`, nested Immich Valkey, shared tags, and
+  optional registries: exact indexed locations, selected updates, and unchanged neighbors.
+- [x] <a id="t2"></a>**T2 — Conservative image forms.** Digest-only, tag+digest, mapping
+  digests, tag-only pins, `main`, `arch-kde`, `sha-4fd4faa`, and tagless host:port: one
+  declaration per field, exact skip reason, and no network-dependent classification.
+- [x] <a id="t3"></a>**T3 — Version selection.** Webtop `20260830`, sonarr
+  `version-4.0.19.2979`, OpenSSH `version-10.3_p1-r0`, and the U6 charts: select via local
+  registry/index responses, preserve published spellings/suffixes, and reject downgrades.
+- [x] <a id="t4"></a>**T4 — Negative controls.** SOPS/schema/API/protocol versions,
+  network-data `version: 2`, rollout revisions, arbitrary numbers, comments, and ordinary
+  disk paths stay unchanged beside an actual update. Include inactive uptimekuma bases
+  while preserving excluded paths and opaque Secret references.
 
-- [x] <a id="t1"></a>**T1 — Helm values lists.** [Executable case](../coverage/kubeflux/cases/helm-values-lists/case.json). Jellyfin/nginx-style `initContainers[]` and
-  `extraContainers[]`: plan and apply versioned scalars/mappings, preserve adjacent
-  tagless/mutable images, and verify the exact indexed field and unchanged neighbors.
-- [x] <a id="t2"></a>**T2 — Exact conservative image forms.** [Cases and outcomes](../coverage/kubeflux/STATUS.md). Cover digest-only, tag+digest,
-  digest inside a mapping's `tag`, tag-only digest, `main`, `arch-kde`, `sha-4fd4faa`,
-  and tagless host:port references. Assert one declaration per field, appropriate
-  unchecked reason, and no writes; avoid network-dependent skips masking classification.
-- [x] <a id="t3"></a>**T3 — Real version-selection workflows.** [Date example](../coverage/kubeflux/cases/version-date/case.json), [OpenSSH example](../coverage/kubeflux/cases/version-linuxserver-openssh/case.json). Exercise date-only `20260830`,
-  LinuxServer `version-10.3_p1-r0`, and the chart spellings from U6 through a local
-  registry/index and apply. Verify selected versions, no downgrade, exact tag spelling,
-  and preservation of suffixes. Static resolvers alone cannot establish this behavior.
-- [x] <a id="t4"></a>**T4 — Negative controls.** [Executable case](../coverage/kubeflux/cases/negative-controls/case.json). SOPS format `version`, Kubernetes API versions,
-  network-data `version: 2`, arbitrary numbers, commented-out pins, and ordinary disk
-  paths must not turn into dependency updates. Include configuration rollout revisions,
-  CNI/syslog/NFS schema or protocol versions, and a real adjacent image that still updates.
-
-For every added category: a minimal anonymous fixture, exact discovery location, plan
-or explicit unchecked outcome, and apply/preservation assertion. Develop each case
-red-first before its implementation. Do not copy full application manifests, encrypted
-secrets, live registry responses, or the entire kubeflux checkout into tests.
-
-No `chartRef`, `OCIRepository`, Kustomize `images` transformer, or CI workflow was found
-in this snapshot. They remain broader product coverage candidates, not observed kubeflux
-gaps. Secret contents, chart defaults, rendered remote resources, and downloaded scripts
-were not expanded, so this audit cannot claim transitive dependency coverage.
+No user-authored `chartRef`, `OCIRepository`, Kustomize `images` transformer, or CI workflow
+was found. These remain broader product candidates. Secrets, chart defaults, remote
+resources, and downloaded scripts were not expanded; there is no transitive coverage claim.
 
 To refresh: record both commits and working-tree status, run `inventory --json` against
-kubeflux, independently inspect YAML and non-YAML version-bearing structures, then map
-each new shape to a tested category or an unchecked TODO. Re-run the CI checks; never
-use the scanner's own output as the sole evidence that discovery is complete.
+kubeflux, independently inspect YAML and non-YAML dependency shapes, then map each to a
+case or explicit boundary. Run the corpus and CI checks. Use minimal anonymous fixtures;
+do not copy full manifests, encrypted secrets, live responses, or the checkout into tests.

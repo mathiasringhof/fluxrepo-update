@@ -1,3 +1,7 @@
 kind: Kustomization
 resources:
-- {{server}}/example/plugins/deployments/gpu?ref=v2.0.0
+- {{server}}/example/plugins/deployments/nfd?ref=v2.0.0
+- {{server}}/example/plugins/deployments/nfd/overlays/node-feature-rules?ref=v2.0.0
+- {{server}}/example/plugins/deployments/gpu_plugin/overlays/nfd_labeled_nodes?ref=v2.0.0
+- local.yaml
+# - {{server}}/example/plugins/deployments/disabled?ref=v9.0.0

@@ -24,7 +24,24 @@
         "contains": {
           "path": "pod.yaml",
           "yaml_path": "spec.containers[0].env[0].value",
-          "current_value": "ghcr.io/example/docker-mod:main"
+          "current_value": "ghcr.io/example/docker-mod:main",
+          "document_index": 0,
+          "token_index": 0
+        }
+      }
+    ],
+    "invariants": [
+      {
+        "at": "/image_binding_count",
+        "equals": 1
+      },
+      {
+        "at": "/image_bindings",
+        "contains": {
+          "path": "pod.yaml",
+          "document_index": 0,
+          "yaml_path": "spec.containers[0].image",
+          "image": "example/desktop:latest"
         }
       }
     ]

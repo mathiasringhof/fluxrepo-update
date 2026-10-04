@@ -36,7 +36,11 @@ class ValidationTests(unittest.TestCase):
 
     def execute(self, spec=None, payload=None):
         (self.case / "case.json").write_text(json.dumps(spec or self.spec))
-        output = json.dumps(payload if payload is not None else {"summary": {"applied_count": 0}})
+        report = {"mode": "apply", "summary": {
+            "discovered_count": 1, "checked_count": 1, "unchecked_count": 0,
+            "planned_count": 0, "applied_count": 0, "skipped_count": 0, "changed_file_count": 0,
+        }, "planned": [], "skipped": []}
+        output = json.dumps(report | (payload or {}))
         self.binary.write_text(
             "#!/usr/bin/env python3\nfrom pathlib import Path\n"
             f"Path({str(self.launched)!r}).touch()\nprint({output!r})\n"
@@ -72,6 +76,12 @@ class ValidationTests(unittest.TestCase):
             {"exit_code": 0, "json": ["not a check object"]},
         ]:
             with self.subTest(checks=checks):
+                self.assert_invalid(self.spec | {"checks": checks})
+
+    def test_invariants_require_the_same_valid_selectors_as_desired_checks(self):
+        for invariants in [None, "not a list", [{"at": "/planned", "contains": {}}]]:
+            with self.subTest(invariants=invariants):
+                checks = self.spec["checks"] | {"invariants": invariants}
                 self.assert_invalid(self.spec | {"checks": checks})
 
     def test_malformed_http_responses_are_rejected_before_running(self):
@@ -121,7 +131,7 @@ class ValidationTests(unittest.TestCase):
     def test_exact_checks_distinguish_booleans_and_preserve_complete_structure(self):
         wanted = {"count": 1, "flags": [False]}
         spec = self.spec | {"checks": {"exit_code": 0, "json": [
-            {"at": "/summary", "equals": wanted}
+            {"at": "/metadata", "equals": wanted}
         ]}}
         for actual in [
             {"count": True, "flags": [False]},
@@ -129,9 +139,9 @@ class ValidationTests(unittest.TestCase):
             wanted | {"extra": "not allowed"},
         ]:
             with self.subTest(actual=actual):
-                result = self.execute(spec, {"summary": actual})
+                result = self.execute(spec, {"metadata": actual})
                 self.assertEqual(result["status"], "FAIL", result)
-        self.assertEqual(self.execute(spec, {"summary": wanted})["status"], "PASS")
+        self.assertEqual(self.execute(spec, {"metadata": wanted})["status"], "PASS")
 
     def test_array_pointers_cannot_select_with_noncanonical_indices(self):
         payload = {"planned": [{"version": "first"}, {"version": "last"}]}
