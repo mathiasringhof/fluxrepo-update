@@ -39,6 +39,7 @@ or behavior. The public workflow is scan → resolve and plan → review/select 
 | Plan, selection, and application | [`UpdateRun::execute`](../src/update_run.rs) | [Update Run tests](../tests/rust_update_run.rs) |
 | Arguments, approval, and output | [`cli::run_with_args`](../src/cli.rs) | [CLI tests](../tests/rust_cli.rs) |
 | Full CLI workflows and YAML preservation | [Workflow tests](../tests/rust_workflows.rs) | Local HTTP fixtures and exact file comparisons |
+| Passing synthetic scenarios through the library | [Corpus tests](../tests/rust_corpus.rs) | Shared corpus inputs, local HTTP fixtures, and exact file comparisons |
 
 `UpdateRun` owns workflow decisions and hides concurrency and editing. Keep terminal
 presentation in the CLI and registry protocols behind resolver traits. The CLI separates
@@ -54,9 +55,17 @@ regressions without copying a production checkout.
 
 ## Explore coverage gaps
 
-The [synthetic corpus](../coverage/kubeflux/README.md) is an opt-in public-CLI exercise
-using local HTTP fixtures. It is separate from Cargo tests and CI, and includes desired
-capabilities that intentionally report TODO. See its guide for commands, case format,
-and runner tests; see the [audit](kubeflux-coverage.md) for provenance and open categories.
-Promote a fixed gap with a red/green Rust regression test and the corresponding corpus
-expectation. Keep expected results independent of actual CLI output.
+Every passing [synthetic corpus](../coverage/kubeflux/README.md) case runs in `cargo test`
+and CI through `scan_repo` and `UpdateRun::execute`. The tests use real resolvers against
+temporary local HTTP servers, check domain outcomes, and compare all repository files
+byte-for-byte. No CLI process, Python installation, or public registry access is needed.
+Run the suite with `cargo test --locked --test rust_corpus`; append a Rust test name
+such as `charts_http` to select one case.
+
+The opt-in Python runner still exercises the CLI contract across the entire corpus,
+including capabilities that intentionally report TODO. See the corpus guide for its
+commands and case format, and the [audit](kubeflux-coverage.md) for provenance and gaps.
+When promoting a case to `pass`, add its name to `tests/rust_corpus.rs`; the registration
+check fails if any passing case is missing or a registered case becomes TODO. Keep
+expected results independent of actual output. New assertion forms must be supported
+explicitly by the Rust harness; unsupported checks fail rather than being ignored.

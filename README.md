@@ -22,6 +22,8 @@ sudo install fluxrepo-update /usr/local/bin/
 ```
 
 To build from source, see [development](docs/development.md).
+`cargo test --locked` includes the passing synthetic scenarios, using temporary
+repositories and local HTTP fixtures without contacting public registries.
 
 ## Start with a preview
 

@@ -1,9 +1,27 @@
 # Synthetic kubeflux coverage
 
-This opt-in corpus exercises the CLI independently of `cargo test` and CI. The
+This corpus supplies both normal library tests and an opt-in CLI audit. The
 [audit](../../docs/kubeflux-coverage.md) records real source shapes;
-[STATUS.md](STATUS.md) records results. Requires Python 3.10+, a built CLI, and localhost
-HTTP listeners. No kubeflux checkout, credentials, or public registry access is needed.
+[STATUS.md](STATUS.md) records CLI results. No kubeflux checkout, credentials, or public
+registry access is needed.
+
+All cases marked `pass` run in `cargo test` and CI without launching the CLI. They call
+`scan_repo` and `UpdateRun::execute` with real resolvers against local HTTP fixtures,
+check the domain values specified by the case assertions, and compare every file
+byte-for-byte. Exit expectations map to `UpdateRunStatus`; CLI serialization and actual
+exit codes remain covered by CLI tests and the Python audit. The fixture client routes
+all HTTP(S) through a local proxy that rejects external destinations and unexpected
+requests. No global proxy environment variables are changed by the Rust tests.
+The GitHub resolver uses the local fixture API base URL, while resource URLs in the
+manifests retain their original spelling.
+
+```sh
+cargo test --locked --test rust_corpus
+cargo test --locked --test rust_corpus charts_http
+```
+
+The full CLI audit includes TODO cases and requires Python 3.10+, a built CLI, and
+localhost HTTP listeners:
 
 ```sh
 cargo build --locked
@@ -14,7 +32,7 @@ python3 coverage/kubeflux/run.py --strict
 python3 -m unittest discover -s coverage/kubeflux -p 'test_*.py'
 ```
 
-Each run copies examples to temporary repositories, serves local HTTP responses,
+Each CLI audit run copies examples to temporary repositories, serves local HTTP responses,
 validates CLI reports, and compares every file byte-for-byte with the expected result.
 
 - **PASS**: the desired capability or deliberate preservation boundary works.
@@ -87,9 +105,13 @@ these failure baselines; they never turn a failing desired outcome into PASS.
 
 Repositories and expected overlays contain UTF-8 regular files. Symlinks and special
 filesystem entries are rejected, and overlays can only replace existing input files.
-Unexpected HTTP requests are errors; external HTTP(S) requests are intercepted by the
-local fixture server through proxy environment variables.
+Unexpected HTTP requests are errors; the Python runner intercepts external HTTP(S)
+requests through proxy environment variables scoped to the CLI subprocess.
 
 Choose desired values independently of CLI output. Develop examples red-first and keep
 new capabilities TODO until their checks pass; feature fixes belong in the normal
-red/green regression suite. Runner checks remain opt-in as shown above.
+red/green regression suite. When promoting a case, register its name (hyphens become
+underscores) in [tests/rust_corpus.rs](../../tests/rust_corpus.rs). A registration test
+ensures the Rust suite covers every passing case. Unsupported assertion forms fail
+explicitly and need a corresponding harness extension. Python runner checks remain
+opt-in as shown above.
