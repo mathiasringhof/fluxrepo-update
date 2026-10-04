@@ -4,7 +4,8 @@
 
 Recorded from `python3 coverage/kubeflux/run.py --json`. See the [runner guide](README.md)
 for reproduction and the [audit](../../docs/kubeflux-coverage.md) for source evidence.
-The corpus is opt-in and separate from the normal Rust suite and CI.
+The full CLI audit remains opt-in. All cases marked PASS also run through the library
+in the normal Rust suite and CI; TODO cases remain in the separate audit.
 
 The 44 PASS cases include 25 that apply updates and 19 preservation/current/skip cases.
 TODOs retain desired behavior that still fails; neither a safe skip nor this synthetic

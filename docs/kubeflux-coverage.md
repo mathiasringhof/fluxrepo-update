@@ -6,9 +6,10 @@ and updater `951a51f`. Paths below refer to that kubeflux snapshot, including in
 bases, diagnostics, and lab fixtures. This audits declarations and test coverage, not
 live update availability or deployed resources. No updater features were changed.
 
-The opt-in [synthetic corpus](../coverage/kubeflux/README.md) exercises the CLI using
-local HTTP fixtures; the [status table](../coverage/kubeflux/STATUS.md) owns recorded
-results and links every case. A PASS can mean safe preservation; TODOs retain desired
+The [synthetic corpus](../coverage/kubeflux/README.md) supplies passing library scenarios
+to `cargo test` and CI, plus an opt-in CLI audit including TODO cases. Both use local HTTP
+fixtures; the [status table](../coverage/kubeflux/STATUS.md) owns recorded CLI results
+and links every case. A PASS can mean safe preservation; TODOs retain desired
 behavior that currently fails. U1–U15 remain open. T1–T4 identify regression examples,
 not a claim of complete update support.
 
