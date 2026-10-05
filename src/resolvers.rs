@@ -65,7 +65,8 @@ static LINK_PARAM_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#";\s*([^\s=;]+)\s*(?:=\s*(?:"((?:\\.|[^"\\])*)"|([^;\s]+)))?"#)
         .expect("link parameter regex")
 });
-static DATE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d{8}$").expect("date regex"));
+static DATE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d{8}(?:\d{2}){0,3}$").expect("date regex"));
 static PARTS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)").expect("parts regex"));
 static COMMIT_TAG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(sha|commit|rev)[-_][0-9a-f]{7,}$").expect("commit regex"));
@@ -1059,7 +1060,7 @@ fn is_comparable_version(current: &str, candidate: &str) -> bool {
     };
 
     match current_version.family {
-        VersionFamily::Date => candidate_version.family == VersionFamily::Date,
+        VersionFamily::Date(width) => candidate_version.family == VersionFamily::Date(width),
         VersionFamily::NumericSeries | VersionFamily::Numeric => matches!(
             candidate_version.family,
             VersionFamily::NumericSeries | VersionFamily::Numeric
@@ -1077,11 +1078,13 @@ fn is_recognized_version(version: &str) -> bool {
 }
 
 fn parse_comparable_version(version: &str) -> Option<ComparableVersion> {
-    if DATE_RE.is_match(version) {
+    let date = version.strip_prefix('v').unwrap_or(version);
+    if DATE_RE.is_match(date) {
         return Some(ComparableVersion {
-            family: VersionFamily::Date,
+            // Compact dates/timestamps are separate tracks at each precision.
+            family: VersionFamily::Date(date.len()),
             literal_parts: vec![String::new(), String::new()],
-            numeric_parts: vec![version.parse().ok()?],
+            numeric_parts: vec![date.parse().ok()?],
         });
     }
 
@@ -1257,7 +1260,7 @@ struct ComparableVersion {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VersionFamily {
-    Date,
+    Date(usize),
     NumericSeries,
     Numeric,
     Pattern,

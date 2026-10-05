@@ -51,6 +51,8 @@ and [output](docs/output.md#exit-codes) for exit codes (`10` means updates are a
 The tool reads individual repository manifests, including inactive bases and untracked
 YAML; it does not render Kustomize overlays or inspect deployed resources. Latest stable
 selection can cross major versions and does not check upgrade compatibility.
+Compact calendar tags stay within matching precision, preventing timestamp builds from
+replacing dotted or ordinary numeric releases.
 
 Generated Flux bootstrap manifests and unsupported declarations remain unchanged.
 Inspect skipped targets: no planned updates does not mean every dependency was checked.

@@ -8,9 +8,51 @@ use common::{ResponseSpec, TestHttpServer};
 use fluxrepo_update::models::{HelmRepository, RepoType};
 use fluxrepo_update::resolvers::{
     ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
-    ResolverError, ResolverErrorCode, is_newer_version, parse_image_reference, parse_next_link,
-    select_comparable_tags,
+    ResolverError, ResolverErrorCode, is_newer_image_tag, is_newer_version, parse_image_reference,
+    parse_next_link, select_comparable_tags,
 };
+
+#[test]
+fn stable_image_tags_do_not_cross_into_jellyfin_timestamp_builds() {
+    let tags = ["10.11.8", "12.1", "2026092811"];
+
+    assert_eq!(
+        select_comparable_tags("10.11.8", &tags),
+        vec!["10.11.8", "12.1"]
+    );
+    assert!(!is_newer_image_tag("10.11.8", "2026092811"));
+    assert!(is_newer_image_tag("10.11.8", "12.1"));
+}
+
+#[test]
+fn calendar_image_tags_keep_their_timestamp_precision() {
+    for (current, latest, later) in [
+        ("20260928", "20260929", "20261001"),
+        ("2026092811", "2026092812", "2026100112"),
+        ("202609281130", "202609281131", "202610011200"),
+        ("20260928113000", "20260928113001", "20261001120000"),
+        ("v2026092811", "v2026092812", "2026100112"),
+        ("2026092811-amd64", "2026092812-amd64", "2026100112-amd64"),
+    ] {
+        let tags = [
+            current,
+            latest,
+            "12.1",
+            "20261001",
+            "2026100112",
+            "202610011200",
+            "20261001120000",
+            "2026100112-amd64",
+        ];
+        assert_eq!(
+            select_comparable_tags(current, &tags),
+            vec![current, latest, later],
+            "calendar family for {current}"
+        );
+        assert!(is_newer_image_tag(current, latest));
+        assert!(!is_newer_image_tag(latest, current));
+    }
+}
 
 #[test]
 fn stable_tag_selection_can_cross_numeric_tracks_and_major_versions() {
@@ -28,6 +70,11 @@ fn stable_tag_selection_can_cross_numeric_tracks_and_major_versions() {
     );
 
     assert_eq!(comparable, vec!["3.22", "3.22.3", "3.23", "4.0.0"]);
+    assert_eq!(
+        select_comparable_tags("9", &["9", "10", "12.1", "14.0.0", "2026092811"]),
+        vec!["9", "10", "12.1", "14.0.0"]
+    );
+    assert!(is_newer_image_tag("9", "10"));
 }
 
 #[test]
