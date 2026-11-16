@@ -16,7 +16,7 @@ repository manifests, including untracked files, not effective deployed versions
 - `containers[*].image` and `initContainers[*].image` in Deployments, StatefulSets,
   DaemonSets, Jobs, CronJobs, and Pods
 - Recursive scalar image values under `HelmRelease.spec.values`
-- Recursive `image.repository`/`image.tag` mappings, with optional `image.registry`
+- Recursive scalar `repository`/`tag` mappings under Helm values, with optional `registry`
 - Standard public Helm HTTP indexes, generic public OCI chart registries, and public
   container registries, including anonymous bearer-token challenges
 - Public GitHub `Kustomization.resources` release assets such as
@@ -67,6 +67,41 @@ Within a run, targets share fetched metadata. Registry tag lists follow `Link` h
 with a `next` relation. Pagination cycles or more than 1,000 pages are reported as
 resolution failures rather than using a partial tag list.
 
+### Helm-values image bindings
+
+Any recursively nested mapping under `spec.values`, including inside lists, qualifies
+when `repository` and `tag` are non-empty scalars; no fixed parent key such as `image`
+is required. Main, sidecar, metrics, test, and initialization values follow this same
+rule. Each concrete tag is one binding and one target, even when a chart uses it for
+multiple containers. Apply changes only that tag scalar, including in indentless lists.
+
+```yaml
+metrics:
+  registry: ghcr.io
+  repository: example/metrics
+  tag: "1.2.3"
+```
+
+A nonblank sibling `registry` prefixes the repository as `registry/repository` unless
+the repository already starts with that exact `registry/` prefix. Both `example/metrics`
+and `ghcr.io/example/metrics` above resolve to `ghcr.io/example/metrics:1.2.3`.
+
+Conservative forms remain unchanged; see the [output reason list](output.md#skipped):
+
+| Form | Reason code or discovery boundary |
+| --- | --- |
+| Any nonblank sibling `digest`, `sha`, or `sha256`, or an image/tag containing `@digest` | `image_reference_pinned_by_digest`; earlier blank pin fields cannot hide later pins |
+| Templated references (`{{…}}` or `${…}`) | `templated_image_reference` |
+| Mutable tags (`latest`, `main`, `master`, `edge`, `nightly`, `stable`) | `mutable_image_tag` |
+| Recognized commit tags or unknown version schemes | `incompatible_version_scheme` |
+| Scalar image without a tag | `image_reference_missing_tag` |
+| `image.tag` without a manifest-local repository | `unsupported_version_declaration` |
+| Repository with `version` or `imageTag` instead of `tag` | `unsupported_image_schema` |
+| Local repository with a blank/omitted tag | No binding or reason code; the tag is inherited |
+| Other non-scalar fields or unknown shapes | Outside binding discovery unless recognized above; no guessing |
+
+Empty or whitespace-only pin fields do not suppress an otherwise eligible tag update.
+
 ## Left unchanged
 
 - Missing chart versions (supported image bindings can still update)
@@ -111,10 +146,6 @@ as applicable. It parses the prepared YAML and rejects unintended semantic chang
 including effects through aliases. Supported block scalars and literal keys containing
 punctuation are handled without changing surrounding comments, quoting, document
 separators, line endings, or unrelated formatting.
-
-Known limitation: applying some valid indentless block lists reports a missing YAML
-path after planning. The [U15 examples](kubeflux-coverage.md#u15) retain the expected
-edits and currently report TODO.
 
 No automatic rollback, deployment, or reconciliation is performed. If an operating-system
 write fails after earlier files were written, the error reports partial application and
