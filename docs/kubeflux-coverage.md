@@ -11,7 +11,7 @@ The [synthetic corpus](../coverage/kubeflux/README.md) supplies passing library 
 to `cargo test` and CI, plus an opt-in CLI audit including TODO cases. Both use local HTTP
 fixtures; the [status table](../coverage/kubeflux/STATUS.md) owns recorded CLI results
 and links every case. A PASS can mean safe preservation; TODOs retain desired
-behavior that currently fails. U4 is now supported; the other U categories remain open.
+behavior that currently fails. U1, U4, and U15 are now supported; the other U categories remain open.
 T1–T4 identify regression examples,
 not a claim of complete update support.
 
@@ -131,11 +131,11 @@ executable.
   and `revision: 2`. Production has five unpoller URLs ending `/revisions/latest/download`.
   Discover revision pins and unknown channel availability; preserve dashboard identity
   and exclude `gnetId` and unrelated numeric/revision fields from version selection.
-- [ ] <a id="u15"></a>**U15 — Applying indentless lists.** Valid sibling block sequences
-  can plan successfully but fail apply with a false missing-path/changed-target error.
-  The workload and Helm-values cases require all selected images to update while
-  preserving style and neighbors. This is a writer bug exposed by the corpus, not an
-  additional kubeflux dependency category.
+- [x] <a id="u15"></a>**U15 — Applying indentless lists.** Source-column-aware node lookup
+  corrects misplaced sibling keys in the YAML edit tree without changing byte ranges.
+  Both corpus cases now pass with their original exact expected files. Deployment and
+  Helm-values CLI regressions also apply selected IDs while preserving neighboring
+  scalars, quoting, comments, and indentation.
 
 ## Regression examples
 

@@ -8,8 +8,7 @@
   "source": [
     "kubevirt/production/lab/runner/run.py"
   ],
-  "expectation": "todo",
-  "todo": "The scanner finds these valid YAML declarations, but the YAML edit layer currently loses an indentless sibling list and aborts with a missing YAML path. Both selected version changes must apply without changing list indentation.",
+  "expectation": "pass",
   "command": "apply",
   "responses": {
     "/v2/demo/pod/tags/list": {
@@ -75,10 +74,5 @@
         }
       }
     ]
-  },
-  "known_failure": {
-    "exit_code": 2,
-    "error": "runtime_error",
-    "message_contains": "missing YAML path spec.initContainers[0].image"
   }
 }

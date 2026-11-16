@@ -1,9 +1,12 @@
 use std::fs;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use yaml_edit::{Document as EditDocument, YamlFile, YamlNode};
+use yaml_edit::{
+    AsYaml, Document as EditDocument, Mapping as EditMapping, SyntaxKind, YamlFile, YamlNode,
+};
 
 use crate::models::{
     HelmReleaseTarget, HelmRepository, ImageBinding, ImageBindingValueKind, ImageReference,
@@ -258,7 +261,7 @@ pub(crate) fn parse_yaml_documents(text: &str) -> Result<Vec<Value>> {
     let edit: YamlFile = text.parse()?;
     for (value, document) in values.iter_mut().zip(edit.documents()) {
         if let Some(mapping) = document.as_mapping() {
-            preserve_numeric_text(value, &YamlNode::Mapping(mapping));
+            preserve_numeric_text(value, &YamlNode::Mapping(mapping), text);
         }
     }
     Ok(values)
@@ -629,15 +632,80 @@ pub(crate) fn yaml_path_parts(path: &str) -> Option<Vec<YamlPathPart>> {
     Some(result)
 }
 
-pub(crate) fn edit_node_at_path(document: &EditDocument, path: &str) -> Option<YamlNode> {
+pub(crate) fn edit_node_at_path(
+    document: &EditDocument,
+    path: &str,
+    source: &str,
+) -> Option<YamlNode> {
     let mut current = YamlNode::Mapping(document.as_mapping()?);
     for part in yaml_path_parts(path)? {
         current = match part {
-            YamlPathPart::Key(key) => current.as_mapping()?.get(key.as_str())?,
+            YamlPathPart::Key(key) => edit_mapping_get(current.as_mapping()?, &key, source)?,
             YamlPathPart::Index(index) => current.as_sequence()?.get(index)?,
         };
     }
     Some(current)
+}
+
+fn edit_mapping_get(mapping: &EditMapping, key: &str, source: &str) -> Option<YamlNode> {
+    if mapping.is_flow_style() {
+        return mapping.get(key);
+    }
+    let first_key = mapping.keys().next()?;
+    let column = edit_key_column(&first_key, source)?;
+    block_mapping_get(&YamlNode::Mapping(mapping.clone()), key, column, source)
+        .break_value()
+        .flatten()
+}
+
+fn edit_key_column(key: &YamlNode, source: &str) -> Option<usize> {
+    // The entry starts at any explicit '?' or anchor before the key itself.
+    let entry = key
+        .as_node()?
+        .ancestors()
+        .find(|node| node.kind() == SyntaxKind::MAPPING_ENTRY)?;
+    let offset = usize::from(entry.text_range().start());
+    let preceding = source.get(..offset)?;
+    Some(preceding.len() - preceding.rfind('\n').map_or(0, |index| index + 1))
+}
+
+// yaml-edit 0.2.1 parses a block sequence item's mapping at the dash's
+// indentation, absorbing a following indentless sibling key into that item.
+// Its byte ranges are still correct. Walk block entries in source order at the
+// requested mapping's key column, stopping on dedent. Flow collections have
+// explicit boundaries and must not participate in this indentation lookup.
+fn block_mapping_get(
+    node: &YamlNode,
+    key: &str,
+    column: usize,
+    source: &str,
+) -> ControlFlow<Option<YamlNode>> {
+    match node {
+        YamlNode::Mapping(mapping) if !mapping.is_flow_style() => {
+            for entry in mapping.entries() {
+                if let Some(entry_key) = entry.key_node()
+                    && let Some(entry_column) = edit_key_column(&entry_key, source)
+                {
+                    if entry_column < column {
+                        return ControlFlow::Break(None);
+                    }
+                    if entry_column == column && entry.key_matches(key) {
+                        return ControlFlow::Break(entry.value_node());
+                    }
+                }
+                if let Some(value) = entry.value_node() {
+                    block_mapping_get(&value, key, column, source)?;
+                }
+            }
+        }
+        YamlNode::Sequence(sequence) if !sequence.is_flow_style() => {
+            for item in sequence.values() {
+                block_mapping_get(&item, key, column, source)?;
+            }
+        }
+        _ => {}
+    }
+    ControlFlow::Continue(())
 }
 
 pub(crate) fn value_at_path<'a>(document: &'a Value, path: &str) -> Option<&'a Value> {
@@ -662,7 +730,7 @@ pub(crate) fn value_at_path_mut<'a>(document: &'a mut Value, path: &str) -> Opti
     Some(current)
 }
 
-fn preserve_numeric_text(value: &mut Value, node: &YamlNode) {
+fn preserve_numeric_text(value: &mut Value, node: &YamlNode, source: &str) {
     match value {
         Value::Number(_) => {
             if let Some(scalar) = node.as_scalar() {
@@ -673,9 +741,9 @@ fn preserve_numeric_text(value: &mut Value, node: &YamlNode) {
             if let Some(edit_mapping) = node.as_mapping() {
                 for (key, child) in mapping {
                     if let Some(key) = key.as_str()
-                        && let Some(edit_child) = edit_mapping.get(key)
+                        && let Some(edit_child) = edit_mapping_get(edit_mapping, key, source)
                     {
-                        preserve_numeric_text(child, &edit_child);
+                        preserve_numeric_text(child, &edit_child, source);
                     }
                 }
             }
@@ -684,7 +752,7 @@ fn preserve_numeric_text(value: &mut Value, node: &YamlNode) {
             if let Some(sequence) = node.as_sequence() {
                 for (index, child) in items.iter_mut().enumerate() {
                     if let Some(edit_child) = sequence.get(index) {
-                        preserve_numeric_text(child, &edit_child);
+                        preserve_numeric_text(child, &edit_child, source);
                     }
                 }
             }

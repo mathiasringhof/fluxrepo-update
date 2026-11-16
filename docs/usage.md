@@ -84,9 +84,12 @@ counts in `summary`; approval and application do not change those counts.
 
 Apply prepares and validates all selected edits before writing. It rechecks target
 and source identities and rejects unintended YAML changes. Approved scalars are edited
-in place, preserving surrounding formatting and comments. An operating-system write
-failure can still leave earlier files changed; inspect the working tree and use Git
-for recovery. There is no automatic rollback, deployment, or reconciliation.
+in place, preserving surrounding formatting and comments, including indentless lists.
+An operating-system write failure reports successfully written files, the failed file
+(contents indeterminate), and files not attempted, with selection IDs for each file.
+These details also appear in the `--json` error's `message`. Earlier writes remain;
+inspect the working tree and use Git for recovery. There is no automatic rollback,
+deployment, or reconciliation.
 
 With `--json`, runtime and mode-validation failures produce a structured error on
 stderr. Total version-check failure keeps the normal report on stdout, including all

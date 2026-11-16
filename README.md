@@ -8,6 +8,8 @@ The CLI finds chart versions in `HelmRelease` manifests, images in standard Kube
 workloads, and image values under `HelmRelease.spec.values`. It resolves public HTTP/OCI
 sources and public GitHub releases, then edits approved YAML scalars while preserving
 comments and formatting. Related resource URLs are reviewed and applied together.
+Apply validates all selected edits before writing. Write failures identify completed,
+failed, and unattempted selections; use Git to inspect and recover partial writes.
 
 ## Install
 
