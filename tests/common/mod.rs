@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{Read, Write};
@@ -11,11 +10,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
-
-use fluxrepo_update::resolvers::{
-    ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
-    StaticImageVersionResolver, StaticVersionResolver,
-};
 
 pub fn assert_partial_write_diagnostics(
     message: &str,
@@ -195,51 +189,6 @@ pub fn write_file(path: &Path, text: &str) {
         fs::create_dir_all(parent).expect("create parent");
     }
     fs::write(path, text).expect("write file");
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct StaticResolverFactory {
-    pub chart_versions: HashMap<(String, String), String>,
-    pub image_versions: HashMap<String, String>,
-}
-
-impl StaticResolverFactory {
-    pub fn new(
-        chart_versions: HashMap<(String, String), String>,
-        image_versions: HashMap<String, String>,
-    ) -> Self {
-        Self {
-            chart_versions,
-            image_versions,
-        }
-    }
-}
-
-pub trait TestResolvers {
-    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync>;
-    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync>;
-}
-
-impl TestResolvers for StaticResolverFactory {
-    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
-        Box::new(StaticVersionResolver::new(self.chart_versions.clone()))
-    }
-
-    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync> {
-        Box::new(StaticImageVersionResolver::new(self.image_versions.clone()))
-    }
-}
-
-pub struct DefaultResolverFactory;
-
-impl TestResolvers for DefaultResolverFactory {
-    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
-        Box::new(RepositoryChartResolver::default())
-    }
-
-    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync> {
-        Box::new(RegistryImageResolver::default())
-    }
 }
 
 fn accept_until(

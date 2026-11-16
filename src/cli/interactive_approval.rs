@@ -66,7 +66,7 @@ impl<'a> InteractiveApproval<'a> {
         human_output: HumanOutput,
     ) -> Result<Vec<UpdateSelectionIdentity>> {
         let mut approved = Vec::new();
-        for update in updates {
+        for &update in updates {
             write!(output, "{}", render_prompt(update, repo_root, human_output))?;
             output.flush()?;
             let mut buffer = [0; 1];
@@ -179,7 +179,7 @@ impl Error for ApprovalAndRestorationError {
     }
 }
 
-fn render_prompt(update: &UpdateReview<'_>, repo_root: &Path, human_output: HumanOutput) -> String {
+fn render_prompt(update: UpdateReview<'_>, repo_root: &Path, human_output: HumanOutput) -> String {
     let path = human_output.styled(&relative_path(update.path(), repo_root), AnsiStyle::Cyan);
     let document = update.document_index() + 1;
     let details = match update.kind() {

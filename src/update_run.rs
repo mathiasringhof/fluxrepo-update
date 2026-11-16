@@ -1,6 +1,6 @@
 //! One complete planning, review, selection, and application attempt.
 
-pub(crate) mod implementation;
+mod implementation;
 #[cfg(test)]
 mod tests;
 
@@ -11,12 +11,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
+pub(crate) use self::implementation::PlannedUpdate;
 pub use self::implementation::RemoteResourceChange;
-use self::implementation::{
-    PlanOptions, PlannedUpdate, UpdateReport, apply_planned_updates, plan_updates_with_resources,
-};
+use self::implementation::{PlanOptions, apply_planned_updates, plan_updates_with_resources};
 use crate::github::{GitHubReleaseResolver, RemoteResourceVersionResolver};
-use crate::models::{Inventory, TargetKind};
+use crate::models::Inventory;
 use crate::resolvers::{ChartVersionResolver, ImageVersionResolver};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -97,57 +96,51 @@ impl CheckSummary {
 
 #[derive(Debug)]
 pub struct UpdatePlan {
-    report: UpdateReport,
-    identities: Vec<UpdateSelectionIdentity>,
+    planned: Vec<PlannedUpdate>,
+    skipped: Vec<SkippedUpdate>,
+    checked_count: usize,
 }
 
 impl UpdatePlan {
-    pub(crate) fn from_report(report: UpdateReport, repo_root: &Path) -> Self {
-        let identities = report
-            .planned
-            .iter()
-            .map(|update| UpdateSelectionIdentity(update.selection_id(repo_root)))
-            .collect();
-        Self { report, identities }
+    pub(crate) fn new(
+        planned: Vec<PlannedUpdate>,
+        skipped: Vec<SkippedUpdate>,
+        checked_count: usize,
+    ) -> Self {
+        Self {
+            planned,
+            skipped,
+            checked_count,
+        }
     }
 
     pub fn review(&self) -> Vec<UpdateReview<'_>> {
-        self.report
-            .planned
-            .iter()
-            .zip(&self.identities)
-            .map(|(update, identity)| UpdateReview { update, identity })
-            .collect()
+        self.planned.iter().map(PlannedUpdate::review).collect()
     }
 
     pub fn skipped(&self) -> &[SkippedUpdate] {
-        &self.report.skipped
+        &self.skipped
     }
 
     pub fn checked_count(&self) -> usize {
-        self.report.checked_count
+        self.checked_count
     }
 
     pub fn check_summary(&self) -> CheckSummary {
         let failed_count = self
-            .report
             .skipped
             .iter()
             .filter(|item| item.reason_code.is_failed_check())
             .count();
         let update_available_count = self
-            .report
             .planned
             .iter()
-            .map(|update| match update {
-                PlannedUpdate::RemoteResource(update) => update.changes.len(),
-                PlannedUpdate::Chart(_) | PlannedUpdate::Image(_) => 1,
-            })
+            .map(PlannedUpdate::declaration_count)
             .sum::<usize>();
         CheckSummary {
-            checked_unchanged_count: self.report.checked_count - update_available_count,
+            checked_unchanged_count: self.checked_count - update_available_count,
             update_available_count,
-            unsupported_count: self.report.skipped.len() - failed_count,
+            unsupported_count: self.skipped.len() - failed_count,
             failed_count,
         }
     }
@@ -156,113 +149,6 @@ impl UpdatePlan {
 #[derive(Debug, Clone, Copy)]
 pub struct UpdateReview<'a> {
     update: &'a PlannedUpdate,
-    identity: &'a UpdateSelectionIdentity,
-}
-
-impl UpdateReview<'_> {
-    pub fn identity(&self) -> &UpdateSelectionIdentity {
-        self.identity
-    }
-
-    pub fn path(&self) -> &Path {
-        self.update.path()
-    }
-
-    pub fn document_index(&self) -> usize {
-        self.update.document_index()
-    }
-
-    pub fn target_name(&self) -> &str {
-        self.update.target_name()
-    }
-
-    pub fn current_version(&self) -> &str {
-        self.update.current_version()
-    }
-
-    pub fn latest_version(&self) -> &str {
-        self.update.latest_version()
-    }
-
-    pub fn kind(&self) -> TargetKind {
-        self.update.kind()
-    }
-
-    pub fn resource_kind(&self) -> &str {
-        match self.update {
-            PlannedUpdate::Chart(_) => "HelmRelease",
-            PlannedUpdate::Image(update) => update
-                .manifest_identity
-                .as_ref()
-                .map_or("ImageBinding", |identity| {
-                    identity.resource_id.kind.as_str()
-                }),
-            PlannedUpdate::RemoteResource(_) => "Kustomization",
-        }
-    }
-
-    pub fn yaml_path(&self) -> &str {
-        match self.update {
-            PlannedUpdate::Chart(_) => "spec.chart.spec.version",
-            PlannedUpdate::Image(update) => &update.yaml_path,
-            PlannedUpdate::RemoteResource(update) => &update.changes[0].yaml_path,
-        }
-    }
-
-    pub fn chart_name(&self) -> Option<&str> {
-        match self.update {
-            PlannedUpdate::Chart(update) => Some(&update.chart_name),
-            PlannedUpdate::Image(_) | PlannedUpdate::RemoteResource(_) => None,
-        }
-    }
-
-    pub fn repo_name(&self) -> Option<&str> {
-        match self.update {
-            PlannedUpdate::Chart(update) => Some(&update.repo_name),
-            PlannedUpdate::Image(_) | PlannedUpdate::RemoteResource(_) => None,
-        }
-    }
-
-    pub fn source_locations(&self) -> Vec<(&Path, usize)> {
-        match self.update {
-            PlannedUpdate::Chart(update) => update
-                .manifest_identity
-                .as_ref()
-                .map_or_else(Vec::new, |identity| identity.source_locations()),
-            PlannedUpdate::Image(_) | PlannedUpdate::RemoteResource(_) => Vec::new(),
-        }
-    }
-
-    pub fn chart_context_json(&self, repo_root: &Path) -> Option<serde_json::Value> {
-        match self.update {
-            PlannedUpdate::Chart(update) => update
-                .manifest_identity
-                .as_ref()?
-                .chart_context_json(repo_root),
-            PlannedUpdate::Image(_) | PlannedUpdate::RemoteResource(_) => None,
-        }
-    }
-
-    pub fn current_image(&self) -> Option<&str> {
-        match self.update {
-            PlannedUpdate::Image(update) => Some(&update.current_image),
-            PlannedUpdate::Chart(_) | PlannedUpdate::RemoteResource(_) => None,
-        }
-    }
-
-    pub fn latest_image(&self) -> Option<&str> {
-        match self.update {
-            PlannedUpdate::Image(update) => Some(&update.latest_image),
-            PlannedUpdate::Chart(_) | PlannedUpdate::RemoteResource(_) => None,
-        }
-    }
-
-    pub fn remote_resource_changes(&self) -> &[RemoteResourceChange] {
-        match self.update {
-            PlannedUpdate::RemoteResource(update) => &update.changes,
-            PlannedUpdate::Chart(_) | PlannedUpdate::Image(_) => &[],
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -357,7 +243,7 @@ impl<'a> UpdateRun<'a> {
         progress: Option<&mut ProgressObserver<'_>>,
     ) -> Result<UpdateRunOutcome> {
         let default_remote_resolver = GitHubReleaseResolver::default();
-        let report = plan_updates_with_resources(
+        let plan = plan_updates_with_resources(
             inventory,
             self.charts,
             self.images,
@@ -365,7 +251,7 @@ impl<'a> UpdateRun<'a> {
             PlanOptions::default(),
             progress,
         );
-        for update in &report.planned {
+        for update in &plan.planned {
             if !update.has_original_identity() {
                 bail!(
                     "inventory lacks original manifest or source identity for {}; scan the repository before running updates",
@@ -373,9 +259,8 @@ impl<'a> UpdateRun<'a> {
                 );
             }
         }
-        let plan = UpdatePlan::from_report(report, &inventory.repo_root);
         let mut outcome = UpdateRunOutcome {
-            status: if plan.identities.is_empty() {
+            status: if plan.planned.is_empty() {
                 UpdateRunStatus::NoUpdates
             } else {
                 UpdateRunStatus::UpdatesPlanned
@@ -388,18 +273,24 @@ impl<'a> UpdateRun<'a> {
         };
         let requested = match mode {
             UpdateRunMode::PlanOnly => return Ok(outcome),
-            UpdateRunMode::ReviewAndApply if !outcome.plan.identities.is_empty() => {
+            UpdateRunMode::ReviewAndApply if !outcome.plan.planned.is_empty() => {
                 approval(&outcome.plan.review())?
             }
             UpdateRunMode::ReviewAndApply => Vec::new(),
-            UpdateRunMode::ApplyAll => outcome.plan.identities.clone(),
+            UpdateRunMode::ApplyAll => outcome
+                .plan
+                .planned
+                .iter()
+                .map(|update| update.identity().clone())
+                .collect(),
             UpdateRunMode::ApplySelected(identities) => identities,
         };
         let mut requested = requested.into_iter().collect::<BTreeSet<_>>();
         let approved = outcome
             .plan
-            .identities
+            .planned
             .iter()
+            .map(PlannedUpdate::identity)
             .filter(|identity| requested.remove(*identity))
             .cloned()
             .collect::<Vec<_>>();
@@ -411,7 +302,7 @@ impl<'a> UpdateRun<'a> {
             return Ok(outcome);
         }
         if approved.is_empty() {
-            if !outcome.plan.identities.is_empty() {
+            if !outcome.plan.planned.is_empty() {
                 outcome.status = UpdateRunStatus::NoUpdatesApproved;
             }
             return Ok(outcome);
@@ -419,12 +310,9 @@ impl<'a> UpdateRun<'a> {
         let approved_set = approved.iter().collect::<BTreeSet<_>>();
         let updates = outcome
             .plan
-            .report
             .planned
             .iter()
-            .zip(&outcome.plan.identities)
-            .filter(|(_, identity)| approved_set.contains(identity))
-            .map(|(update, identity)| (update, identity.as_str()));
+            .filter(|update| approved_set.contains(update.identity()));
         outcome.changed_paths = apply_planned_updates(updates)?
             .into_iter()
             .map(|path| {

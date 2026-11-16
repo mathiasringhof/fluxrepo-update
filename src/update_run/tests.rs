@@ -7,12 +7,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use super::{UpdatePlan, UpdateRun, UpdateRunMode};
 use crate::test_support::{
     ResponseSpec, TestHttpServer, assert_partial_write_diagnostics, copy_fixture, write_file,
 };
 use crate::update_run::implementation::{
-    PlanOptions, PlannedChartUpdate, PlannedImageUpdate, PlannedUpdate, SkippedUpdate,
-    UpdateReport, apply_updates, plan_updates,
+    PlanOptions, PlannedUpdate, SkippedUpdate, apply_updates, plan_updates,
 };
 use fluxrepo_update::models::{
     HelmRepository, ImageBinding, ImageBindingValueKind, Inventory, RepoType, ResourceId,
@@ -51,7 +51,7 @@ fn check_completeness_distinguishes_success_failure_and_unsupported_declarations
 
 #[test]
 fn check_summary_classifies_existing_skip_reasons_independently_of_retryability() {
-    use super::{CheckCompleteness, SkipReasonCode, UpdatePlan};
+    use super::{CheckCompleteness, SkipReasonCode};
 
     let unsupported = [
         SkipReasonCode::MissingHelmRepository,
@@ -86,14 +86,7 @@ fn check_summary_classifies_existing_skip_reasons_independently_of_retryability(
                 let mut skip = SkippedUpdate::new(None, "unresolved");
                 skip.reason_code = reason_code;
                 skip.retryable = retryable;
-                let plan = UpdatePlan::from_report(
-                    UpdateReport {
-                        planned: Vec::new(),
-                        skipped: vec![skip],
-                        checked_count: 0,
-                    },
-                    Path::new("/repo"),
-                );
+                let plan = UpdatePlan::new(Vec::new(), vec![skip], 0);
                 let summary = plan.check_summary();
                 assert_eq!(summary.failed_count, usize::from(failed), "{reason_code:?}");
                 assert_eq!(
@@ -141,21 +134,21 @@ fn plans_and_applies_chart_and_deployment_updates() {
         None,
     );
 
-    assert!(report.planned.iter().any(|item| {
+    assert!(report.review().iter().any(|item| {
         item.path().strip_prefix(&repo_root).expect("relative path")
             == Path::new("apps/base/paperless-ngx/release.yaml")
     }));
-    assert!(report.planned.iter().any(|item| {
+    assert!(report.review().iter().any(|item| {
         item.path().strip_prefix(&repo_root).expect("relative path")
             == Path::new("apps/base/sonarr/deployment.yaml")
-            && item.target_kind() == "ImageBinding"
+            && item.kind().as_str() == "ImageBinding"
             && item.current_version() == "version-4.0.16.2944"
             && item.latest_version() == "version-4.0.17.3000"
     }));
-    assert!(report.planned.iter().any(|item| {
+    assert!(report.review().iter().any(|item| {
         item.path().strip_prefix(&repo_root).expect("relative path")
             == Path::new("apps/production/openssh/deployment.yaml")
-            && item.target_kind() == "ImageBinding"
+            && item.kind().as_str() == "ImageBinding"
             && item.current_version() == "3.22"
             && item.latest_version() == "3.22.1"
     }));
@@ -204,7 +197,7 @@ fn changes_only_manifest_local_chart_versions() {
     );
 
     let planned_paths = report
-        .planned
+        .review()
         .iter()
         .map(|item| {
             item.path()
@@ -354,10 +347,10 @@ fn skips_missing_chart_repository_and_same_or_older_images() {
         None,
     );
 
-    assert!(report.planned.is_empty());
-    assert_eq!(report.skipped.len(), 1);
+    assert!(report.review().is_empty());
+    assert_eq!(report.skipped().len(), 1);
     assert_eq!(
-        report.skipped[0].path,
+        report.skipped()[0].path,
         Some(PathBuf::from("/repo/release.yaml"))
     );
 
@@ -420,7 +413,7 @@ fn planning_reports_manifest_local_chart_versions_without_identity_as_unresolved
 }
 
 #[test]
-fn update_report_serializes_retryable_chart_request_skip_with_source_url() {
+fn update_plan_serializes_retryable_chart_request_skip_with_source_url() {
     let server = TestHttpServer::new(vec![ResponseSpec::new(500, "temporary failure")]);
     let mut inventory = Inventory::new(PathBuf::from("/repo"));
     inventory.repositories.insert(
@@ -474,7 +467,7 @@ fn update_report_serializes_retryable_chart_request_skip_with_source_url() {
 }
 
 #[test]
-fn update_report_serializes_permanent_image_skip_codes() {
+fn update_plan_serializes_permanent_image_skip_codes() {
     let mut inventory = Inventory::new(PathBuf::from("/repo"));
     inventory.image_bindings.extend([
         image_binding("/repo/latest.yaml", "latest", "example/app:latest"),
@@ -571,7 +564,7 @@ fn resolves_multiple_image_bindings_concurrently() {
         None,
     );
 
-    assert_eq!(report.planned.len(), 4);
+    assert_eq!(report.review().len(), 4);
     assert!(resolver.max_active_calls.load(Ordering::SeqCst) > 1);
 }
 
@@ -623,7 +616,7 @@ fn planning_options_can_force_sequential_resolution() {
         None,
     );
 
-    assert_eq!(report.planned.len(), 3);
+    assert_eq!(report.review().len(), 3);
     assert_eq!(resolver.max_active_calls.load(Ordering::SeqCst), 1);
 }
 
@@ -716,7 +709,7 @@ fn preserves_input_order_for_skipped_image_bindings() {
 
     assert_eq!(
         report
-            .planned
+            .review()
             .iter()
             .map(|item| item
                 .path()
@@ -729,7 +722,7 @@ fn preserves_input_order_for_skipped_image_bindings() {
     );
     assert_eq!(
         report
-            .skipped
+            .skipped()
             .iter()
             .map(|skip| (skip.path.as_deref(), skip.reason.as_str()))
             .collect::<Vec<_>>(),
@@ -747,12 +740,12 @@ fn preserves_input_order_for_skipped_image_bindings() {
 }
 
 #[test]
-fn update_report_serializes_non_repo_path_skip_reason() {
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: Vec::new(),
-        skipped: vec![SkippedUpdate::new(None, "network timeout")],
-    };
+fn update_plan_serializes_non_repo_path_skip_reason() {
+    let report = UpdatePlan::new(
+        Vec::new(),
+        vec![SkippedUpdate::new(None, "network timeout")],
+        0,
+    );
 
     let payload = crate::cli::plan_payload(&report);
 
@@ -775,20 +768,18 @@ fn apply_updates_rejects_non_mapping_helmrelease_documents() {
     let temp = tempfile::tempdir().expect("temp dir");
     let path = temp.path().join("release.yaml");
     write_file(&path, "- not\n- a\n- mapping\n");
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
-            manifest_identity: None,
+    let report = UpdatePlan::new(
+        vec![PlannedUpdate::chart_for_test(
+            Path::new(""),
             path,
-            document_index: 0,
-            target_name: "demo".to_string(),
-            chart_name: "demo".to_string(),
-            repo_name: "demo".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "1.0.1".to_string(),
-        })],
-        skipped: Vec::new(),
-    };
+            0,
+            "demo",
+            ("demo", "demo"),
+            ("1.0.0", "1.0.1"),
+        )],
+        Vec::new(),
+        0,
+    );
 
     let error = apply_updates(&report).expect_err("reject non-mapping document");
 
@@ -805,20 +796,18 @@ fn apply_updates_rejects_a_chart_scalar_changed_after_planning() {
     let path = temp.path().join("release.yaml");
     let changed = "kind: HelmRelease\nspec: {chart: {spec: {version: 1.5.0}}}\n";
     write_file(&path, changed);
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
-            manifest_identity: None,
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            chart_name: "demo".to_string(),
-            repo_name: "demo".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "2.0.0".to_string(),
-        })],
-        skipped: Vec::new(),
-    };
+    let report = UpdatePlan::new(
+        vec![PlannedUpdate::chart_for_test(
+            Path::new(""),
+            path.clone(),
+            0,
+            "demo",
+            ("demo", "demo"),
+            ("1.0.0", "2.0.0"),
+        )],
+        Vec::new(),
+        0,
+    );
 
     let error = apply_updates(&report).expect_err("reject stale chart plan");
 
@@ -832,22 +821,19 @@ fn apply_updates_rejects_an_image_scalar_changed_after_planning() {
     let path = temp.path().join("pod.yaml");
     let changed = "kind: Pod\nspec: {containers: [{image: example/demo:1.5.0}]}\n";
     write_file(&path, changed);
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
-            manifest_identity: None,
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            yaml_path: "spec.containers[0].image".to_string(),
-            current_image: "example/demo:1.0.0".to_string(),
-            latest_image: "example/demo:2.0.0".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "2.0.0".to_string(),
-            value_kind: ImageBindingValueKind::ImageReference,
-        })],
-        skipped: Vec::new(),
-    };
+    let report = UpdatePlan::new(
+        vec![PlannedUpdate::image_for_test(
+            Path::new(""),
+            (path.clone(), 0),
+            "demo",
+            "spec.containers[0].image",
+            ("example/demo:1.0.0", "example/demo:2.0.0"),
+            ("1.0.0", "2.0.0"),
+            ImageBindingValueKind::ImageReference,
+        )],
+        Vec::new(),
+        0,
+    );
 
     let error = apply_updates(&report).expect_err("reject stale image plan");
 
@@ -864,27 +850,24 @@ fn apply_updates_prepares_every_file_before_writing_any_file() {
     write_file(&first_path, manifest);
     write_file(&second_path, manifest);
     let update = |path: PathBuf, yaml_path: &str| {
-        PlannedUpdate::Image(PlannedImageUpdate {
-            manifest_identity: None,
-            path,
-            document_index: 0,
-            target_name: "demo".to_string(),
-            yaml_path: yaml_path.to_string(),
-            current_image: "example/demo:1.0.0".to_string(),
-            latest_image: "example/demo:2.0.0".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "2.0.0".to_string(),
-            value_kind: ImageBindingValueKind::ImageReference,
-        })
+        PlannedUpdate::image_for_test(
+            Path::new(""),
+            (path, 0),
+            "demo",
+            yaml_path,
+            ("example/demo:1.0.0", "example/demo:2.0.0"),
+            ("1.0.0", "2.0.0"),
+            ImageBindingValueKind::ImageReference,
+        )
     };
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: vec![
+    let report = UpdatePlan::new(
+        vec![
             update(first_path.clone(), "spec.containers[0].image"),
             update(second_path, "spec.missing[0].image"),
         ],
-        skipped: Vec::new(),
-    };
+        Vec::new(),
+        0,
+    );
 
     apply_updates(&report).expect_err("later transformation should fail");
 
@@ -911,32 +894,29 @@ fn apply_updates_reports_partial_application_after_a_later_write_failure() {
     fs::set_permissions(&second_path, fs::Permissions::from_mode(0o444))
         .expect("make second file read-only");
     let update = |path: PathBuf| {
-        PlannedUpdate::Image(PlannedImageUpdate {
-            manifest_identity: None,
-            path,
-            document_index: 0,
-            target_name: "demo".to_string(),
-            yaml_path: "spec.containers[0].image".to_string(),
-            current_image: "example/demo:1.0.0".to_string(),
-            latest_image: "example/demo:2.0.0".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "2.0.0".to_string(),
-            value_kind: ImageBindingValueKind::ImageReference,
-        })
+        PlannedUpdate::image_for_test(
+            Path::new(""),
+            (path, 0),
+            "demo",
+            "spec.containers[0].image",
+            ("example/demo:1.0.0", "example/demo:2.0.0"),
+            ("1.0.0", "2.0.0"),
+            ImageBindingValueKind::ImageReference,
+        )
     };
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: vec![
+    let report = UpdatePlan::new(
+        vec![
             update(first_path.clone()),
             update(second_path.clone()),
             update(third_path.clone()),
         ],
-        skipped: Vec::new(),
-    };
+        Vec::new(),
+        0,
+    );
     let ids = report
-        .planned
+        .review()
         .iter()
-        .map(|update| vec![update.selection_id(Path::new(""))])
+        .map(|update| vec![update.identity().as_str().to_owned()])
         .collect::<Vec<_>>();
 
     let error = apply_updates(&report).expect_err("second write should fail");
@@ -977,22 +957,19 @@ spec:
         - old
 "#,
     );
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
-            manifest_identity: None,
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            yaml_path: "spec.template.spec.containers[0]".to_string(),
-            current_image: "old".to_string(),
-            latest_image: "new".to_string(),
-            current_version: "old".to_string(),
-            latest_version: "new".to_string(),
-            value_kind: ImageBindingValueKind::ImageReference,
-        })],
-        skipped: Vec::new(),
-    };
+    let report = UpdatePlan::new(
+        vec![PlannedUpdate::image_for_test(
+            Path::new(""),
+            (path.clone(), 0),
+            "demo",
+            "spec.template.spec.containers[0]",
+            ("old", "new"),
+            ("old", "new"),
+            ImageBindingValueKind::ImageReference,
+        )],
+        Vec::new(),
+        0,
+    );
 
     apply_updates(&report).expect("apply terminal list index");
 
@@ -1022,20 +999,18 @@ spec:
         value: "unchanged"
 "#;
     write_file(&path, original);
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
-            manifest_identity: None,
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            chart_name: "demo".to_string(),
-            repo_name: "demo".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "1.0.1".to_string(),
-        })],
-        skipped: Vec::new(),
-    };
+    let report = UpdatePlan::new(
+        vec![PlannedUpdate::chart_for_test(
+            Path::new(""),
+            path.clone(),
+            0,
+            "demo",
+            ("demo", "demo"),
+            ("1.0.0", "1.0.1"),
+        )],
+        Vec::new(),
+        0,
+    );
 
     apply_updates(&report).expect("apply chart update");
 
@@ -1068,22 +1043,19 @@ metadata:
   name: demo
 "#;
     write_file(&path, original);
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: vec![PlannedUpdate::Image(PlannedImageUpdate {
-            manifest_identity: None,
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            yaml_path: "spec.template.spec.containers[0].image".to_string(),
-            current_image: "example/demo:1.0.0".to_string(),
-            latest_image: "example/demo:1.0.1".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "1.0.1".to_string(),
-            value_kind: ImageBindingValueKind::ImageReference,
-        })],
-        skipped: Vec::new(),
-    };
+    let report = UpdatePlan::new(
+        vec![PlannedUpdate::image_for_test(
+            Path::new(""),
+            (path.clone(), 0),
+            "demo",
+            "spec.template.spec.containers[0].image",
+            ("example/demo:1.0.0", "example/demo:1.0.1"),
+            ("1.0.0", "1.0.1"),
+            ImageBindingValueKind::ImageReference,
+        )],
+        Vec::new(),
+        0,
+    );
 
     apply_updates(&report).expect("apply deployment update");
 
@@ -1102,20 +1074,18 @@ fn apply_updates_preserves_crlf_line_endings_around_scalar_changes() {
     let path = temp.path().join("release.yaml");
     let original = "apiVersion: helm.toolkit.fluxcd.io/v2\r\nkind: HelmRelease\r\nmetadata:\r\n  name: demo\r\nspec:\r\n  chart:\r\n    spec:\r\n      chart: demo\r\n      version: \"1.0.0\"\r\n";
     write_file(&path, original);
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
-            manifest_identity: None,
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            chart_name: "demo".to_string(),
-            repo_name: "demo".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "1.0.1".to_string(),
-        })],
-        skipped: Vec::new(),
-    };
+    let report = UpdatePlan::new(
+        vec![PlannedUpdate::chart_for_test(
+            Path::new(""),
+            path.clone(),
+            0,
+            "demo",
+            ("demo", "demo"),
+            ("1.0.0", "1.0.1"),
+        )],
+        Vec::new(),
+        0,
+    );
 
     apply_updates(&report).expect("apply chart update");
 
@@ -1139,20 +1109,18 @@ spec:
       chart: demo
       version: "1.0.0""#;
     write_file(&path, original);
-    let report = UpdateReport {
-        checked_count: 0,
-        planned: vec![PlannedUpdate::Chart(PlannedChartUpdate {
-            manifest_identity: None,
-            path: path.clone(),
-            document_index: 0,
-            target_name: "demo".to_string(),
-            chart_name: "demo".to_string(),
-            repo_name: "demo".to_string(),
-            current_version: "1.0.0".to_string(),
-            latest_version: "1.0.1".to_string(),
-        })],
-        skipped: Vec::new(),
-    };
+    let report = UpdatePlan::new(
+        vec![PlannedUpdate::chart_for_test(
+            Path::new(""),
+            path.clone(),
+            0,
+            "demo",
+            ("demo", "demo"),
+            ("1.0.0", "1.0.1"),
+        )],
+        Vec::new(),
+        0,
+    );
 
     apply_updates(&report).expect("apply chart update");
 
@@ -1193,11 +1161,27 @@ spec:
     'a\b': {image: 'example/demo:1.0.0'}
 "#;
     write_file(&path, original);
-    let mut report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
-    assert_eq!(report.planned.len(), 6);
-    let literal = report.planned.iter().position(|item| matches!(item, PlannedUpdate::Image(image) if image.yaml_path == "spec.values[\"a.b\"].image")).expect("unambiguous literal key path");
-    report.planned = vec![report.planned.remove(literal)];
-    apply_updates(&report).expect("update selected literal key");
+    let inventory = scan_repo(temp.path()).expect("scan");
+    let charts = StaticVersionResolver::new(HashMap::new());
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "example/demo:1.0.0".into(),
+        "example/demo:2.0.0".into(),
+    )]));
+    UpdateRun::new(&charts, &images)
+        .execute(
+            &inventory,
+            UpdateRunMode::ReviewAndApply,
+            &mut |items| {
+                assert_eq!(items.len(), 6);
+                let literal = items
+                    .iter()
+                    .find(|item| item.yaml_path() == "spec.values[\"a.b\"].image")
+                    .expect("unambiguous literal key path");
+                Ok(vec![literal.identity().clone()])
+            },
+            None,
+        )
+        .expect("update selected literal key");
     assert_eq!(
         fs::read_to_string(&path).expect("read"),
         original.replace(
@@ -1226,7 +1210,7 @@ fn apply_updates_preserves_valid_block_scalar_images() {
         );
         write_file(&path, &original);
         let report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
-        assert_eq!(report.planned.len(), 1, "{style}");
+        assert_eq!(report.review().len(), 1, "{style}");
         apply_updates(&report).expect("apply block scalar");
         assert_eq!(
             scan_repo(temp.path()).expect("rescan").image_bindings[0].image,
@@ -1247,7 +1231,7 @@ fn apply_updates_preserves_explicit_keys_around_indentless_siblings() {
     let original = "? kind\n: Pod\nmetadata: {name: demo}\nspec:\n  containers:\n  - image: example/unchanged:1.0.0\n  initContainers:\n  - image: example/demo:1.0.0\n";
     write_file(&path, original);
     let report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
-    assert_eq!(report.planned.len(), 1);
+    assert_eq!(report.review().len(), 1);
 
     apply_updates(&report).expect("explicit key notation must retain its mapping scope");
 
@@ -1266,7 +1250,7 @@ fn apply_updates_preserves_numeric_tags_and_byte_offsets_in_indentless_siblings(
     let report = plan_test_images(temp.path(), "example/demo:3.20", "example/demo:3.21");
 
     assert_eq!(
-        report.planned.len(),
+        report.review().len(),
         1,
         "numeric spelling must survive discovery"
     );
@@ -1286,7 +1270,7 @@ fn apply_updates_preserves_numeric_tag_spelling() {
         "kind: HelmRelease\nmetadata: {name: demo}\nspec:\n  values:\n    image: {repository: example/demo, tag: 3.20}\n",
     );
     let report = plan_test_images(temp.path(), "example/demo:3.20", "example/demo:3.21");
-    assert_eq!(report.planned.len(), 1);
+    assert_eq!(report.review().len(), 1);
     apply_updates(&report).expect("numeric tag spelling must match plan");
     assert_eq!(
         scan_repo(temp.path()).expect("scan").image_bindings[0].image,
@@ -1312,7 +1296,7 @@ fn apply_updates_rejects_changed_image_identity() {
             "registry.example/example/demo:1.0.0",
             "registry.example/example/demo:2.0.0",
         );
-        assert_eq!(report.planned.len(), 1);
+        assert_eq!(report.review().len(), 1);
         let changed = original.replace(old, new);
         write_file(&path, &changed);
         apply_updates(&report).expect_err("identity changed after planning");
@@ -1346,7 +1330,7 @@ fn apply_updates_rejects_changed_chart_and_source_identity() {
             PlanOptions::default(),
             None,
         );
-        assert_eq!(report.planned.len(), 1);
+        assert_eq!(report.review().len(), 1);
         let changed = original.replace(old, new);
         write_file(&path, &changed);
         apply_updates(&report).expect_err("chart identity changed after planning");
@@ -1354,7 +1338,7 @@ fn apply_updates_rejects_changed_chart_and_source_identity() {
     }
 }
 
-fn plan_test_images(root: &Path, current: &str, latest: &str) -> UpdateReport {
+fn plan_test_images(root: &Path, current: &str, latest: &str) -> UpdatePlan {
     plan_updates(
         &scan_repo(root).expect("scan"),
         &StaticVersionResolver::new(HashMap::new()),
@@ -1389,7 +1373,7 @@ fn selection_ids_reject_changed_chart_source_identity() {
             PlanOptions::default(),
             None,
         );
-        assert_eq!(before.planned.len(), 1);
+        assert_eq!(before.review().len(), 1);
         write_file(&path, &original.replace(old, new));
         let after = plan_updates(
             &scan_repo(temp.path()).expect("rescan"),
@@ -1398,10 +1382,10 @@ fn selection_ids_reject_changed_chart_source_identity() {
             PlanOptions::default(),
             None,
         );
-        assert_eq!(after.planned.len(), 1);
+        assert_eq!(after.review().len(), 1);
         assert_ne!(
-            before.planned[0].selection_id(temp.path()),
-            after.planned[0].selection_id(temp.path()),
+            before.review()[0].identity(),
+            after.review()[0].identity(),
             "approval must bind source identity for {old}"
         );
     }
@@ -1414,7 +1398,7 @@ fn apply_updates_rejects_unapproved_alias_side_effects() {
     let original = "kind: Pod\nmetadata: {name: demo}\nspec:\n  containers:\n    - image: &image example/demo:1.0.0\n      name: app\n      env:\n        - name: EXPECTED_IMAGE\n          value: *image\n";
     write_file(&path, original);
     let report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
-    assert_eq!(report.planned.len(), 1);
+    assert_eq!(report.review().len(), 1);
     apply_updates(&report).expect_err("anchor mutation would affect unapproved fields");
     assert_eq!(fs::read_to_string(path).expect("read"), original);
 }
@@ -1426,7 +1410,7 @@ fn apply_updates_preserves_block_comments_and_crlf() {
     let original = "kind: Pod\r\nmetadata: {name: demo}\r\nspec:\r\n  containers:\r\n    - image: |- # retain comment\r\n        example/demo:1.0.0\r\n\r\n      name: app";
     write_file(&path, original);
     let report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
-    assert_eq!(report.planned.len(), 1);
+    assert_eq!(report.review().len(), 1);
     apply_updates(&report).expect("apply block with comment");
     assert_eq!(
         fs::read_to_string(path).expect("read"),
@@ -1445,13 +1429,13 @@ fn selection_ids_reject_changed_resource_and_container_identity() {
         let original = "kind: Pod\nmetadata: {name: demo, namespace: one}\nspec:\n  containers:\n    - image: example/demo:1.0.0\n      name: container-one\n";
         write_file(&path, original);
         let before = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
-        assert_eq!(before.planned.len(), 1);
+        assert_eq!(before.review().len(), 1);
         write_file(&path, &original.replace(old, new));
         let after = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
-        assert_eq!(after.planned.len(), 1);
+        assert_eq!(after.review().len(), 1);
         assert_ne!(
-            before.planned[0].selection_id(temp.path()),
-            after.planned[0].selection_id(temp.path()),
+            before.review()[0].identity(),
+            after.review()[0].identity(),
             "approval must bind image target identity for {old}"
         );
     }
@@ -1492,12 +1476,9 @@ fn selection_ids_are_stable_across_repository_relocation_and_mapping_order() {
         PlanOptions::default(),
         None,
     );
-    assert_eq!(before.planned.len(), 1);
-    assert_eq!(after.planned.len(), 1);
-    assert_eq!(
-        before.planned[0].selection_id(first.path()),
-        after.planned[0].selection_id(second.path())
-    );
+    assert_eq!(before.review().len(), 1);
+    assert_eq!(after.review().len(), 1);
+    assert_eq!(before.review()[0].identity(), after.review()[0].identity());
 }
 
 #[test]
@@ -1535,24 +1516,24 @@ fn planning_rejects_explicit_chart_source_namespace_mismatches() {
             None,
         );
         assert!(
-            report.planned.is_empty(),
+            report.review().is_empty(),
             "mismatched namespaces must not resolve a chart update"
         );
-        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped().len(), 1);
         assert_eq!(
-            report.skipped[0].reason_code,
+            report.skipped()[0].reason_code,
             crate::update_run::SkipReasonCode::MissingHelmRepository
         );
         assert!(
-            report.skipped[0]
+            report.skipped()[0]
                 .reason
                 .contains(&format!("{expected_namespace}/source"))
         );
-        assert!(report.skipped[0].reason.contains(&format!(
+        assert!(report.skipped()[0].reason.contains(&format!(
             "{}/source",
             repository_namespace.expect("known repository namespace")
         )));
-        assert!(!report.skipped[0].retryable);
+        assert!(!report.skipped()[0].retryable);
     }
 }
 
@@ -1581,8 +1562,8 @@ fn planning_accepts_matching_cross_namespace_and_unspecified_chart_sources() {
             PlanOptions::default(),
             None,
         );
-        assert_eq!(report.planned.len(), 1);
-        assert!(report.skipped.is_empty());
+        assert_eq!(report.review().len(), 1);
+        assert!(report.skipped().is_empty());
     }
 }
 

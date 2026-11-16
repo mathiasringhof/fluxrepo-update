@@ -73,7 +73,7 @@ pub fn check_outcome(
                     planned
                         .iter()
                         .any(|update| expected.iter().all(|(field, value)| {
-                            planned_field(update, field, inventory).as_ref() == Some(value)
+                            planned_field(*update, field, inventory).as_ref() == Some(value)
                         })),
                     "{pointer}: no planned update matches {expected:?}"
                 );
@@ -393,7 +393,7 @@ fn check_resource_changes(
     }
 }
 
-fn planned_field(update: &UpdateReview<'_>, field: &str, inventory: &Inventory) -> Option<Value> {
+fn planned_field(update: UpdateReview<'_>, field: &str, inventory: &Inventory) -> Option<Value> {
     Some(match field {
         "id" => json!(update.identity().as_str()),
         "path" => json!(inventory.relative(update.path())),

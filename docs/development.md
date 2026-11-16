@@ -44,6 +44,8 @@ or behavior. The public workflow is scan → resolve and plan → review/select 
 `UpdateRun` owns workflow decisions and hides concurrency and editing. Keep terminal
 presentation in the CLI and registry protocols behind resolver traits. The CLI separates
 [approval input](../src/cli/interactive_approval.rs) from [reporting](../src/cli/output.rs).
+`UpdatePlan` owns the complete Planned Updates and skipped attempts. Private constructors
+fix each update's identity and edit intent; the CLI reads them through `UpdateReview`.
 For the JSON contract and the difference between the full Update Plan and the applied
 output subset, see [output](output.md).
 
