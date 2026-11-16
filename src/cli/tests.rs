@@ -2,9 +2,7 @@ use super::HumanOutput;
 use super::interactive_approval::InteractiveApproval;
 use crate::update_run::UpdatePlan;
 use crate::update_run::UpdateSelectionIdentity;
-use crate::update_run::implementation::{
-    PlannedChartUpdate, PlannedUpdate, SkippedUpdate, UpdateReport,
-};
+use crate::update_run::{PlannedUpdate, SkippedUpdate};
 use std::cell::RefCell;
 use std::io::Cursor;
 use std::io::Write as _;
@@ -932,27 +930,24 @@ fn interactive_approval_interrupt_applies_neither_manifest() {
 }
 
 fn report_with_updates(paths: &[&str]) -> UpdatePlan {
-    let report = UpdateReport {
-        checked_count: paths.len(),
-        planned: paths
+    UpdatePlan::new(
+        paths
             .iter()
             .map(|path| {
-                PlannedUpdate::Chart(PlannedChartUpdate {
-                    path: PathBuf::from("/repo").join(path),
-                    document_index: 0,
-                    target_name: path.to_string(),
-                    chart_name: "chart".to_string(),
-                    repo_name: "repo".to_string(),
-                    current_version: "1.0.0".to_string(),
-                    latest_version: "2.0.0".to_string(),
-                    manifest_identity: None,
-                })
+                PlannedUpdate::chart_for_test(
+                    Path::new("/repo"),
+                    PathBuf::from("/repo").join(path),
+                    0,
+                    path,
+                    ("repo", "chart"),
+                    ("1.0.0", "2.0.0"),
+                )
             })
             .collect(),
-        skipped: vec![SkippedUpdate::new(
+        vec![SkippedUpdate::new(
             Some(PathBuf::from("/repo/skipped.yaml")),
             "unresolved",
         )],
-    };
-    UpdatePlan::from_report(report, Path::new("/repo"))
+        paths.len(),
+    )
 }

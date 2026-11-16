@@ -130,7 +130,7 @@ pub(super) fn emit_update_output<W: Write, E: Write>(
         }
         return Ok(());
     }
-    for update in &planned {
+    for update in planned {
         writeln!(
             stderr,
             "{}",
@@ -172,7 +172,7 @@ fn update_output_json(
             "checked_unchanged_count": checks.checked_unchanged_count,
             "update_available_count": checks.update_available_count,
             "unsupported_count": checks.unsupported_count, "failed_count": checks.failed_count },
-        "planned": planned.iter().map(|item| update_json(item, context.repo_root)).collect::<Vec<_>>(),
+        "planned": planned.iter().map(|&item| update_json(item, context.repo_root)).collect::<Vec<_>>(),
         "skipped": skipped.iter().map(|item| skip_json(item, context.repo_root)).collect::<Vec<_>>(),
     })
 }
@@ -201,21 +201,18 @@ pub(crate) fn skip_json(skipped: &SkippedUpdate, repo_root: &Path) -> serde_json
 }
 
 #[cfg(test)]
-pub(crate) fn plan_payload(
-    report: &crate::update_run::implementation::UpdateReport,
-) -> serde_json::Value {
+pub(crate) fn plan_payload(plan: &UpdatePlan) -> serde_json::Value {
     let root = Path::new("/repo");
-    let plan = crate::update_run::UpdatePlan::from_report(report.clone(), root);
     update_output_json(
         &plan.review(),
-        &plan,
+        plan,
         &OutputContext::new(root, true, "plan", true, HumanOutput::plain()),
         0,
         0,
     )
 }
 
-fn update_json(update: &UpdateReview<'_>, repo_root: &Path) -> serde_json::Value {
+fn update_json(update: UpdateReview<'_>, repo_root: &Path) -> serde_json::Value {
     let mut value = json!({
         "id": update.identity().as_str(), "path": relative_path(update.path(), repo_root),
         "document_index": update.document_index(), "target_kind": update.kind().as_str(),
@@ -297,7 +294,7 @@ impl AnsiStyle {
 }
 
 fn render_update_line(
-    update: &UpdateReview<'_>,
+    update: UpdateReview<'_>,
     repo_root: &Path,
     human_output: HumanOutput,
 ) -> String {

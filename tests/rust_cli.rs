@@ -7,22 +7,21 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::Cursor;
 
-use common::{
-    DefaultResolverFactory, ResponseSpec, StaticResolverFactory, TestHttpServer, TestResolvers,
-    copy_fixture, fixture_root, write_file,
-};
+use common::{ResponseSpec, TestHttpServer, copy_fixture, fixture_root, write_file};
 use fluxrepo_update::cli::run_with_args;
 use fluxrepo_update::resolvers::{
-    ChartVersionResolver, ImageVersionResolver, RepositoryChartResolver, StaticImageVersionResolver,
+    ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
+    StaticImageVersionResolver, StaticVersionResolver,
 };
 use serde_json::Value;
 
 #[test]
 fn version_flag_prints_package_version() {
     let (code, stdout, stderr) = run_cli(
-        &["fluxrepo-update", "--version"],
+        ["fluxrepo-update", "--version"],
         "",
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
 
     assert_eq!(code, 0);
@@ -36,14 +35,15 @@ fn version_flag_prints_package_version() {
 #[test]
 fn inventory_json_matches_fixture_contract() {
     let (code, stdout, _) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "inventory",
             fixture_root().to_str().expect("fixture path"),
             "--json",
         ],
         "",
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
 
     assert_eq!(code, 0);
@@ -161,13 +161,14 @@ fn inventory_json_matches_fixture_contract() {
 #[test]
 fn inventory_human_output_prints_summary_counts() {
     let (code, stdout, _) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "inventory",
             fixture_root().to_str().expect("fixture path"),
         ],
         "",
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
 
     assert_eq!(code, 0);
@@ -182,9 +183,10 @@ fn inventory_human_output_prints_summary_counts() {
 #[test]
 fn inventory_missing_repo_root_returns_parse_error() {
     let (code, _, _) = run_cli(
-        &["fluxrepo-update", "inventory"],
+        ["fluxrepo-update", "inventory"],
         "",
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
 
     assert_eq!(code, 2);
@@ -193,9 +195,10 @@ fn inventory_missing_repo_root_returns_parse_error() {
 #[test]
 fn inventory_json_runtime_error_is_structured() {
     let (code, stdout, stderr) = run_cli(
-        &["fluxrepo-update", "inventory", "/missing/path", "--json"],
+        ["fluxrepo-update", "inventory", "/missing/path", "--json"],
         "",
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
     let output = json_error_output(&stdout, &stderr);
     let payload: Value = serde_json::from_str(output).expect("json error output");
@@ -214,10 +217,17 @@ fn inventory_json_runtime_error_is_structured() {
 
 #[test]
 fn update_helm_json_dry_run_returns_agent_friendly_payload() {
-    let factory = paperless_update_factory();
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "linuxserver/sonarr:version-4.0.16.2944".to_string(),
+        "linuxserver/sonarr:version-4.0.17.3000".to_string(),
+    )]));
 
     let (code, stdout, stderr) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             fixture_root().to_str().expect("fixture path"),
@@ -225,7 +235,8 @@ fn update_helm_json_dry_run_returns_agent_friendly_payload() {
             "--non-interactive",
         ],
         "",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 10);
@@ -261,10 +272,17 @@ fn update_helm_json_dry_run_returns_agent_friendly_payload() {
 #[test]
 fn update_helm_json_write_returns_applied_exit_code() {
     let (_temp, repo_root) = copy_fixture();
-    let factory = paperless_update_factory();
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "linuxserver/sonarr:version-4.0.16.2944".to_string(),
+        "linuxserver/sonarr:version-4.0.17.3000".to_string(),
+    )]));
 
     let (code, stdout, _) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             repo_root.to_str().expect("repo path"),
@@ -273,7 +291,8 @@ fn update_helm_json_write_returns_applied_exit_code() {
             "--non-interactive",
         ],
         "",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 20);
@@ -295,10 +314,17 @@ fn update_helm_json_write_returns_applied_exit_code() {
 
 #[test]
 fn update_helm_json_plan_includes_stable_apply_ids() {
-    let factory = paperless_update_factory();
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "linuxserver/sonarr:version-4.0.16.2944".to_string(),
+        "linuxserver/sonarr:version-4.0.17.3000".to_string(),
+    )]));
 
     let (code, stdout, _) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             fixture_root().to_str().expect("fixture path"),
@@ -306,7 +332,8 @@ fn update_helm_json_plan_includes_stable_apply_ids() {
             "--non-interactive",
         ],
         "",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 10);
@@ -362,9 +389,10 @@ spec:
         namespace: flux-system
 "#,
     );
-    let factory = RepositoryResolverFactory;
+    let charts = RepositoryChartResolver::default();
+    let images = StaticImageVersionResolver::new(HashMap::new());
 
-    let (code, stdout, stderr) = run_cli_with_any_factory(
+    let (code, stdout, stderr) = run_cli(
         [
             "fluxrepo-update",
             "update-helm",
@@ -373,7 +401,8 @@ spec:
             "--non-interactive",
         ],
         "",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 10);
@@ -458,7 +487,7 @@ fn update_helm_json_plan_reports_unknown_image_schemes_as_unresolved() {
         &include_str!("fixtures/jellyfin/release.yaml").replace("10.11.8", "release-blue"),
     );
 
-    let (code, stdout, stderr) = run_cli_with_any_factory(
+    let (code, stdout, stderr) = run_cli(
         [
             "fluxrepo-update",
             "update-helm",
@@ -467,7 +496,8 @@ fn update_helm_json_plan_reports_unknown_image_schemes_as_unresolved() {
             "--non-interactive",
         ],
         "",
-        &DefaultResolverFactory,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
     );
     let payload: Value = serde_json::from_str(&stdout).expect("json plan");
 
@@ -484,10 +514,17 @@ fn update_helm_json_plan_reports_unknown_image_schemes_as_unresolved() {
 
 #[test]
 fn update_helm_json_plan_apply_ids_are_unique() {
-    let factory = paperless_update_factory();
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "linuxserver/sonarr:version-4.0.16.2944".to_string(),
+        "linuxserver/sonarr:version-4.0.17.3000".to_string(),
+    )]));
 
     let (code, stdout, _) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             fixture_root().to_str().expect("fixture path"),
@@ -495,7 +532,8 @@ fn update_helm_json_plan_apply_ids_are_unique() {
             "--non-interactive",
         ],
         "",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 10);
@@ -510,8 +548,15 @@ fn update_helm_json_plan_apply_ids_are_unique() {
 #[test]
 fn update_helm_non_interactive_write_applies_multiple_apply_ids() {
     let (_temp, repo_root) = copy_fixture();
-    let factory = paperless_update_factory();
-    let plan = json_plan(&repo_root, &factory);
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "linuxserver/sonarr:version-4.0.16.2944".to_string(),
+        "linuxserver/sonarr:version-4.0.17.3000".to_string(),
+    )]));
+    let plan = json_plan(&repo_root, &charts, &images);
     let sonarr_id = planned_id_for_path(&plan, "apps/base/sonarr/deployment.yaml");
     let paperless_id = planned_id_for_path(&plan, "apps/base/paperless-ngx/release.yaml");
     let args = vec![
@@ -527,7 +572,7 @@ fn update_helm_non_interactive_write_applies_multiple_apply_ids() {
         paperless_id,
     ];
 
-    let (code, stdout, _) = run_cli_owned(args, "", &factory);
+    let (code, stdout, _) = run_cli(args, "", &charts, &images);
 
     assert_eq!(code, 20);
     let payload: Value = serde_json::from_str(&stdout).expect("json output");
@@ -557,7 +602,14 @@ fn update_helm_non_interactive_write_applies_multiple_apply_ids() {
 #[test]
 fn update_helm_non_interactive_write_rejects_unknown_apply_id_without_writing() {
     let (_temp, repo_root) = copy_fixture();
-    let factory = paperless_update_factory();
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "linuxserver/sonarr:version-4.0.16.2944".to_string(),
+        "linuxserver/sonarr:version-4.0.17.3000".to_string(),
+    )]));
     let args = vec![
         "fluxrepo-update".to_string(),
         "update-helm".to_string(),
@@ -569,7 +621,7 @@ fn update_helm_non_interactive_write_rejects_unknown_apply_id_without_writing() 
         "v1:missing".to_string(),
     ];
 
-    let (code, stdout, stderr) = run_cli_owned(args, "", &factory);
+    let (code, stdout, stderr) = run_cli(args, "", &charts, &images);
     let output = json_error_output(&stdout, &stderr);
     let payload: Value = serde_json::from_str(output).expect("json error output");
 
@@ -598,8 +650,15 @@ fn update_helm_non_interactive_write_rejects_unknown_apply_id_without_writing() 
 #[test]
 fn update_helm_apply_id_requires_write() {
     let (_temp, repo_root) = copy_fixture();
-    let factory = paperless_update_factory();
-    let plan = json_plan(&repo_root, &factory);
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "linuxserver/sonarr:version-4.0.16.2944".to_string(),
+        "linuxserver/sonarr:version-4.0.17.3000".to_string(),
+    )]));
+    let plan = json_plan(&repo_root, &charts, &images);
     let sonarr_id = planned_id_for_path(&plan, "apps/base/sonarr/deployment.yaml");
     let args = vec![
         "fluxrepo-update".to_string(),
@@ -611,7 +670,7 @@ fn update_helm_apply_id_requires_write() {
         sonarr_id,
     ];
 
-    let (code, stdout, stderr) = run_cli_owned(args, "", &factory);
+    let (code, stdout, stderr) = run_cli(args, "", &charts, &images);
     let output = json_error_output(&stdout, &stderr);
     let payload: Value = serde_json::from_str(output).expect("json error output");
 
@@ -630,22 +689,21 @@ fn update_helm_apply_id_requires_write() {
 #[test]
 fn update_helm_interactive_prompt_includes_update_details() {
     let (_temp, repo_root) = copy_fixture();
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "12.1.0".to_string(),
-        )]),
-        HashMap::new(),
-    );
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::new());
 
     let (code, _, stderr) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             repo_root.to_str().expect("repo path"),
         ],
         "n\n",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 0);
@@ -667,8 +725,8 @@ fn update_helm_prompts_identify_each_image_before_approval() {
     let path = temp.path().join("pods.yaml");
     let original = "kind: Pod\nmetadata: {name: demo}\nspec:\n  containers:\n    - image: example/one:1.0.0\n    - image: example/two:1.0.0\n---\nkind: Pod\nmetadata: {name: demo}\nspec:\n  containers:\n    - image: example/three:1.0.0\n";
     write_file(&path, original);
-    let factory = StaticResolverFactory::new(
-        HashMap::new(),
+    let charts = StaticVersionResolver::new(HashMap::new());
+    let images = StaticImageVersionResolver::new(
         ["one", "two", "three"]
             .into_iter()
             .map(|name| {
@@ -681,13 +739,14 @@ fn update_helm_prompts_identify_each_image_before_approval() {
     );
 
     let (code, _, stderr) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             temp.path().to_str().expect("repo path"),
         ],
         "nyn",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 20);
@@ -724,22 +783,21 @@ fn update_helm_prompts_identify_each_image_before_approval() {
 #[test]
 fn update_helm_interactive_mode_defaults_empty_answer_to_no() {
     let (_temp, repo_root) = copy_fixture();
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "12.1.0".to_string(),
-        )]),
-        HashMap::new(),
-    );
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::new());
 
     let (code, _, stderr) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             repo_root.to_str().expect("repo path"),
         ],
         "\n",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 0);
@@ -760,14 +818,15 @@ fn update_helm_interactive_mode_defaults_empty_answer_to_no() {
 #[test]
 fn update_helm_write_requires_non_interactive() {
     let (code, _, stderr) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             fixture_root().to_str().expect("fixture path"),
             "--write",
         ],
         "",
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
 
     assert_eq!(code, 2);
@@ -789,7 +848,12 @@ fn invalid_update_modes_are_reported_before_accessing_the_repository() {
             "--json",
         ];
         args.extend(flags);
-        let (code, stdout, stderr) = run_cli(&args, "", &StaticResolverFactory::default());
+        let (code, stdout, stderr) = run_cli(
+            &args,
+            "",
+            &StaticVersionResolver::new(HashMap::new()),
+            &StaticImageVersionResolver::new(HashMap::new()),
+        );
         let payload: Value = serde_json::from_str(&stderr).expect("JSON error");
 
         assert_eq!(code, 2);
@@ -804,7 +868,7 @@ fn invalid_update_modes_are_reported_before_accessing_the_repository() {
 #[test]
 fn update_helm_json_write_requires_non_interactive_error_is_structured() {
     let (code, stdout, stderr) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             fixture_root().to_str().expect("fixture path"),
@@ -812,7 +876,8 @@ fn update_helm_json_write_requires_non_interactive_error_is_structured() {
             "--json",
         ],
         "",
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
     let output = json_error_output(&stdout, &stderr);
     let payload: Value = serde_json::from_str(output).expect("json error output");
@@ -832,9 +897,10 @@ fn update_helm_json_write_requires_non_interactive_error_is_structured() {
 #[test]
 fn update_helm_missing_repo_root_returns_parse_error() {
     let (code, _, _) = run_cli(
-        &["fluxrepo-update", "update-helm"],
+        ["fluxrepo-update", "update-helm"],
         "",
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
 
     assert_eq!(code, 2);
@@ -843,7 +909,7 @@ fn update_helm_missing_repo_root_returns_parse_error() {
 #[test]
 fn update_helm_rejects_the_removed_strict_option() {
     let (code, _, stderr) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             fixture_root().to_str().expect("fixture path"),
@@ -852,7 +918,8 @@ fn update_helm_rejects_the_removed_strict_option() {
             "--non-interactive",
         ],
         "",
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
 
     assert_eq!(code, 2);
@@ -861,16 +928,14 @@ fn update_helm_rejects_the_removed_strict_option() {
 
 #[test]
 fn update_helm_returns_zero_when_no_updates_needed() {
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "11.29.10".to_string(),
-        )]),
-        HashMap::new(),
-    );
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "11.29.10".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::new());
 
     let (code, stdout, _) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             fixture_root().to_str().expect("fixture path"),
@@ -878,7 +943,8 @@ fn update_helm_returns_zero_when_no_updates_needed() {
             "--non-interactive",
         ],
         "",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 0);
@@ -895,7 +961,7 @@ fn update_helm_does_not_claim_skipped_targets_are_current() {
         "kind: Pod\nmetadata: {name: demo}\nspec: {containers: [{image: example/app:latest}]}\n",
     );
 
-    let (code, stdout, stderr) = run_cli_with_any_factory(
+    let (code, stdout, stderr) = run_cli(
         [
             "fluxrepo-update",
             "update-helm",
@@ -903,7 +969,8 @@ fn update_helm_does_not_claim_skipped_targets_are_current() {
             "--non-interactive",
         ],
         "",
-        &DefaultResolverFactory,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
     );
 
     assert_eq!(code, 0);
@@ -916,23 +983,22 @@ fn update_helm_does_not_claim_skipped_targets_are_current() {
 
 #[test]
 fn update_helm_non_json_plan_output_includes_skip_reasons_and_plan_hint() {
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "12.1.0".to_string(),
-        )]),
-        HashMap::new(),
-    );
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::new());
 
     let (code, _, stderr) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             fixture_root().to_str().expect("fixture path"),
             "--non-interactive",
         ],
         "",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 10);
@@ -943,17 +1009,25 @@ fn update_helm_non_json_plan_output_includes_skip_reasons_and_plan_hint() {
 
 #[test]
 fn update_helm_non_json_plan_output_includes_target_context() {
-    let factory = paperless_update_factory();
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "linuxserver/sonarr:version-4.0.16.2944".to_string(),
+        "linuxserver/sonarr:version-4.0.17.3000".to_string(),
+    )]));
 
     let (code, _, stderr) = run_cli(
-        &[
+        [
             "fluxrepo-update",
             "update-helm",
             fixture_root().to_str().expect("fixture path"),
             "--non-interactive",
         ],
         "",
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 10);
@@ -975,47 +1049,11 @@ fn update_helm_non_json_plan_output_includes_target_context() {
     }
 }
 
-fn paperless_update_factory() -> StaticResolverFactory {
-    StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "12.1.0".to_string(),
-        )]),
-        HashMap::from([(
-            "linuxserver/sonarr:version-4.0.16.2944".to_string(),
-            "linuxserver/sonarr:version-4.0.17.3000".to_string(),
-        )]),
-    )
-}
-
-struct RepositoryResolverFactory;
-
-impl TestResolvers for RepositoryResolverFactory {
-    fn chart_resolver(&self) -> Box<dyn ChartVersionResolver + Sync> {
-        Box::new(RepositoryChartResolver::default())
-    }
-
-    fn image_resolver(&self) -> Box<dyn ImageVersionResolver + Sync> {
-        Box::new(StaticImageVersionResolver::new(HashMap::new()))
-    }
-}
-
-fn run_cli(args: &[&str], input: &str, factory: &StaticResolverFactory) -> (u8, String, String) {
-    run_cli_with_any_factory(args, input, factory)
-}
-
-fn run_cli_owned(
-    args: Vec<String>,
-    input: &str,
-    factory: &StaticResolverFactory,
-) -> (u8, String, String) {
-    run_cli_with_any_factory(args, input, factory)
-}
-
-fn run_cli_with_any_factory<I, T>(
+fn run_cli<I, T>(
     args: I,
     input: &str,
-    factory: &impl TestResolvers,
+    charts: &(dyn ChartVersionResolver + Sync),
+    images: &(dyn ImageVersionResolver + Sync),
 ) -> (u8, String, String)
 where
     I: IntoIterator<Item = T>,
@@ -1028,8 +1066,8 @@ where
         Cursor::new(input.as_bytes()),
         &mut stdout,
         &mut stderr,
-        factory.chart_resolver().as_ref(),
-        factory.image_resolver().as_ref(),
+        charts,
+        images,
     )
     .expect("run cli");
     (
@@ -1062,7 +1100,7 @@ fn registry_image_plan(current_tag: &str, tags: &[&str]) -> (u8, Value) {
     let path = temp.path().join("release.yaml");
     write_file(&path, &manifest);
 
-    let (code, stdout, stderr) = run_cli_with_any_factory(
+    let (code, stdout, stderr) = run_cli(
         [
             "fluxrepo-update",
             "update-helm",
@@ -1071,7 +1109,8 @@ fn registry_image_plan(current_tag: &str, tags: &[&str]) -> (u8, Value) {
             "--non-interactive",
         ],
         "",
-        &DefaultResolverFactory,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
     );
 
     assert_eq!(stderr, "");
@@ -1088,7 +1127,11 @@ fn registry_image_plan(current_tag: &str, tags: &[&str]) -> (u8, Value) {
     (code, serde_json::from_str(&stdout).expect("json plan"))
 }
 
-fn json_plan(repo_root: &std::path::Path, factory: &StaticResolverFactory) -> Value {
+fn json_plan(
+    repo_root: &std::path::Path,
+    charts: &(dyn ChartVersionResolver + Sync),
+    images: &(dyn ImageVersionResolver + Sync),
+) -> Value {
     let args = vec![
         "fluxrepo-update".to_string(),
         "update-helm".to_string(),
@@ -1096,7 +1139,7 @@ fn json_plan(repo_root: &std::path::Path, factory: &StaticResolverFactory) -> Va
         "--json".to_string(),
         "--non-interactive".to_string(),
     ];
-    let (code, stdout, _) = run_cli_owned(args, "", factory);
+    let (code, stdout, _) = run_cli(args, "", charts, images);
     assert_eq!(code, 10);
     serde_json::from_str(&stdout).expect("json output")
 }

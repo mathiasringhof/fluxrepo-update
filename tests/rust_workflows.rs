@@ -6,11 +6,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
 
-use common::{
-    DefaultResolverFactory, ResponseSpec, StaticResolverFactory, TestHttpServer, TestResolvers,
-    copy_fixture, write_file,
-};
+use common::{ResponseSpec, TestHttpServer, copy_fixture, write_file};
 use fluxrepo_update::cli::run_with_args;
+use fluxrepo_update::resolvers::{
+    ChartVersionResolver, ImageVersionResolver, RegistryImageResolver, RepositoryChartResolver,
+    StaticImageVersionResolver, StaticVersionResolver,
+};
 use serde_json::Value;
 
 fn write_namespace_chart(root: &std::path::Path, url: &str, explicit_source_namespace: bool) {
@@ -74,7 +75,8 @@ fn kustomize_namespace_plans_registry_backed_chart_updates() {
                 "--json",
                 "--non-interactive",
             ],
-            &DefaultResolverFactory,
+            &RepositoryChartResolver::default(),
+            &RegistryImageResolver::default(),
         );
         assert_eq!(code, 10, "{stderr}: {stdout}");
         let report: Value = serde_json::from_str(&stdout).unwrap();
@@ -132,7 +134,8 @@ fn chart_namespace_without_transform_still_mismatches() {
                 "--json",
                 "--non-interactive",
             ],
-            &StaticResolverFactory::default(),
+            &StaticVersionResolver::new(HashMap::new()),
+            &StaticImageVersionResolver::new(HashMap::new()),
         );
         assert_eq!(code, 0, "{stderr}");
         let report: Value = serde_json::from_str(&stdout).unwrap();
@@ -180,7 +183,8 @@ fn conflicting_kustomize_namespace_chains_are_unresolved() {
                 "--json",
                 "--non-interactive",
             ],
-            &StaticResolverFactory::default(),
+            &StaticVersionResolver::new(HashMap::new()),
+            &StaticImageVersionResolver::new(HashMap::new()),
         );
         assert_eq!(code, 0, "{stderr}");
         let report: Value = serde_json::from_str(&stdout).unwrap();
@@ -213,7 +217,8 @@ fn transformed_conflicting_sources_remain_ambiguous() {
             "--json",
             "--non-interactive",
         ],
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
     assert_eq!(code, 0, "{stderr}");
     let report: Value = serde_json::from_str(&stdout).unwrap();
@@ -245,7 +250,8 @@ fn tag_only_image_overrides_are_visible_and_never_written() {
             "--write",
             "--non-interactive",
         ],
-        &DefaultResolverFactory,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
     );
     assert_eq!(code, 0, "{stderr}");
     let report: Value = serde_json::from_str(&stdout).unwrap();
@@ -278,7 +284,8 @@ fn cloudnativepg_images_are_visible_without_enabling_new_writes() {
             "--write",
             "--non-interactive",
         ],
-        &DefaultResolverFactory,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
     );
     assert_eq!(code, 0, "{stderr}");
     let report: Value = serde_json::from_str(&stdout).unwrap();
@@ -307,7 +314,8 @@ fn unsupported_remote_kustomize_resources_are_reported_without_fetching_or_editi
             "--write",
             "--non-interactive",
         ],
-        &DefaultResolverFactory,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
     );
     assert_eq!(code, 0, "{stderr}");
     let report: Value = serde_json::from_str(&stdout).unwrap();
@@ -341,16 +349,14 @@ fn coverage_counts_include_current_and_unchecked_declarations_in_plan_and_apply(
         &temp.path().join("release.yaml"),
         "kind: HelmRelease\nmetadata: {name: override}\nspec:\n  values:\n    image: {tag: v3.1.0}\n",
     );
-    let factory = StaticResolverFactory::new(
-        HashMap::new(),
-        HashMap::from([
-            (
-                "example/current:1.0.0".into(),
-                "example/current:1.0.0".into(),
-            ),
-            ("example/update:1.0.0".into(), "example/update:2.0.0".into()),
-        ]),
-    );
+    let charts = StaticVersionResolver::new(HashMap::new());
+    let images = StaticImageVersionResolver::new(HashMap::from([
+        (
+            "example/current:1.0.0".into(),
+            "example/current:1.0.0".into(),
+        ),
+        ("example/update:1.0.0".into(), "example/update:2.0.0".into()),
+    ]));
     for write in [false, true] {
         let mut args = vec![
             "fluxrepo-update",
@@ -362,7 +368,7 @@ fn coverage_counts_include_current_and_unchecked_declarations_in_plan_and_apply(
         if write {
             args.push("--write");
         }
-        let (code, stdout, stderr) = run_cli(&args, &factory);
+        let (code, stdout, stderr) = run_cli(&args, &charts, &images);
         assert_eq!(code, if write { 20 } else { 10 }, "{stderr}");
         let report: Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(report["scope"], "repository_manifests");
@@ -387,7 +393,8 @@ fn human_report_explains_unchecked_fields_and_repository_coverage() {
             temp.path().to_str().unwrap(),
             "--non-interactive",
         ],
-        &DefaultResolverFactory,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
     );
     assert_eq!(code, 0);
     assert!(stdout.is_empty());
@@ -414,10 +421,11 @@ fn chart_plans_identify_every_equivalent_source_copy() {
         temp.path().join("z-source.yaml"),
     )
     .unwrap();
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(("shared".into(), "demo".into()), "2.0.0".into())]),
-        HashMap::new(),
-    );
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("shared".into(), "demo".into()),
+        "2.0.0".into(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::new());
     let (code, stdout, stderr) = run_cli(
         &[
             "fluxrepo-update",
@@ -426,7 +434,8 @@ fn chart_plans_identify_every_equivalent_source_copy() {
             "--json",
             "--non-interactive",
         ],
-        &factory,
+        &charts,
+        &images,
     );
     assert_eq!(code, 10, "{stderr}");
     let report: Value = serde_json::from_str(&stdout).unwrap();
@@ -530,7 +539,8 @@ spec:
             "--json",
             "--non-interactive",
         ],
-        &DefaultResolverFactory,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
     );
 
     assert_eq!(plan_code, 10);
@@ -560,7 +570,8 @@ spec:
             "--write",
             "--non-interactive",
         ],
-        &DefaultResolverFactory,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
     );
 
     assert_eq!(write_code, 20);
@@ -607,23 +618,21 @@ spec:
         tag: "2.0.0"
 "#,
     );
-    let factory = StaticResolverFactory::new(
-        HashMap::new(),
-        HashMap::from([
-            (
-                "registry.example/helpers/sidecar:3.0.0".to_string(),
-                "registry.example/helpers/sidecar:4.0.0".to_string(),
-            ),
-            (
-                "registry.example/helpers/helper:1.0.0".to_string(),
-                "registry.example/helpers/helper:1.1.0".to_string(),
-            ),
-            (
-                "registry.example/metrics:2.0.0".to_string(),
-                "registry.example/metrics:2.1.0".to_string(),
-            ),
-        ]),
-    );
+    let charts = StaticVersionResolver::new(HashMap::new());
+    let images = StaticImageVersionResolver::new(HashMap::from([
+        (
+            "registry.example/helpers/sidecar:3.0.0".to_string(),
+            "registry.example/helpers/sidecar:4.0.0".to_string(),
+        ),
+        (
+            "registry.example/helpers/helper:1.0.0".to_string(),
+            "registry.example/helpers/helper:1.1.0".to_string(),
+        ),
+        (
+            "registry.example/metrics:2.0.0".to_string(),
+            "registry.example/metrics:2.1.0".to_string(),
+        ),
+    ]));
 
     let (code, stdout, stderr) = run_cli(
         &[
@@ -634,7 +643,8 @@ spec:
             "--write",
             "--non-interactive",
         ],
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 20, "{stderr}");
@@ -703,7 +713,8 @@ fn inventory_workflow_covers_yml_exclusions_and_incomplete_documents() {
             repo_root.to_str().expect("repo path"),
             "--json",
         ],
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
 
     assert_eq!(code, 0, "{stderr}");
@@ -729,7 +740,8 @@ fn inventory_workflow_reports_malformed_yaml_as_json_error() {
             repo_root.to_str().expect("repo path"),
             "--json",
         ],
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
 
     assert_eq!(code, 2);
@@ -751,7 +763,8 @@ fn inventory_workflow_reports_ambiguous_repository_sources_without_choosing_one(
             temp.path().to_str().expect("repo path"),
             "--json",
         ],
-        &StaticResolverFactory::default(),
+        &StaticVersionResolver::new(HashMap::new()),
+        &StaticImageVersionResolver::new(HashMap::new()),
     );
 
     assert_eq!(code, 0, "{stderr}");
@@ -792,16 +805,14 @@ fn update_workflow_skips_ambiguous_chart_sources_and_applies_independent_images(
         write_ambiguous_source_fixture(temp.path(), duplicate_namespace);
         let release_path = temp.path().join("release.yaml");
         let original_release = fs::read_to_string(&release_path).expect("read release");
-        let factory = StaticResolverFactory::new(
-            HashMap::from([(
-                ("shared".to_string(), "demo".to_string()),
-                "9.9.9".to_string(),
-            )]),
-            HashMap::from([(
-                "example/safe:1.0.0".to_string(),
-                "example/safe:2.0.0".to_string(),
-            )]),
-        );
+        let charts = StaticVersionResolver::new(HashMap::from([(
+            ("shared".to_string(), "demo".to_string()),
+            "9.9.9".to_string(),
+        )]));
+        let images = StaticImageVersionResolver::new(HashMap::from([(
+            "example/safe:1.0.0".to_string(),
+            "example/safe:2.0.0".to_string(),
+        )]));
 
         let (code, stdout, stderr) = run_cli(
             &[
@@ -812,7 +823,8 @@ fn update_workflow_skips_ambiguous_chart_sources_and_applies_independent_images(
                 "--write",
                 "--non-interactive",
             ],
-            &factory,
+            &charts,
+            &images,
         );
 
         assert_eq!(code, 20, "{stderr}");
@@ -890,8 +902,8 @@ data: {version: "1.0.0"}
 "#
         .replace('\n', newline);
         write_file(&path, &original);
-        let factory = StaticResolverFactory::new(
-            HashMap::new(),
+        let charts = StaticVersionResolver::new(HashMap::new());
+        let images = StaticImageVersionResolver::new(
             ["worker", "helper"]
                 .map(|name| {
                     (
@@ -908,7 +920,7 @@ data: {version: "1.0.0"}
             "--json",
             "--non-interactive",
         ];
-        let (code, stdout, stderr) = run_cli(&args, &factory);
+        let (code, stdout, stderr) = run_cli(&args, &charts, &images);
         assert_eq!(code, 10, "{stderr}");
         let plan: Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(plan["summary"]["planned_count"], 2);
@@ -921,7 +933,7 @@ data: {version: "1.0.0"}
             .unwrap();
         assert_eq!(selected["current_image"], "registry.example/helper:1.0.0");
         args.extend(["--write", "--apply-id", selected["id"].as_str().unwrap()]);
-        let (code, stdout, stderr) = run_cli(&args, &factory);
+        let (code, stdout, stderr) = run_cli(&args, &charts, &images);
         assert_eq!(code, 20, "{stderr}");
         let report: Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(report["summary"]["applied_count"], 1);
@@ -939,13 +951,11 @@ fn helm_value_indentless_lists_preserve_numeric_tags() {
     let path = temp.path().join("release.yaml");
     let original = "kind: ConfigMap\nmetadata: {name: first}\ndata: {tag: '100'}\n---\nkind: HelmRelease\nmetadata: {name: numeric}\nspec:\n  values:\n    workers:\n    - name: unused\n    helpers:\n    - repository: registry.example/helper\n      tag: 100 # retain plain scalar style\n";
     write_file(&path, original);
-    let factory = StaticResolverFactory::new(
-        HashMap::new(),
-        HashMap::from([(
-            "registry.example/helper:100".into(),
-            "registry.example/helper:200".into(),
-        )]),
-    );
+    let charts = StaticVersionResolver::new(HashMap::new());
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "registry.example/helper:100".into(),
+        "registry.example/helper:200".into(),
+    )]));
     let mut args = vec![
         "fluxrepo-update",
         "update-helm",
@@ -953,7 +963,7 @@ fn helm_value_indentless_lists_preserve_numeric_tags() {
         "--json",
         "--non-interactive",
     ];
-    let (code, stdout, stderr) = run_cli(&args, &factory);
+    let (code, stdout, stderr) = run_cli(&args, &charts, &images);
     assert_eq!(code, 10, "{stderr}: {stdout}");
     let report: Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(report["summary"]["planned_count"], 1);
@@ -965,7 +975,7 @@ fn helm_value_indentless_lists_preserve_numeric_tags() {
     assert_eq!(report["planned"][0]["current_version"], "100");
     assert_eq!(fs::read(&path).unwrap(), original.as_bytes());
     args.push("--write");
-    let (code, stdout, stderr) = run_cli(&args, &factory);
+    let (code, stdout, stderr) = run_cli(&args, &charts, &images);
     assert_eq!(code, 20, "{stderr}: {stdout}");
     let report: Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(report["summary"]["applied_count"], 1);
@@ -1022,7 +1032,11 @@ fn assert_helm_value_pin_fields(apply: bool) {
     if apply {
         args.push("--write");
     }
-    let (code, stdout, stderr) = run_cli(&args, &DefaultResolverFactory);
+    let (code, stdout, stderr) = run_cli(
+        &args,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
+    );
     assert_eq!(code, if apply { 20 } else { 10 }, "{stderr}: {stdout}");
     let report: Value = serde_json::from_str(&stdout).expect("report json");
     assert_eq!(report["summary"]["planned_count"], 1);
@@ -1101,7 +1115,8 @@ spec:
             "--json",
             "--non-interactive",
         ],
-        &DefaultResolverFactory,
+        &RepositoryChartResolver::default(),
+        &RegistryImageResolver::default(),
     );
 
     assert_eq!(code, 0, "{stderr}");
@@ -1274,13 +1289,11 @@ spec:
 fn assert_selected_image_edits(original: &str, yaml_paths: &[&str]) {
     let temp = tempfile::tempdir().expect("temp dir");
     let path = temp.path().join("manifest.yaml");
-    let factory = StaticResolverFactory::new(
-        HashMap::new(),
-        HashMap::from([
-            ("example/app:1.0.0".into(), "example/app:2.0.0".into()),
-            ("example/init:1.0.0".into(), "example/init:2.0.0".into()),
-        ]),
-    );
+    let charts = StaticVersionResolver::new(HashMap::new());
+    let images = StaticImageVersionResolver::new(HashMap::from([
+        ("example/app:1.0.0".into(), "example/app:2.0.0".into()),
+        ("example/init:1.0.0".into(), "example/init:2.0.0".into()),
+    ]));
     for yaml_path in yaml_paths {
         write_file(&path, original);
         let (code, stdout, stderr) = run_cli(
@@ -1291,7 +1304,8 @@ fn assert_selected_image_edits(original: &str, yaml_paths: &[&str]) {
                 "--json",
                 "--non-interactive",
             ],
-            &factory,
+            &charts,
+            &images,
         );
         assert_eq!(code, 10, "{stderr}");
         let plan: Value = serde_json::from_str(&stdout).expect("plan JSON");
@@ -1313,7 +1327,8 @@ fn assert_selected_image_edits(original: &str, yaml_paths: &[&str]) {
                 "--apply-id",
                 update["id"].as_str().unwrap(),
             ],
-            &factory,
+            &charts,
+            &images,
         );
         assert_eq!(code, 20, "{yaml_path}: {stderr}");
         let expected = if yaml_path.rsplit('.').next() == Some("tag") {
@@ -1383,7 +1398,8 @@ spec: {containers: [{image: example/pod:1.0.0}], initContainers: [{image: exampl
         )
     })
     .collect();
-    let factory = StaticResolverFactory::new(HashMap::new(), image_versions);
+    let charts = StaticVersionResolver::new(HashMap::new());
+    let images = StaticImageVersionResolver::new(image_versions);
 
     let (code, stdout, stderr) = run_cli(
         &[
@@ -1394,7 +1410,8 @@ spec: {containers: [{image: example/pod:1.0.0}], initContainers: [{image: exampl
             "--write",
             "--non-interactive",
         ],
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 20, "{stderr}");
@@ -1416,16 +1433,14 @@ fn update_helm_write_workflow_keeps_unsupported_and_generated_files_untouched() 
     let values_only_before = fs::read_to_string(&values_only_path).expect("read values-only");
     let latest_image_before = fs::read_to_string(&latest_image_path).expect("read latest image");
     let values_image_before = fs::read_to_string(&values_image_path).expect("read values image");
-    let factory = StaticResolverFactory::new(
-        HashMap::from([(
-            ("truecharts".to_string(), "paperless-ngx".to_string()),
-            "12.1.0".to_string(),
-        )]),
-        HashMap::from([(
-            "linuxserver/sonarr:version-4.0.16.2944".to_string(),
-            "linuxserver/sonarr:version-4.0.17.3000".to_string(),
-        )]),
-    );
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("truecharts".to_string(), "paperless-ngx".to_string()),
+        "12.1.0".to_string(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::from([(
+        "linuxserver/sonarr:version-4.0.16.2944".to_string(),
+        "linuxserver/sonarr:version-4.0.17.3000".to_string(),
+    )]));
 
     let (code, stdout, stderr) = run_cli(
         &[
@@ -1436,7 +1451,8 @@ fn update_helm_write_workflow_keeps_unsupported_and_generated_files_untouched() 
             "--write",
             "--non-interactive",
         ],
-        &factory,
+        &charts,
+        &images,
     );
 
     assert_eq!(code, 20);
@@ -1471,7 +1487,11 @@ fn update_helm_write_workflow_keeps_unsupported_and_generated_files_untouched() 
     );
 }
 
-fn run_cli(args: &[&str], factory: &impl TestResolvers) -> (u8, String, String) {
+fn run_cli(
+    args: &[&str],
+    charts: &(dyn ChartVersionResolver + Sync),
+    images: &(dyn ImageVersionResolver + Sync),
+) -> (u8, String, String) {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let code = run_with_args(
@@ -1479,8 +1499,8 @@ fn run_cli(args: &[&str], factory: &impl TestResolvers) -> (u8, String, String) 
         Cursor::new([].as_slice()),
         &mut stdout,
         &mut stderr,
-        factory.chart_resolver().as_ref(),
-        factory.image_resolver().as_ref(),
+        charts,
+        images,
     )
     .expect("run cli");
     (
