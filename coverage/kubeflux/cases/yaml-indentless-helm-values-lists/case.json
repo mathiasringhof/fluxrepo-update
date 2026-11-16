@@ -9,8 +9,7 @@
     "apps/production/jellyfin/release.yaml",
     "infrastructure/production/nginx/nginx-values.yaml"
   ],
-  "expectation": "todo",
-  "todo": "The scanner finds these valid YAML declarations, but the YAML edit layer currently loses an indentless sibling list and aborts with a missing YAML path. Both selected version changes must apply without changing list indentation.",
+  "expectation": "pass",
   "command": "apply",
   "responses": {
     "/v2/demo/init/tags/list": {
@@ -96,10 +95,5 @@
         }
       }
     ]
-  },
-  "known_failure": {
-    "exit_code": 2,
-    "error": "runtime_error",
-    "message_contains": "missing YAML path spec.values.extraContainers[0].image.tag"
   }
 }

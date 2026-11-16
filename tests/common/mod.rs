@@ -17,6 +17,44 @@ use fluxrepo_update::resolvers::{
     StaticImageVersionResolver, StaticVersionResolver,
 };
 
+pub fn assert_partial_write_diagnostics(
+    message: &str,
+    paths: &[std::path::PathBuf],
+    selection_ids: &[Vec<String>],
+) {
+    let categories = [
+        "written successfully:",
+        "failed (contents indeterminate):",
+        "not attempted:",
+    ];
+    assert_eq!(paths.len(), categories.len());
+    assert_eq!(selection_ids.len(), categories.len());
+    for (index, category) in categories.iter().enumerate() {
+        let line = message
+            .lines()
+            .find(|line| line.starts_with(category))
+            .unwrap_or_else(|| panic!("missing {category} in {message}"));
+        assert!(line.contains(&paths[index].display().to_string()), "{line}");
+        assert!(!selection_ids[index].is_empty());
+        for (other, ids) in selection_ids.iter().enumerate() {
+            for id in ids {
+                assert_eq!(
+                    line.contains(id),
+                    other == index,
+                    "wrong category for {id}: {line}"
+                );
+            }
+            if other != index {
+                assert!(
+                    !line.contains(&paths[other].display().to_string()),
+                    "{line}"
+                );
+            }
+        }
+    }
+    assert!(message.contains("Git"), "{message}");
+}
+
 #[derive(Clone, Debug)]
 pub struct RecordedRequest {
     pub method: String,

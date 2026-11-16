@@ -7,8 +7,9 @@ for reproduction and the [audit](../../docs/kubeflux-coverage.md) for source evi
 The full CLI audit remains opt-in. All cases marked PASS also run through the library
 in the normal Rust suite and CI; TODO cases remain in the separate audit.
 
-Since that CLI audit, `transformed-source-namespace` was promoted by the offline Rust
-suite: the corpus now registers 48 PASS and 26 TODO cases (29 apply cases).
+Since that CLI audit, `transformed-source-namespace`, `yaml-indentless-workload-lists`,
+and `yaml-indentless-helm-values-lists` were promoted by the offline Rust suite:
+the corpus now registers 50 PASS and 24 TODO cases.
 TODOs retain desired behavior that still fails; neither a safe skip nor this synthetic
 snapshot proves kubeflux is current. Working invariants inside TODO cases must still pass.
 
@@ -86,7 +87,7 @@ snapshot proves kubeflux is current. Working invariants inside TODO cases must s
 | [workload-job](cases/workload-job/case.json) | PASS | Apply regular and init-container images at the exact Job PodSpec paths in a .yml file. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
 | [workload-pod](cases/workload-pod/case.json) | PASS | Apply regular and init-container images at the exact Pod PodSpec paths in a .yml file. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
 | [workload-statefulset](cases/workload-statefulset/case.json) | PASS | Apply regular and init-container images at the exact StatefulSet PodSpec paths in a .yml file. | [Inventory](../../docs/kubeflux-coverage.md#inventory-baseline) |
-| [yaml-indentless-helm-values-lists](cases/yaml-indentless-helm-values-lists/case.json) | TODO | Apply every image in valid indentless block-sequence siblings, preserving the original YAML style and all unrelated fields. | [U15](../../docs/kubeflux-coverage.md#u15) |
-| [yaml-indentless-workload-lists](cases/yaml-indentless-workload-lists/case.json) | TODO | Apply every image in valid indentless block-sequence siblings, preserving the original YAML style and all unrelated fields. | [U15](../../docs/kubeflux-coverage.md#u15) |
+| [yaml-indentless-helm-values-lists](cases/yaml-indentless-helm-values-lists/case.json) | PASS | Apply every image in valid indentless block-sequence siblings, preserving the original YAML style and all unrelated fields. | [U15](../../docs/kubeflux-coverage.md#u15) |
+| [yaml-indentless-workload-lists](cases/yaml-indentless-workload-lists/case.json) | PASS | Apply every image in valid indentless block-sequence siblings, preserving the original YAML style and all unrelated fields. | [U15](../../docs/kubeflux-coverage.md#u15) |
 
 Rerun after changes; `--strict` also fails while TODOs remain.

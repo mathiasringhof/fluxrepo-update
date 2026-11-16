@@ -424,7 +424,7 @@ impl<'a> UpdateRun<'a> {
             .iter()
             .zip(&outcome.plan.identities)
             .filter(|(_, identity)| approved_set.contains(identity))
-            .map(|(update, _)| update);
+            .map(|(update, identity)| (update, identity.as_str()));
         outcome.changed_paths = apply_planned_updates(updates)?
             .into_iter()
             .map(|path| {

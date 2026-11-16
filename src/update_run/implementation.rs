@@ -1356,18 +1356,29 @@ fn resolve_image_binding(
 
 #[cfg(test)]
 pub fn apply_updates(report: &UpdateReport) -> Result<usize> {
-    apply_planned_updates(&report.planned).map(|paths| paths.len())
+    let identities = report
+        .planned
+        .iter()
+        .map(|update| update.selection_id(Path::new("")))
+        .collect::<Vec<_>>();
+    apply_planned_updates(
+        report
+            .planned
+            .iter()
+            .zip(identities.iter().map(String::as_str)),
+    )
+    .map(|paths| paths.len())
 }
 
 pub(crate) fn apply_planned_updates<'a>(
-    updates: impl IntoIterator<Item = &'a PlannedUpdate>,
+    updates: impl IntoIterator<Item = (&'a PlannedUpdate, &'a str)>,
 ) -> Result<Vec<PathBuf>> {
-    let mut updates_by_path: BTreeMap<PathBuf, Vec<&PlannedUpdate>> = BTreeMap::new();
-    for update in updates {
+    let mut updates_by_path: BTreeMap<PathBuf, Vec<(&PlannedUpdate, &str)>> = BTreeMap::new();
+    for (update, identity) in updates {
         updates_by_path
             .entry(update.path().to_path_buf())
             .or_default()
-            .push(update);
+            .push((update, identity));
     }
     let mut prepared_files = Vec::with_capacity(updates_by_path.len());
     for (path, updates) in updates_by_path {
@@ -1397,6 +1408,7 @@ pub(crate) fn apply_planned_updates<'a>(
                 yaml_path,
                 expected,
                 replacement,
+                &original,
             )?);
             let expected_document = expected_documents
                 .get_mut(document_index)
@@ -1408,7 +1420,11 @@ pub(crate) fn apply_planned_updates<'a>(
             *expected_node = yaml_serde::Value::String(replacement.to_string());
             Ok(())
         };
-        for update in updates {
+        let selection_ids = updates
+            .iter()
+            .map(|(_, identity)| (*identity).to_owned())
+            .collect();
+        for (update, _) in updates {
             if let PlannedUpdate::RemoteResource(remote) = update {
                 let identities = remote
                     .identities
@@ -1443,7 +1459,7 @@ pub(crate) fn apply_planned_updates<'a>(
             })?;
             let (yaml_path, expected, replacement, identity) = match update {
                 PlannedUpdate::Chart(chart) => {
-                    ensure_editable_chart_spec(document)?;
+                    ensure_editable_chart_spec(document, &original)?;
                     (
                         "spec.chart.spec.version",
                         &chart.current_version,
@@ -1501,21 +1517,58 @@ pub(crate) fn apply_planned_updates<'a>(
                 path.display()
             ));
         }
-        prepared_files.push((path, text));
+        prepared_files.push(PreparedFile {
+            path,
+            text,
+            selection_ids,
+        });
     }
-    for (written_count, (path, text)) in prepared_files.iter().enumerate() {
-        fs::write(path, text).with_context(|| format!("failed to write {} after {written_count} file(s) were applied; inspect the working tree with Git", path.display()))?;
+    for (index, file) in prepared_files.iter().enumerate() {
+        fs::write(&file.path, &file.text)
+            .with_context(|| partial_write_diagnostics(&prepared_files, index))?;
     }
-    Ok(prepared_files.into_iter().map(|(path, _)| path).collect())
+    Ok(prepared_files.into_iter().map(|file| file.path).collect())
 }
 
-fn ensure_editable_chart_spec(document: &EditDocument) -> Result<()> {
+struct PreparedFile {
+    path: PathBuf,
+    text: String,
+    selection_ids: Vec<String>,
+}
+
+fn partial_write_diagnostics(files: &[PreparedFile], failed_index: usize) -> String {
+    let describe = |files: &[PreparedFile]| {
+        if files.is_empty() {
+            return "none".to_owned();
+        }
+        files
+            .iter()
+            .map(|file| {
+                format!(
+                    "{} (selection ids: {})",
+                    file.path.display(),
+                    file.selection_ids.join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    format!(
+        "failed to write {}\nwritten successfully: {}\nfailed (contents indeterminate): {}\nnot attempted: {}\ninspect the working tree with Git; no automatic rollback",
+        files[failed_index].path.display(),
+        describe(&files[..failed_index]),
+        describe(&files[failed_index..=failed_index]),
+        describe(&files[failed_index + 1..]),
+    )
+}
+
+fn ensure_editable_chart_spec(document: &EditDocument, source: &str) -> Result<()> {
     document
         .as_mapping()
         .ok_or_else(|| anyhow!("HelmRelease document must be a YAML mapping"))?;
 
     for path in ["spec", "spec.chart", "spec.chart.spec"] {
-        let Some(node) = edit_node_at_path(document, path) else {
+        let Some(node) = edit_node_at_path(document, path, source) else {
             continue;
         };
         if node.as_mapping().is_none() {
@@ -1537,8 +1590,9 @@ fn checked_scalar_edit(
     yaml_path: &str,
     expected: &str,
     value: &str,
+    source: &str,
 ) -> Result<ScalarEdit> {
-    let node = edit_node_at_path(document, yaml_path)
+    let node = edit_node_at_path(document, yaml_path, source)
         .ok_or_else(|| anyhow!("missing YAML path {yaml_path}; target changed after planning"))?;
     let scalar = node
         .as_scalar()

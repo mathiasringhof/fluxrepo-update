@@ -1,3 +1,5 @@
+mod common;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -913,8 +915,29 @@ fn a_later_write_failure_returns_an_error_and_preserves_partial_write_diagnostic
     use std::os::unix::fs::PermissionsExt;
 
     let (temp, charts, images) = fixture();
-    let original = contents(temp.path());
+    fs::copy(temp.path().join("b.yaml"), temp.path().join("c.yaml")).expect("third file");
+    let paths = ["a.yaml", "b.yaml", "c.yaml"].map(|name| temp.path().join(name));
+    let original = paths
+        .each_ref()
+        .map(|path| fs::read_to_string(path).unwrap());
     let inventory = scan_repo(temp.path()).expect("scan");
+    let run = UpdateRun::new(&charts, &images);
+    let plan = run
+        .execute(
+            &inventory,
+            UpdateRunMode::PlanOnly,
+            &mut |_| unreachable!(),
+            None,
+        )
+        .unwrap();
+    let ids = paths.each_ref().map(|path| {
+        plan.plan()
+            .review()
+            .iter()
+            .filter(|update| update.path() == path.canonicalize().unwrap())
+            .map(|update| update.identity().as_str().to_owned())
+            .collect::<Vec<_>>()
+    });
     let second_path = temp.path().join("b.yaml");
     let permissions = fs::metadata(&second_path)
         .expect("file metadata")
@@ -922,7 +945,7 @@ fn a_later_write_failure_returns_an_error_and_preserves_partial_write_diagnostic
     fs::set_permissions(&second_path, fs::Permissions::from_mode(0o444))
         .expect("make second file read-only");
 
-    let result = UpdateRun::new(&charts, &images).execute(
+    let result = run.execute(
         &inventory,
         UpdateRunMode::ApplyAll,
         &mut |_| panic!("apply-all must not request approval"),
@@ -931,9 +954,11 @@ fn a_later_write_failure_returns_an_error_and_preserves_partial_write_diagnostic
     fs::set_permissions(&second_path, permissions).expect("restore file permissions");
 
     let error = result.expect_err("a partial write must not return an outcome");
-    assert!(error.to_string().contains("after 1 file(s) were applied"));
-    assert!(error.to_string().contains("b.yaml"));
-    let written = contents(temp.path());
+    common::assert_partial_write_diagnostics(&error.to_string(), &paths, &ids);
+    let written = paths
+        .each_ref()
+        .map(|path| fs::read_to_string(path).unwrap());
     assert_eq!(written[0], original[0].replace("1.0.0", "2.0.0"));
     assert_eq!(written[1], original[1]);
+    assert_eq!(written[2], original[2]);
 }

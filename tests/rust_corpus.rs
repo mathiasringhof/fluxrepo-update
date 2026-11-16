@@ -68,4 +68,6 @@ cases! {
     workload_job,
     workload_pod,
     workload_statefulset,
+    yaml_indentless_helm_values_lists,
+    yaml_indentless_workload_lists,
 }

@@ -931,6 +931,204 @@ spec:
 }
 
 #[test]
+#[cfg(unix)]
+fn update_helm_partial_write_failure_identifies_changes_in_human_output() {
+    assert_cli_partial_write_diagnostics(false);
+}
+
+#[test]
+#[cfg(unix)]
+fn update_helm_partial_write_failure_identifies_changes_in_json_output() {
+    assert_cli_partial_write_diagnostics(true);
+}
+
+#[cfg(unix)]
+fn assert_cli_partial_write_diagnostics(json_output: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let temp = tempfile::tempdir().expect("temp dir");
+    let server = TestHttpServer::new(
+        (0..2)
+            .map(|_| ResponseSpec::new(200, r#"{"tags":["1.0.0","2.0.0"]}"#))
+            .collect(),
+    );
+    let image = format!(
+        "{}/demo/app:1.0.0",
+        server.base_url.trim_start_matches("http://")
+    );
+    let original = format!(
+        "kind: Pod\nmetadata: {{name: demo}}\nspec:\n  containers:\n  - name: app\n    image: {image}\n  - name: sidecar\n    image: {image}\n"
+    );
+    let paths = ["a.yaml", "b.yaml", "c.yaml"].map(|name| {
+        let path = temp.path().join(name);
+        write_file(&path, &original);
+        path.canonicalize().unwrap()
+    });
+    let plan = Command::new(env!("CARGO_BIN_EXE_fluxrepo-update"))
+        .arg("update-helm")
+        .arg(temp.path())
+        .args(["--json", "--non-interactive"])
+        .output()
+        .expect("run plan");
+    assert_eq!(plan.status.code(), Some(10), "{:?}", plan.stderr);
+    let plan: Value = serde_json::from_slice(&plan.stdout).expect("plan JSON");
+    let updates = plan["planned"].as_array().unwrap();
+    assert_eq!(updates.len(), 6);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fluxrepo-update"));
+    command
+        .arg("update-helm")
+        .arg(temp.path())
+        .args(["--write", "--non-interactive"]);
+    if json_output {
+        command.arg("--json");
+    }
+    // Report only approved updates, including multiple selections in one file.
+    let selected = [0, 1, 2, 4];
+    for index in selected {
+        command.args(["--apply-id", updates[index]["id"].as_str().unwrap()]);
+    }
+    let ids = [vec![0, 1], vec![2], vec![4]].map(|indexes| {
+        indexes
+            .into_iter()
+            .map(|index| updates[index]["id"].as_str().unwrap().to_owned())
+            .collect()
+    });
+    let permissions = fs::metadata(&paths[1]).unwrap().permissions();
+    fs::set_permissions(&paths[1], fs::Permissions::from_mode(0o444)).unwrap();
+    let output = command.output().expect("run apply");
+    fs::set_permissions(&paths[1], permissions).unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let message = if json_output {
+        assert!(output.stdout.is_empty());
+        let error: Value = serde_json::from_str(&stderr).expect("error JSON");
+        assert_eq!(error["error"], "runtime_error");
+        assert_eq!(error["exit_code"], 2);
+        error["message"].as_str().unwrap().to_owned()
+    } else {
+        stderr
+    };
+    common::assert_partial_write_diagnostics(&message, &paths, &ids);
+    for index in [3, 5] {
+        assert!(!message.contains(updates[index]["id"].as_str().unwrap()));
+    }
+    assert_eq!(
+        fs::read_to_string(&paths[0]).unwrap(),
+        original.replace(":1.0.0", ":2.0.0")
+    );
+    assert_eq!(fs::read_to_string(&paths[1]).unwrap(), original);
+    assert_eq!(fs::read_to_string(&paths[2]).unwrap(), original);
+    assert_eq!(server.finish().len(), 2);
+}
+
+#[test]
+fn update_helm_apply_id_edits_only_selected_deployment_image_in_block_lists() {
+    let original_example = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: demo\nspec:\n  template:\n    spec:\n      containers:\n        - name: app\n          image: example/app:1.0.0\n";
+    let siblings = format!(
+        "{original_example}      initContainers:\n        - name: init\n          image: example/init:1.0.0 # retain init comment\n      restartPolicy: Always\n"
+    );
+    let indentless = siblings
+        .replace("        - name:", "      - name:")
+        .replace("          image:", "        image:");
+    for original in [original_example, &siblings, &indentless] {
+        let paths = if original == original_example {
+            vec!["spec.template.spec.containers[0].image"]
+        } else {
+            vec![
+                "spec.template.spec.containers[0].image",
+                "spec.template.spec.initContainers[0].image",
+            ]
+        };
+        assert_selected_image_edits(original, &paths);
+    }
+}
+
+#[test]
+fn update_helm_apply_id_edits_only_selected_image_in_indentless_helm_values_lists() {
+    let original = r#"kind: HelmRelease
+metadata: {name: demo}
+spec:
+  values:
+    initContainers:
+    - name: init
+      image: 'example/init:1.0.0' # retain comment
+    extraContainers:
+    - name: app
+      image:
+        repository: example/app
+        tag: "1.0.0" # retain tag quoting
+    description: "example/app:1.0.0 is unrelated"
+"#;
+    assert_selected_image_edits(
+        original,
+        &[
+            "spec.values.initContainers[0].image",
+            "spec.values.extraContainers[0].image.tag",
+        ],
+    );
+}
+
+fn assert_selected_image_edits(original: &str, yaml_paths: &[&str]) {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("manifest.yaml");
+    let factory = StaticResolverFactory::new(
+        HashMap::new(),
+        HashMap::from([
+            ("example/app:1.0.0".into(), "example/app:2.0.0".into()),
+            ("example/init:1.0.0".into(), "example/init:2.0.0".into()),
+        ]),
+    );
+    for yaml_path in yaml_paths {
+        write_file(&path, original);
+        let (code, stdout, stderr) = run_cli(
+            &[
+                "fluxrepo-update",
+                "update-helm",
+                temp.path().to_str().unwrap(),
+                "--json",
+                "--non-interactive",
+            ],
+            &factory,
+        );
+        assert_eq!(code, 10, "{stderr}");
+        let plan: Value = serde_json::from_str(&stdout).expect("plan JSON");
+        assert_eq!(plan["planned"].as_array().unwrap().len(), yaml_paths.len());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        let update = plan["planned"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|update| update["yaml_path"] == *yaml_path)
+            .expect("planned image at exact path");
+        let (code, _, stderr) = run_cli(
+            &[
+                "fluxrepo-update",
+                "update-helm",
+                temp.path().to_str().unwrap(),
+                "--write",
+                "--non-interactive",
+                "--apply-id",
+                update["id"].as_str().unwrap(),
+            ],
+            &factory,
+        );
+        assert_eq!(code, 20, "{yaml_path}: {stderr}");
+        let expected = if yaml_path.rsplit('.').next() == Some("tag") {
+            original.replace("tag: \"1.0.0\"", "tag: \"2.0.0\"")
+        } else {
+            original.replacen(
+                update["current_image"].as_str().unwrap(),
+                update["latest_image"].as_str().unwrap(),
+                1,
+            )
+        };
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected, "{yaml_path}");
+    }
+}
+
+#[test]
 fn update_helm_workflow_applies_all_standard_podspec_image_bindings() {
     let temp = tempfile::tempdir().expect("temp dir");
     let repo_root = temp.path().join("repo");

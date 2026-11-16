@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use crate::test_support::{ResponseSpec, TestHttpServer, copy_fixture, write_file};
+use crate::test_support::{
+    ResponseSpec, TestHttpServer, assert_partial_write_diagnostics, copy_fixture, write_file,
+};
 use crate::update_run::implementation::{
     PlanOptions, PlannedChartUpdate, PlannedImageUpdate, PlannedUpdate, SkippedUpdate,
     UpdateReport, apply_updates, plan_updates,
@@ -900,10 +902,12 @@ fn apply_updates_reports_partial_application_after_a_later_write_failure() {
     let temp = tempfile::tempdir().expect("temp dir");
     let first_path = temp.path().join("a.yaml");
     let second_path = temp.path().join("b.yaml");
+    let third_path = temp.path().join("c.yaml");
     let manifest =
         "kind: Pod\nmetadata: {name: demo}\nspec: {containers: [{image: example/demo:1.0.0}]}\n";
     write_file(&first_path, manifest);
     write_file(&second_path, manifest);
+    write_file(&third_path, manifest);
     fs::set_permissions(&second_path, fs::Permissions::from_mode(0o444))
         .expect("make second file read-only");
     let update = |path: PathBuf| {
@@ -922,22 +926,37 @@ fn apply_updates_reports_partial_application_after_a_later_write_failure() {
     };
     let report = UpdateReport {
         checked_count: 0,
-        planned: vec![update(first_path.clone()), update(second_path.clone())],
+        planned: vec![
+            update(first_path.clone()),
+            update(second_path.clone()),
+            update(third_path.clone()),
+        ],
         skipped: Vec::new(),
     };
+    let ids = report
+        .planned
+        .iter()
+        .map(|update| vec![update.selection_id(Path::new(""))])
+        .collect::<Vec<_>>();
 
     let error = apply_updates(&report).expect_err("second write should fail");
 
-    assert!(error.to_string().contains("after 1 file(s) were applied"));
-    assert!(
-        error
-            .to_string()
-            .contains(&second_path.display().to_string())
+    assert_partial_write_diagnostics(
+        &error.to_string(),
+        &[first_path.clone(), second_path.clone(), third_path.clone()],
+        &ids,
     );
-    assert!(
-        fs::read_to_string(first_path)
-            .expect("read first file")
-            .contains("example/demo:2.0.0")
+    assert_eq!(
+        fs::read_to_string(first_path).expect("read first file"),
+        manifest.replace("example/demo:1.0.0", "example/demo:2.0.0")
+    );
+    assert_eq!(
+        fs::read_to_string(second_path).expect("read failed file"),
+        manifest
+    );
+    assert_eq!(
+        fs::read_to_string(third_path).expect("read unattempted file"),
+        manifest
     );
 }
 
@@ -1219,6 +1238,43 @@ fn apply_updates_preserves_valid_block_scalar_images() {
             original.replace("example/demo:1.0.0", "example/demo:2.0.0")
         );
     }
+}
+
+#[test]
+fn apply_updates_preserves_explicit_keys_around_indentless_siblings() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("pod.yaml");
+    let original = "? kind\n: Pod\nmetadata: {name: demo}\nspec:\n  containers:\n  - image: example/unchanged:1.0.0\n  initContainers:\n  - image: example/demo:1.0.0\n";
+    write_file(&path, original);
+    let report = plan_test_images(temp.path(), "example/demo:1.0.0", "example/demo:2.0.0");
+    assert_eq!(report.planned.len(), 1);
+
+    apply_updates(&report).expect("explicit key notation must retain its mapping scope");
+
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        original.replace("example/demo:1.0.0", "example/demo:2.0.0")
+    );
+}
+
+#[test]
+fn apply_updates_preserves_numeric_tags_and_byte_offsets_in_indentless_siblings() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let path = temp.path().join("release.yaml");
+    let original = "# Grüße 👋\r\nkind: ConfigMap\r\ndata: {tag: '3.20'}\r\n---\r\nkind: HelmRelease\r\nmetadata: {name: demo}\r\nspec:\r\n  values:\r\n    initContainers:\r\n    - image: example/unchanged:1.0.0\r\n    extraContainers:\r\n    - image:\r\n        repository: example/demo\r\n        tag: 3.20 # retain numeric spelling\r\n    description: '3.20'";
+    write_file(&path, original);
+    let report = plan_test_images(temp.path(), "example/demo:3.20", "example/demo:3.21");
+
+    assert_eq!(
+        report.planned.len(),
+        1,
+        "numeric spelling must survive discovery"
+    );
+    apply_updates(&report).expect("apply the later sibling's numeric tag");
+    assert_eq!(
+        fs::read_to_string(path).expect("read release"),
+        original.replace("tag: 3.20", "tag: 3.21")
+    );
 }
 
 #[test]
