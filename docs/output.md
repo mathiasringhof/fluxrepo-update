@@ -113,6 +113,8 @@ Each item describes an explicit workload or Helm-values image binding:
 
 Paths quote literal mapping keys when needed: `spec.values["a.b"].image` selects the
 key `a.b`, while `spec.values.a.b.image` selects nested keys. `[0]` denotes a sequence item.
+Helm-values mappings expose the exact `tag` location and the composed full image;
+see [mapping, registry, and skip rules](coverage.md#helm-values-image-bindings).
 
 ### `remote_resource_targets`
 

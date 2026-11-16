@@ -76,6 +76,10 @@ sources, failed requests, unsupported version schemes, and declarations that can
 checked all leave update availability unknown. See [coverage](coverage.md) for supported
 forms and [output](output.md#skipped) for stable reason codes.
 
+The former `--strict` option was removed: unresolved targets alone do not cause a
+completeness failure; [ADR 0003](adr/0003-total-version-check-failure.md) defines
+the total-failure exit `2` below.
+
 A run with zero successful checks and at least one failed request or unusable source
 result exits `2` with `check_completeness: "failed"`. Mixed runs report `incomplete`, retain partial
 plans, and keep their usual exits. Unsupported-only or empty runs report `not_checked`

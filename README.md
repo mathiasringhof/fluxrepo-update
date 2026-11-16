@@ -61,6 +61,8 @@ Chart source matching follows namespace transforms through local Kustomize `reso
 inclusions; conflicting namespace chains stay unresolved.
 Compact calendar tags stay within matching precision, preventing timestamp builds from
 replacing dotted or ordinary numeric releases.
+Helm values support nested `repository`/`tag` mappings under any parent key, including
+lists; non-empty digest/SHA pins keep their tags unchanged.
 
 Generated Flux bootstrap manifests and unsupported declarations remain unchanged.
 Inspect skipped targets: no planned updates does not mean every dependency was checked.

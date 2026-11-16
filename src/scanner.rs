@@ -481,8 +481,7 @@ fn concrete_image_mapping(mapping: &Mapping) -> Option<String> {
     };
     let digest = ["digest", "sha", "sha256"]
         .into_iter()
-        .find_map(|field| string_field(mapping, field))
-        .filter(|digest| !digest.trim().is_empty());
+        .find_map(|field| string_field(mapping, field).filter(|digest| !digest.trim().is_empty()));
     Some(digest.map_or_else(
         || format!("{repository}:{tag}"),
         |digest| format!("{repository}:{tag}@{digest}"),

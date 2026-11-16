@@ -864,6 +864,207 @@ fn write_ambiguous_source_fixture(repo_root: &std::path::Path, duplicate_namespa
 }
 
 #[test]
+fn helm_value_indentless_lists_apply_only_selected_tag_scalars() {
+    for newline in ["\n", "\r\n"] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("release.yaml");
+        let original = r#"# Keep the café comment and both documents.
+---
+kind: HelmRelease
+metadata: {name: helpers}
+spec:
+  values:
+    workers:
+    - repository: registry.example/worker
+      tag: "1.0.0" # unselected
+    helpers:
+    - helper:
+        registry: registry.example
+        repository: registry.example/helper
+        tag: '1.0.0' # selected
+    unrelated: {version: "1.0.0"}
+---
+kind: ConfigMap
+metadata: {name: untouched}
+data: {version: "1.0.0"}
+"#
+        .replace('\n', newline);
+        write_file(&path, &original);
+        let factory = StaticResolverFactory::new(
+            HashMap::new(),
+            ["worker", "helper"]
+                .map(|name| {
+                    (
+                        format!("registry.example/{name}:1.0.0"),
+                        format!("registry.example/{name}:2.0.0"),
+                    )
+                })
+                .into(),
+        );
+        let mut args = vec![
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().unwrap(),
+            "--json",
+            "--non-interactive",
+        ];
+        let (code, stdout, stderr) = run_cli(&args, &factory);
+        assert_eq!(code, 10, "{stderr}");
+        let plan: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(plan["summary"]["planned_count"], 2);
+        assert_eq!(fs::read(&path).unwrap(), original.as_bytes());
+        let selected = plan["planned"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["yaml_path"] == "spec.values.helpers[0].helper.tag")
+            .unwrap();
+        assert_eq!(selected["current_image"], "registry.example/helper:1.0.0");
+        args.extend(["--write", "--apply-id", selected["id"].as_str().unwrap()]);
+        let (code, stdout, stderr) = run_cli(&args, &factory);
+        assert_eq!(code, 20, "{stderr}");
+        let report: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(report["summary"]["applied_count"], 1);
+        assert_eq!(report["summary"]["changed_file_count"], 1);
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            original.replace("tag: '1.0.0'", "tag: '2.0.0'").as_bytes()
+        );
+    }
+}
+
+#[test]
+fn helm_value_indentless_lists_preserve_numeric_tags() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("release.yaml");
+    let original = "kind: ConfigMap\nmetadata: {name: first}\ndata: {tag: '100'}\n---\nkind: HelmRelease\nmetadata: {name: numeric}\nspec:\n  values:\n    workers:\n    - name: unused\n    helpers:\n    - repository: registry.example/helper\n      tag: 100 # retain plain scalar style\n";
+    write_file(&path, original);
+    let factory = StaticResolverFactory::new(
+        HashMap::new(),
+        HashMap::from([(
+            "registry.example/helper:100".into(),
+            "registry.example/helper:200".into(),
+        )]),
+    );
+    let mut args = vec![
+        "fluxrepo-update",
+        "update-helm",
+        temp.path().to_str().unwrap(),
+        "--json",
+        "--non-interactive",
+    ];
+    let (code, stdout, stderr) = run_cli(&args, &factory);
+    assert_eq!(code, 10, "{stderr}: {stdout}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["summary"]["planned_count"], 1);
+    assert_eq!(report["planned"][0]["document_index"], 1);
+    assert_eq!(
+        report["planned"][0]["yaml_path"],
+        "spec.values.helpers[0].tag"
+    );
+    assert_eq!(report["planned"][0]["current_version"], "100");
+    assert_eq!(fs::read(&path).unwrap(), original.as_bytes());
+    args.push("--write");
+    let (code, stdout, stderr) = run_cli(&args, &factory);
+    assert_eq!(code, 20, "{stderr}: {stdout}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["summary"]["applied_count"], 1);
+    assert_eq!(
+        fs::read(path).unwrap(),
+        original.replace("tag: 100", "tag: 200").as_bytes()
+    );
+}
+
+#[test]
+fn helm_value_pin_fields_are_checked_before_planning() {
+    assert_helm_value_pin_fields(false);
+}
+
+#[test]
+fn helm_value_pin_fields_preserve_pinned_files_on_apply() {
+    assert_helm_value_pin_fields(true);
+}
+
+fn assert_helm_value_pin_fields(apply: bool) {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let pins = [
+        ("empty-digest-sha", "digest: '', sha: abc123"),
+        ("blank-digest-sha", "digest: '  ', sha: abc123"),
+        ("empty-digest-sha256", "digest: '', sha: '', sha256: abc123"),
+        ("blank-digest-sha256", "digest: '  ', sha256: abc123"),
+        ("digest-empty-sha", "digest: 'sha256:abc123', sha: ''"),
+    ];
+    let server = TestHttpServer::new(
+        (0..=pins.len())
+            .map(|_| ResponseSpec::new(200, r#"{"tags":["1.0.0","2.0.0"]}"#))
+            .collect(),
+    );
+    let registry = server.base_url.trim_start_matches("http://");
+    let mut originals = Vec::new();
+    for (name, fields) in pins
+        .into_iter()
+        .chain([("all-empty", "digest: '', sha: '  ', sha256: ''")])
+    {
+        let text = format!(
+            "# retain pin spelling and formatting\nkind: HelmRelease\nmetadata: {{name: {name}}}\nspec:\n  values:\n    sharedImage: {{repository: '{registry}/demo/{name}', tag: '1.0.0', {fields}}} # keep\n"
+        );
+        let path = temp.path().join(format!("{name}.yaml"));
+        write_file(&path, &text);
+        originals.push((name, path, text));
+    }
+    let mut args = vec![
+        "fluxrepo-update",
+        "update-helm",
+        temp.path().to_str().unwrap(),
+        "--json",
+        "--non-interactive",
+    ];
+    if apply {
+        args.push("--write");
+    }
+    let (code, stdout, stderr) = run_cli(&args, &DefaultResolverFactory);
+    assert_eq!(code, if apply { 20 } else { 10 }, "{stderr}: {stdout}");
+    let report: Value = serde_json::from_str(&stdout).expect("report json");
+    assert_eq!(report["summary"]["planned_count"], 1);
+    assert_eq!(report["summary"]["applied_count"], usize::from(apply));
+    assert_eq!(report["summary"]["changed_file_count"], usize::from(apply));
+    assert_eq!(report["summary"]["skipped_count"], pins.len());
+    assert_eq!(report["planned"][0]["path"], "all-empty.yaml");
+    assert_eq!(
+        report["planned"][0]["yaml_path"],
+        "spec.values.sharedImage.tag"
+    );
+    assert_eq!(report["planned"][0]["latest_version"], "2.0.0");
+    for (name, _) in pins {
+        let skip = report["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|skip| skip["path"] == format!("{name}.yaml"))
+            .expect("pinned declaration must be skipped");
+        assert_eq!(skip["reason_code"], "image_reference_pinned_by_digest");
+        assert_eq!(skip["yaml_path"], "spec.values.sharedImage.tag");
+        assert_eq!(skip["current_value"], "1.0.0");
+        assert_eq!(skip["document_index"], 0);
+        assert_eq!(skip["retryable"], false);
+    }
+    for (name, path, original) in originals {
+        let expected = if apply && name == "all-empty" {
+            original.replace("tag: '1.0.0'", "tag: '2.0.0'")
+        } else {
+            original
+        };
+        assert_eq!(fs::read(path).unwrap(), expected.as_bytes(), "{name}");
+    }
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1, "only the unpinned image needs metadata");
+    assert_eq!(
+        requests[0].path.split('?').next().unwrap(),
+        "/v2/demo/all-empty/tags/list"
+    );
+}
+
+#[test]
 fn update_helm_workflow_reports_conservative_helm_value_skips() {
     let temp = tempfile::tempdir().expect("temp dir");
     let repo_root = temp.path().join("repo");
