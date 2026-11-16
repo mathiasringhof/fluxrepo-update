@@ -13,6 +13,223 @@ use common::{
 use fluxrepo_update::cli::run_with_args;
 use serde_json::Value;
 
+fn write_namespace_chart(root: &std::path::Path, url: &str, explicit_source_namespace: bool) {
+    write_file(
+        &root.join("source.yaml"),
+        &format!(
+            "kind: HelmRepository\nmetadata: {{name: shared, namespace: flux-system}}\nspec: {{url: '{url}'}}\n"
+        ),
+    );
+    let namespace = if explicit_source_namespace {
+        ", namespace: jellyfin"
+    } else {
+        ""
+    };
+    write_file(
+        &root.join("release.yaml"),
+        &format!(
+            "kind: HelmRelease\nmetadata: {{name: demo, namespace: raw-release}}\nspec:\n  chart:\n    spec:\n      chart: demo\n      version: 1.0.0\n      sourceRef: {{kind: HelmRepository, name: shared{namespace}}}\n"
+        ),
+    );
+}
+
+#[test]
+fn kustomize_namespace_plans_registry_backed_chart_updates() {
+    for explicit_source_namespace in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let server = TestHttpServer::new(vec![ResponseSpec::new(
+            200,
+            "entries:\n  demo:\n  - version: 2.0.0\n  - version: 1.0.0\n",
+        )]);
+        for environment in ["production", "testing"] {
+            let root = temp.path().join(environment);
+            write_namespace_chart(
+                &root.join("app"),
+                &server.base_url,
+                explicit_source_namespace,
+            );
+            write_file(
+                &root.join("app/kustomization.yml"),
+                "namespace: inner\nresources: [source.yaml, release.yaml]\n",
+            );
+            write_file(
+                &root.join("kustomization.yaml"),
+                "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nnamespace: jellyfin\nresources: [app]\n",
+            );
+        }
+        // Raw namespaces can differ when both effective namespaces and full specs agree.
+        let source = temp.path().join("testing/app/source.yaml");
+        fs::write(
+            &source,
+            fs::read_to_string(&source)
+                .unwrap()
+                .replace("flux-system", "other-raw"),
+        )
+        .unwrap();
+        let (code, stdout, stderr) = run_cli(
+            &[
+                "fluxrepo-update",
+                "update-helm",
+                temp.path().to_str().unwrap(),
+                "--json",
+                "--non-interactive",
+            ],
+            &DefaultResolverFactory,
+        );
+        assert_eq!(code, 10, "{stderr}: {stdout}");
+        let report: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(report["planned"].as_array().unwrap().len(), 2);
+        assert_eq!(report["skipped"], serde_json::json!([]));
+        for (update, environment) in report["planned"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(["production", "testing"])
+        {
+            assert_eq!(update["current_version"], "1.0.0");
+            assert_eq!(update["latest_version"], "2.0.0");
+            assert_eq!(update["namespace"], "raw-release");
+            assert_eq!(update["effective_namespace"], "jellyfin");
+            assert_eq!(
+                update["namespace_kustomizations"],
+                serde_json::json!([format!("{environment}/kustomization.yaml")])
+            );
+            for (source, directory) in update["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(["production", "testing"])
+            {
+                assert_eq!(source["effective_namespace"], "jellyfin");
+                assert_eq!(
+                    source["namespace_kustomizations"],
+                    serde_json::json!([format!("{directory}/kustomization.yaml")])
+                );
+            }
+        }
+        let requests = server.finish();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].path, "/index.yaml");
+    }
+}
+
+#[test]
+fn chart_namespace_without_transform_still_mismatches() {
+    for kustomization in [
+        None,
+        Some("kind: Kustomization\nresources: [source.yaml, release.yaml]\n"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        write_namespace_chart(temp.path(), "https://unused.example", true);
+        if let Some(text) = kustomization {
+            write_file(&temp.path().join("kustomization.yaml"), text);
+        }
+        let (code, stdout, stderr) = run_cli(
+            &[
+                "fluxrepo-update",
+                "update-helm",
+                temp.path().to_str().unwrap(),
+                "--json",
+                "--non-interactive",
+            ],
+            &StaticResolverFactory::default(),
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let report: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(report["planned"], serde_json::json!([]));
+        assert_eq!(
+            report["skipped"][0]["reason_code"],
+            "missing_helm_repository"
+        );
+        assert!(
+            report["skipped"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("namespace mismatch")
+        );
+        assert_eq!(report["skipped"][0]["effective_namespace"], "raw-release");
+        assert_eq!(
+            report["skipped"][0]["sources"][0]["effective_namespace"],
+            "flux-system"
+        );
+    }
+}
+
+#[test]
+fn conflicting_kustomize_namespace_chains_are_unresolved() {
+    for resources in [
+        "source.yaml",
+        "release.yaml",
+        "source.yaml, ../release.yaml",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        write_namespace_chart(temp.path(), "https://unused.example", true);
+        for (directory, namespace) in [("a", "jellyfin"), ("b", "other")] {
+            write_file(
+                &temp.path().join(directory).join("kustomization.yaml"),
+                &format!(
+                    "kind: Kustomization\nnamespace: {namespace}\nresources: [../{resources}]\n"
+                ),
+            );
+        }
+        let (code, stdout, stderr) = run_cli(
+            &[
+                "fluxrepo-update",
+                "update-helm",
+                temp.path().to_str().unwrap(),
+                "--json",
+                "--non-interactive",
+            ],
+            &StaticResolverFactory::default(),
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let report: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(report["planned"], serde_json::json!([]));
+        assert_eq!(
+            report["skipped"][0]["reason_code"],
+            "ambiguous_kustomize_namespace"
+        );
+        assert_eq!(report["skipped"][0]["retryable"], false);
+    }
+}
+
+#[test]
+fn transformed_conflicting_sources_remain_ambiguous() {
+    let temp = tempfile::tempdir().unwrap();
+    write_namespace_chart(temp.path(), "https://first.example", true);
+    write_file(
+        &temp.path().join("other-source.yaml"),
+        "kind: HelmRepository\nmetadata: {name: shared, namespace: different-raw}\nspec: {url: https://second.example}\n",
+    );
+    write_file(
+        &temp.path().join("kustomization.yaml"),
+        "kind: Kustomization\nnamespace: jellyfin\nresources: [source.yaml, other-source.yaml, release.yaml]\n",
+    );
+    let (code, stdout, stderr) = run_cli(
+        &[
+            "fluxrepo-update",
+            "update-helm",
+            temp.path().to_str().unwrap(),
+            "--json",
+            "--non-interactive",
+        ],
+        &StaticResolverFactory::default(),
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["planned"], serde_json::json!([]));
+    let skipped = &report["skipped"][0];
+    assert_eq!(skipped["reason_code"], "ambiguous_helm_repository");
+    assert_eq!(skipped["sources"].as_array().unwrap().len(), 2);
+    assert!(
+        skipped["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|source| source["effective_namespace"] == "jellyfin")
+    );
+}
+
 #[test]
 fn tag_only_image_overrides_are_visible_and_never_written() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -216,8 +433,8 @@ fn chart_plans_identify_every_equivalent_source_copy() {
     assert_eq!(
         report["planned"][0]["sources"],
         serde_json::json!([
-            {"path": "a-source.yaml", "document_index": 0},
-            {"path": "z-source.yaml", "document_index": 0},
+            {"path": "a-source.yaml", "document_index": 0, "namespace": "apps", "effective_namespace": "apps", "namespace_kustomizations": [], "namespace_ambiguous": false},
+            {"path": "z-source.yaml", "document_index": 0, "namespace": "apps", "effective_namespace": "apps", "namespace_kustomizations": [], "namespace_ambiguous": false},
         ])
     );
 }

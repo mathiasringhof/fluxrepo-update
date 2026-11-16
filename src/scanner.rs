@@ -11,6 +11,8 @@ use crate::models::{
 };
 use yaml_serde::{Deserializer, Mapping, Value};
 
+mod namespaces;
+
 const IGNORED_DIR_NAMES: &[&str] = &[
     ".git",
     ".pytest_cache",
@@ -163,6 +165,7 @@ pub fn scan_repo(repo_root: &Path) -> Result<Inventory> {
         }
     }
 
+    namespaces::derive_namespaces(&mut inventory);
     inventory.combine_equivalent_sources();
     inventory
         .chart_targets

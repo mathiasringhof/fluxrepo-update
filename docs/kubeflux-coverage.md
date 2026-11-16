@@ -42,11 +42,12 @@ executable.
 
 ## Open gaps
 
-- [ ] <a id="u1"></a>**U1 — Effective Kustomize namespaces** ([#16](https://github.com/mathiasringhof/fluxrepo-update/issues/16)).
+- [x] <a id="u1"></a>**U1 — Effective Kustomize namespaces** ([#16](https://github.com/mathiasringhof/fluxrepo-update/issues/16)).
   `apps/{production,testing,apptesting}/jellyfin/release.yaml` references namespace
   `jellyfin`; raw `repository.yaml` uses `flux-system`, transformed by each
-  `kustomization.yaml`. Exercise equivalent sources across transformed environments
-  together, and keep genuinely conflicting sources unresolved.
+  `kustomization.yaml`. Local `resources` namespace transforms now resolve equivalent
+  sources across environments; conflicting sources and namespace chains stay unresolved.
+  The `transformed-source-namespace` corpus case passes with byte-preserving chart edits.
 - [ ] <a id="u2"></a>**U2 — Inherited identity and chart defaults.** Six tag-only overrides:
   two in `apps/base/immich/release.yaml`, one each in
   `infrastructure/{production,testing}/openebs/release.yaml`,

@@ -191,6 +191,12 @@ pub(crate) fn skip_json(skipped: &SkippedUpdate, repo_root: &Path) -> serde_json
     if let Some(index) = skipped.document_index() {
         value["document_index"] = json!(index);
     }
+    if let Some(context) = skipped.chart_context_json(repo_root) {
+        value
+            .as_object_mut()
+            .expect("skip object")
+            .extend(context.as_object().expect("chart context").clone());
+    }
     value
 }
 
@@ -230,6 +236,12 @@ fn update_json(update: &UpdateReview<'_>, repo_root: &Path) -> serde_json::Value
                     }))
                     .collect::<Vec<_>>()
             );
+            if let Some(context) = update.chart_context_json(repo_root) {
+                value
+                    .as_object_mut()
+                    .expect("update object")
+                    .extend(context.as_object().expect("chart context").clone());
+            }
         }
         TargetKind::ImageBinding => {
             value["current_image"] = json!(update.current_image());

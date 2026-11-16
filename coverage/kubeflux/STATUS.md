@@ -7,7 +7,8 @@ for reproduction and the [audit](../../docs/kubeflux-coverage.md) for source evi
 The full CLI audit remains opt-in. All cases marked PASS also run through the library
 in the normal Rust suite and CI; TODO cases remain in the separate audit.
 
-The 47 PASS cases include 28 that apply updates and 19 preservation/current/skip cases.
+Since that CLI audit, `transformed-source-namespace` was promoted by the offline Rust
+suite: the corpus now registers 48 PASS and 26 TODO cases (29 apply cases).
 TODOs retain desired behavior that still fails; neither a safe skip nor this synthetic
 snapshot proves kubeflux is current. Working invariants inside TODO cases must still pass.
 
@@ -67,7 +68,7 @@ snapshot proves kubeflux is current. Working invariants inside TODO cases must s
 | [secret-valuesfrom-opaque](cases/secret-valuesfrom-opaque/case.json) | PASS | Whole-value and targetPath Secret references stay opaque and unchanged while an independently declared image updates. | [U2](../../docs/kubeflux-coverage.md#u2), [T4](../../docs/kubeflux-coverage.md#t4) |
 | [stable-release-over-timestamp](cases/stable-release-over-timestamp/case.json) | TODO | A stable semantic release wins over a larger timestamp build. | [U6](../../docs/kubeflux-coverage.md#u6) |
 | [tagged-digest-refresh](cases/tagged-digest-refresh/case.json) | TODO | Refreshing a tagged image digest retains the tag and digest pin. | [U5](../../docs/kubeflux-coverage.md#u5) |
-| [transformed-source-namespace](cases/transformed-source-namespace/case.json) | TODO | Equivalent sources transformed in two environments resolve both releases while a transformed conflicting source remains unchecked. | [U1](../../docs/kubeflux-coverage.md#u1) |
+| [transformed-source-namespace](cases/transformed-source-namespace/case.json) | PASS | Equivalent sources transformed in two environments resolve both releases while a transformed conflicting source remains unchecked. | [U1](../../docs/kubeflux-coverage.md#u1) |
 | [vendored-bundle-version](cases/vendored-bundle-version/case.json) | TODO | A versioned vendored bundle remains visible independently of its already newer image. | [U12](../../docs/kubeflux-coverage.md#u12) |
 | [version-date](cases/version-date/case.json) | PASS | Calendar tags compare within their family and retain eight-digit spelling. | [T3](../../docs/kubeflux-coverage.md#t3) |
 | [version-linuxserver-numeric](cases/version-linuxserver-numeric/case.json) | PASS | LinuxServer numeric-pattern versions keep their prefix and compare numeric components. | [T3](../../docs/kubeflux-coverage.md#t3) |

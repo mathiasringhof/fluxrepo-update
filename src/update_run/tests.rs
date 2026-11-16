@@ -54,6 +54,7 @@ fn check_summary_classifies_existing_skip_reasons_independently_of_retryability(
     let unsupported = [
         SkipReasonCode::MissingHelmRepository,
         SkipReasonCode::AmbiguousHelmRepository,
+        SkipReasonCode::AmbiguousKustomizeNamespace,
         SkipReasonCode::MissingChartIdentity,
         SkipReasonCode::UnsupportedRepositoryType,
         SkipReasonCode::IncompatibleVersionScheme,

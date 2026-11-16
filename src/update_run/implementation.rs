@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -17,8 +17,8 @@ use crate::scanner::{edit_node_at_path, parse_yaml_documents, value_at_path, val
 use crate::github::GitHubReleaseResolver;
 use crate::github::RemoteResourceVersionResolver;
 use crate::models::{
-    HelmReleaseTarget, ImageBinding, ImageBindingValueKind, Inventory, RemoteResourceTarget,
-    ResourceId, TargetKind, UncheckedVersionDeclaration,
+    HelmReleaseTarget, ImageBinding, ImageBindingValueKind, Inventory, NamespaceContext,
+    RemoteResourceTarget, ResourceId, TargetKind, UncheckedVersionDeclaration,
 };
 use crate::resolvers::{
     ChartVersionResolver, ImageVersionResolver, ResolverError, ResolverErrorCode,
@@ -74,6 +74,91 @@ pub struct ManifestIdentity {
     pub resource_id: ResourceId,
     fields: Vec<(String, Option<yaml_serde::Value>)>,
     sources: Vec<SourceIdentity>,
+    kustomizations: Vec<KustomizationIdentity>,
+    chart_context: Option<ChartContext>,
+}
+
+#[derive(Debug, Clone)]
+struct KustomizationIdentity {
+    path: PathBuf,
+    documents: Vec<yaml_serde::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChartContext {
+    target: NamespaceContext,
+    sources: Vec<(PathBuf, usize, NamespaceContext)>,
+}
+
+impl ChartContext {
+    fn capture(inventory: &Inventory, target: &HelmReleaseTarget) -> Self {
+        let name = target.repo_name.as_deref().unwrap_or_default();
+        let sources = inventory.ambiguous_repositories.get(name).map_or_else(
+            || inventory.repository_sources(name),
+            |sources| sources.iter().collect(),
+        );
+        Self {
+            target: inventory.chart_namespace(target),
+            sources: sources
+                .into_iter()
+                .map(|source| {
+                    (
+                        source.path.clone(),
+                        source.document_index,
+                        inventory.repository_namespace(source),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn to_json_value(&self, repo_root: &Path) -> JsonValue {
+        let mut value = self.target.to_json_value(repo_root);
+        value["sources"] = json!(
+            self.sources
+                .iter()
+                .map(|(path, index, namespace)| {
+                    let mut source = namespace.to_json_value(repo_root);
+                    source["path"] = json!(relative_identity_path(path, repo_root));
+                    source["document_index"] = json!(index);
+                    source
+                })
+                .collect::<Vec<_>>()
+        );
+        value
+    }
+
+    fn bindings(&self, inventory: &Inventory) -> Vec<KustomizationIdentity> {
+        let paths = self
+            .target
+            .bindings
+            .iter()
+            .chain(
+                self.sources
+                    .iter()
+                    .flat_map(|(_, _, namespace)| &namespace.bindings),
+            )
+            .collect::<BTreeSet<_>>();
+        paths
+            .into_iter()
+            .map(|path| {
+                let mut documents = inventory
+                    .manifest_documents
+                    .iter()
+                    .filter(|((document_path, _), _)| document_path == path)
+                    .map(|((_, index), document)| (*index, document.clone()))
+                    .collect::<Vec<_>>();
+                documents.sort_by_key(|(index, _)| *index);
+                KustomizationIdentity {
+                    path: path.clone(),
+                    documents: documents
+                        .into_iter()
+                        .map(|(_, document)| document)
+                        .collect(),
+                }
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +169,12 @@ struct SourceIdentity {
 }
 
 impl ManifestIdentity {
+    pub(super) fn chart_context_json(&self, repo_root: &Path) -> Option<JsonValue> {
+        self.chart_context
+            .as_ref()
+            .map(|context| context.to_json_value(repo_root))
+    }
+
     pub(super) fn source_locations(&self) -> Vec<(&Path, usize)> {
         self.sources
             .iter()
@@ -119,7 +210,15 @@ impl ManifestIdentity {
             [source] => source.clone(),
             _ => json!(sources),
         };
-        json!({"fields": fields, "source": source})
+        let mut context = json!({"fields": fields, "source": source});
+        // Preserve existing identities when no local inclusion chain contributes.
+        if !self.kustomizations.is_empty() {
+            context["kustomizations"] = json!(self.kustomizations.iter().map(|binding| json!({
+                "path": relative_identity_path(&binding.path, repo_root),
+                "documents": binding.documents.iter().map(canonical_yaml_value).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>());
+        }
+        context
     }
 
     fn capture(
@@ -145,6 +244,8 @@ impl ManifestIdentity {
             resource_id: resource_id.clone(),
             fields,
             sources: Vec::new(),
+            kustomizations: Vec::new(),
+            chart_context: None,
         })
     }
 
@@ -162,6 +263,17 @@ impl ManifestIdentity {
                 return Err(anyhow!(
                     "chart source {} changed after planning",
                     source.path.display()
+                ));
+            }
+        }
+        for binding in &self.kustomizations {
+            let text = fs::read_to_string(&binding.path).with_context(|| {
+                format!("failed to recheck kustomization {}", binding.path.display())
+            })?;
+            if parse_yaml_documents(&text)? != binding.documents {
+                return Err(anyhow!(
+                    "kustomization {} changed after planning",
+                    binding.path.display()
                 ));
             }
         }
@@ -386,6 +498,7 @@ pub struct SkippedUpdate {
     yaml_path: Option<String>,
     current_value: Option<String>,
     document_index: Option<usize>,
+    chart_context: Option<ChartContext>,
 }
 
 impl SkippedUpdate {
@@ -459,6 +572,7 @@ impl SkippedUpdate {
             yaml_path: None,
             current_value: None,
             document_index: None,
+            chart_context: None,
         }
     }
 
@@ -491,6 +605,12 @@ impl SkippedUpdate {
 
     pub fn document_index(&self) -> Option<usize> {
         self.document_index
+    }
+
+    pub fn chart_context_json(&self, repo_root: &Path) -> Option<JsonValue> {
+        self.chart_context
+            .as_ref()
+            .map(|context| context.to_json_value(repo_root))
     }
 }
 
@@ -535,6 +655,7 @@ impl SkipReason {
 pub enum SkipReasonCode {
     MissingHelmRepository,
     AmbiguousHelmRepository,
+    AmbiguousKustomizeNamespace,
     MissingChartIdentity,
     UnsupportedRepositoryType,
     ChartNotFound,
@@ -572,6 +693,7 @@ impl SkipReasonCode {
             | Self::Unclassified => true,
             Self::MissingHelmRepository
             | Self::AmbiguousHelmRepository
+            | Self::AmbiguousKustomizeNamespace
             | Self::MissingChartIdentity
             | Self::UnsupportedRepositoryType
             | Self::IncompatibleVersionScheme
@@ -589,6 +711,7 @@ impl SkipReasonCode {
         match self {
             Self::MissingHelmRepository => "missing_helm_repository",
             Self::AmbiguousHelmRepository => "ambiguous_helm_repository",
+            Self::AmbiguousKustomizeNamespace => "ambiguous_kustomize_namespace",
             Self::MissingChartIdentity => "missing_chart_identity",
             Self::UnsupportedRepositoryType => "unsupported_repository_type",
             Self::ChartNotFound => "chart_not_found",
@@ -859,6 +982,19 @@ fn resolve_task(
             resolve_remote_group(inventory, targets, remote_resolver)
         }
     };
+    if let ResolutionTask::Chart(target) | ResolutionTask::UnresolvedChart(target) = task {
+        let context = ChartContext::capture(inventory, target);
+        match &mut outcome {
+            ResolutionOutcome::Planned(PlannedUpdate::Chart(update)) => {
+                if let Some(identity) = &mut update.manifest_identity {
+                    identity.kustomizations = context.bindings(inventory);
+                    identity.chart_context = Some(context);
+                }
+            }
+            ResolutionOutcome::Skipped(skipped) => skipped.chart_context = Some(context),
+            _ => {}
+        }
+    }
     if let ResolutionOutcome::Skipped(skipped) = &mut outcome {
         let (document_index, yaml_path, identity_suffix) = match task {
             ResolutionTask::Chart(target) | ResolutionTask::UnresolvedChart(target) => (
@@ -1013,6 +1149,23 @@ fn resolve_chart_target(
     resolver: &dyn ChartVersionResolver,
 ) -> ResolutionOutcome {
     let repo_name = target.repo_name.as_deref().unwrap_or_default();
+    let context = ChartContext::capture(inventory, target);
+    if context.target.namespace_ambiguous
+        || context
+            .sources
+            .iter()
+            .any(|(_, _, namespace)| namespace.namespace_ambiguous)
+    {
+        return ResolutionOutcome::Skipped(SkippedUpdate::with_reason(
+            Some(target.path.clone()),
+            SkipReason::new(
+                "ambiguous Kustomize namespace: local inclusion chains disagree or contain a cycle; inspect namespace_kustomizations in JSON",
+                SkipReasonCode::AmbiguousKustomizeNamespace,
+                false,
+                None,
+            ),
+        ));
+    }
     if let Some(sources) = inventory.ambiguous_repositories.get(repo_name) {
         return ResolutionOutcome::Skipped(SkippedUpdate::with_reason(
             Some(target.path.clone()),
@@ -1039,9 +1192,12 @@ fn resolve_chart_target(
         .get(&(target.path.clone(), target.document_index))
         .and_then(|document| value_at_path(document, "spec.chart.spec.sourceRef.namespace"))
         .and_then(yaml_serde::Value::as_str)
-        .or(target.resource_id.namespace.as_deref());
-    if let (Some(expected), Some(found)) = (expected_namespace, repository.namespace.as_deref())
-        && expected != found
+        .or(context.target.effective_namespace.as_deref());
+    let source_namespace = inventory.repository_namespace(repository);
+    if let (Some(expected), Some(found)) = (
+        expected_namespace,
+        source_namespace.effective_namespace.as_deref(),
+    ) && expected != found
     {
         return ResolutionOutcome::Skipped(SkippedUpdate::with_reason(
             Some(target.path.clone()),

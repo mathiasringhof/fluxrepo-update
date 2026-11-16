@@ -5,6 +5,197 @@ use std::path::{Path, PathBuf};
 use common::{fixture_root, write_file};
 use fluxrepo_update::scanner::scan_repo;
 
+fn namespace_manifest(root: &Path) {
+    write_file(
+        &root.join("base/source.yaml"),
+        "kind: HelmRepository\nmetadata: {name: demo, namespace: raw}\nspec: {url: https://charts.example.org}\n",
+    );
+}
+
+#[test]
+fn namespace_transform_follows_local_directories_and_outermost_namespace_wins() {
+    let temp = tempfile::tempdir().unwrap();
+    namespace_manifest(temp.path());
+    for (path, text) in [
+        (
+            "base/kustomization.yml",
+            "namespace: inner\nresources: [source.yaml]\n",
+        ),
+        (
+            "middle/kustomization.yaml",
+            "kind: Kustomization\nresources: [../base]\n",
+        ),
+        (
+            "kustomization.yaml",
+            "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nnamespace: outer\nresources: [middle]\n",
+        ),
+    ] {
+        write_file(&temp.path().join(path), text);
+    }
+    let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+    let source = &inventory["repositories"][0];
+    assert_eq!(source["namespace"], "raw");
+    assert_eq!(source["effective_namespace"], "outer");
+    assert_eq!(
+        source["namespace_kustomizations"],
+        serde_json::json!(["kustomization.yaml"])
+    );
+    assert_eq!(source["namespace_ambiguous"], false);
+}
+
+#[test]
+fn namespace_transform_reports_all_agreeing_chains_and_conflicting_chains() {
+    for second in [Some("app"), Some("other"), None] {
+        let temp = tempfile::tempdir().unwrap();
+        namespace_manifest(temp.path());
+        for (directory, namespace) in [("a", Some("app")), ("b", second)] {
+            let namespace =
+                namespace.map_or_else(String::new, |value| format!("namespace: {value}\n"));
+            write_file(
+                &temp.path().join(directory).join("kustomization.yaml"),
+                &format!("kind: Kustomization\n{namespace}resources: [../base/source.yaml]\n"),
+            );
+        }
+        let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+        let source = &inventory["repositories"][0];
+        assert_eq!(source["namespace_ambiguous"], second != Some("app"));
+        assert_eq!(
+            source["effective_namespace"],
+            if second == Some("app") {
+                serde_json::json!("app")
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert_eq!(
+            source["namespace_kustomizations"][0],
+            "a/kustomization.yaml"
+        );
+        if second.is_some() {
+            assert_eq!(
+                source["namespace_kustomizations"][1],
+                "b/kustomization.yaml"
+            );
+        }
+    }
+}
+
+#[test]
+fn namespace_transform_ignores_flux_objects_and_unsupported_inclusion_fields() {
+    for (filename, text) in [
+        (
+            "kustomization.yaml",
+            "apiVersion: kustomize.toolkit.fluxcd.io/v1\nkind: Kustomization\nnamespace: ignored\nspec: {targetNamespace: ignored}\nresources: [base/source.yaml]\n",
+        ),
+        (
+            "other.yaml",
+            "kind: Kustomization\nnamespace: ignored\nresources: [base/source.yaml]\n",
+        ),
+        (
+            "kustomization.yaml",
+            "kind: Kustomization\nnamespace: ignored\nbases: [base]\ncomponents: [base]\npatches: [{path: base/source.yaml}]\nresources: [https://example.org/base/source.yaml, github.com/example/base?ref=v1]\n",
+        ),
+        (
+            "kustomization.yaml",
+            "kind: Kustomization\nnamespace: ignored\nresources: [base]\n",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        namespace_manifest(temp.path());
+        write_file(&temp.path().join(filename), text);
+        let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+        let source = &inventory["repositories"][0];
+        assert_eq!(source["effective_namespace"], "raw", "{text}");
+        assert_eq!(source["namespace_kustomizations"], serde_json::json!([]));
+        assert_eq!(source["namespace_ambiguous"], false);
+    }
+}
+
+#[test]
+fn namespace_transform_cycles_are_unresolved() {
+    let temp = tempfile::tempdir().unwrap();
+    namespace_manifest(temp.path());
+    write_file(
+        &temp.path().join("base/kustomization.yaml"),
+        "kind: Kustomization\nnamespace: inner\nresources: [source.yaml, ..]\n",
+    );
+    write_file(
+        &temp.path().join("kustomization.yaml"),
+        "kind: Kustomization\nnamespace: outer\nresources: [base]\n",
+    );
+    let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+    assert_eq!(inventory["repositories"][0]["namespace_ambiguous"], true);
+    assert!(inventory["repositories"][0]["effective_namespace"].is_null());
+}
+
+#[test]
+fn namespace_transform_recurses_only_through_directory_references() {
+    let temp = tempfile::tempdir().unwrap();
+    namespace_manifest(temp.path());
+    write_file(
+        &temp.path().join("base/kustomization.yaml"),
+        "kind: Kustomization\nnamespace: inner\nresources: [source.yaml]\n",
+    );
+    write_file(
+        &temp.path().join("kustomization.yaml"),
+        "kind: Kustomization\nnamespace: outer\nresources: [base/kustomization.yaml]\n",
+    );
+    let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+    assert_eq!(inventory["repositories"][0]["effective_namespace"], "inner");
+    assert_eq!(
+        inventory["repositories"][0]["namespace_kustomizations"],
+        serde_json::json!(["base/kustomization.yaml"])
+    );
+}
+
+#[test]
+fn namespace_transform_compares_raw_fallback_per_document() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("sources.yaml"),
+        "kind: HelmRepository\nmetadata: {name: agrees, namespace: app}\nspec: {url: https://charts.example.org}\n---\nkind: HelmRepository\nmetadata: {name: disagrees, namespace: raw}\nspec: {url: https://charts.example.org}\n",
+    );
+    write_file(
+        &temp.path().join("a/kustomization.yaml"),
+        "namespace: app\nresources: [../sources.yaml]\n",
+    );
+    write_file(
+        &temp.path().join("b/kustomization.yaml"),
+        "resources: [../sources.yaml]\n",
+    );
+    let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+    assert_eq!(inventory["repositories"][0]["namespace_ambiguous"], false);
+    assert_eq!(inventory["repositories"][0]["effective_namespace"], "app");
+    assert_eq!(inventory["repositories"][1]["namespace_ambiguous"], true);
+    assert!(inventory["repositories"][1]["effective_namespace"].is_null());
+}
+
+#[test]
+fn namespace_transform_ignores_paths_through_missing_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    namespace_manifest(temp.path());
+    write_file(
+        &temp.path().join("kustomization.yaml"),
+        "namespace: ignored\nresources: [missing/../base/source.yaml]\n",
+    );
+    let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+    assert_eq!(inventory["repositories"][0]["effective_namespace"], "raw");
+}
+
+#[cfg(unix)]
+#[test]
+fn namespace_transform_ignores_paths_through_symlinks() {
+    let temp = tempfile::tempdir().unwrap();
+    namespace_manifest(temp.path());
+    std::os::unix::fs::symlink(temp.path().join("base"), temp.path().join("link")).unwrap();
+    write_file(
+        &temp.path().join("kustomization.yaml"),
+        "namespace: ignored\nresources: [link/../base/source.yaml]\n",
+    );
+    let inventory = scan_repo(temp.path()).unwrap().to_json_value();
+    assert_eq!(inventory["repositories"][0]["effective_namespace"], "raw");
+}
+
 #[test]
 fn scanner_excludes_only_bootstrap_files_directly_inside_flux_system() {
     let temp = tempfile::tempdir().expect("temp dir");
