@@ -8,8 +8,8 @@
   "source": [
     "apps/production/jellyfin/release.yaml"
   ],
-  "expectation": "todo",
-  "todo": "Timestamp builds can be considered comparable upgrades for a semantic-version image channel.",
+  "expectation": "pass",
+  "todo": "",
   "command": "apply",
   "responses": {
     "/v2/demo/media/tags/list": {

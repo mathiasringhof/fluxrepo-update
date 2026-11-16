@@ -1,15 +1,25 @@
 # Synthetic kubeflux case status
 
-**2026-10-04 — 74 cases: 47 PASS, 27 TODO, 0 XPASS, 0 FAIL, 0 ERROR.**
+**2026-11-16 — 74 cases: 52 PASS, 22 TODO (Rust library verification).**
 
-Recorded from `python3 coverage/kubeflux/run.py --json`. See the [runner guide](README.md)
-for reproduction and the [audit](../../docs/kubeflux-coverage.md) for source evidence.
-The full CLI audit remains opt-in. All cases marked PASS also run through the library
-in the normal Rust suite and CI; TODO cases remain in the separate audit.
+Reverified against updater `c86c644` with Cargo offline. All 24 previous TODO cases ran
+through the same `scan_repo` / `UpdateRun::execute` path in a temporary Rust test,
+removed after the audit. `stable-release-over-timestamp` and `report-all-requests-failed`
+passed their unchanged checks and expected files and are now registered. The existing
+`version-no-downgrade` case now requires a nonzero exit for its failed source checks;
+its no-downgrade assertions and repository bytes are unchanged.
 
-Since that CLI audit, `transformed-source-namespace`, `yaml-indentless-workload-lists`,
-and `yaml-indentless-helm-values-lists` were promoted by the offline Rust suite:
-the corpus now registers 50 PASS and 24 TODO cases.
+`cargo test --locked --test rust_corpus` passes all 75 tests, including all 52 PASS cases.
+The table below records library status. See the [runner guide](README.md) for reproduction
+and the [audit](../../docs/kubeflux-coverage.md) for source evidence.
+
+The optional `python3 coverage/kubeflux/run.py --json` audit on macOS reports
+**47 PASS, 22 TODO, 0 XPASS, 2 FAIL, 3 ERROR**. Its exact nested `sources` comparisons
+reject added namespace metadata in `chart-source-equivalence` and
+`transformed-source-namespace`; its local TLS fixture fails for `remote-git-ref-update`,
+`remote-release-resource-update`, and `schemeless-kustomize-resource`. These five cases
+pass through the Rust runner. All remaining TODO invariants pass in the CLI audit.
+
 TODOs retain desired behavior that still fails; neither a safe skip nor this synthetic
 snapshot proves kubeflux is current. Working invariants inside TODO cases must still pass.
 
@@ -57,7 +67,7 @@ snapshot proves kubeflux is current. Working invariants inside TODO cases must s
 | [release-image-environment](cases/release-image-environment/case.json) | TODO | A controller image repeated in RELEASE_IMAGE is a separate declaration. | [U8](../../docs/kubeflux-coverage.md#u8) |
 | [remote-git-ref-update](cases/remote-git-ref-update/case.json) | PASS | Three coordinated Git refs advance to one release while retaining each selected subdirectory and local/commented resources. | [U4](../../docs/kubeflux-coverage.md#u4) |
 | [remote-release-resource-update](cases/remote-release-resource-update/case.json) | PASS | Two release artifact URLs move together to one newer release. | [U4](../../docs/kubeflux-coverage.md#u4) |
-| [report-all-requests-failed](cases/report-all-requests-failed/case.json) | TODO | A total metadata outage must have an automation-visible unsuccessful outcome. | [U13](../../docs/kubeflux-coverage.md#u13) |
+| [report-all-requests-failed](cases/report-all-requests-failed/case.json) | PASS | A total metadata outage must have an automation-visible unsuccessful outcome. | [U13](../../docs/kubeflux-coverage.md#u13) |
 | [report-fully-current](cases/report-fully-current/case.json) | PASS | A fully checked current repository reports one checked declaration and no updates. | [U13](../../docs/kubeflux-coverage.md#u13) |
 | [report-invisible-dependency](cases/report-invisible-dependency/case.json) | TODO | A current ordinary image must not hide an undiscovered image-valued environment declaration. | [U13](../../docs/kubeflux-coverage.md#u13), [U8](../../docs/kubeflux-coverage.md#u8) |
 | [report-mixed-resolution](cases/report-mixed-resolution/case.json) | PASS | An unavailable chart source retains its skip while an independent image update applies. | [U13](../../docs/kubeflux-coverage.md#u13) |
@@ -67,7 +77,7 @@ snapshot proves kubeflux is current. Working invariants inside TODO cases must s
 | [script-binary-checksum-pins](cases/script-binary-checksum-pins/case.json) | TODO | Pinned executable and checksum download URLs are both visible, without treating a validation assertion as another install. | [U10](../../docs/kubeflux-coverage.md#u10) |
 | [script-mutable-download-boundary](cases/script-mutable-download-boundary/case.json) | TODO | A latest-release schema download remains an unknown runtime dependency; discovery must neither fetch the URL nor execute its shell pipeline. | [U10](../../docs/kubeflux-coverage.md#u10) |
 | [secret-valuesfrom-opaque](cases/secret-valuesfrom-opaque/case.json) | PASS | Whole-value and targetPath Secret references stay opaque and unchanged while an independently declared image updates. | [U2](../../docs/kubeflux-coverage.md#u2), [T4](../../docs/kubeflux-coverage.md#t4) |
-| [stable-release-over-timestamp](cases/stable-release-over-timestamp/case.json) | TODO | A stable semantic release wins over a larger timestamp build. | [U6](../../docs/kubeflux-coverage.md#u6) |
+| [stable-release-over-timestamp](cases/stable-release-over-timestamp/case.json) | PASS | A stable semantic release wins over a larger timestamp build. | [U6](../../docs/kubeflux-coverage.md#u6) |
 | [tagged-digest-refresh](cases/tagged-digest-refresh/case.json) | TODO | Refreshing a tagged image digest retains the tag and digest pin. | [U5](../../docs/kubeflux-coverage.md#u5) |
 | [transformed-source-namespace](cases/transformed-source-namespace/case.json) | PASS | Equivalent sources transformed in two environments resolve both releases while a transformed conflicting source remains unchecked. | [U1](../../docs/kubeflux-coverage.md#u1) |
 | [vendored-bundle-version](cases/vendored-bundle-version/case.json) | TODO | A versioned vendored bundle remains visible independently of its already newer image. | [U12](../../docs/kubeflux-coverage.md#u12) |

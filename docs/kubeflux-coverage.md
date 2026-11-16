@@ -9,9 +9,9 @@ the original audit; subsequent feature work is identified in the gap list.
 
 The [synthetic corpus](../coverage/kubeflux/README.md) supplies passing library scenarios
 to `cargo test` and CI, plus an opt-in CLI audit including TODO cases. Both use local HTTP
-fixtures; the [status table](../coverage/kubeflux/STATUS.md) owns recorded CLI results
+fixtures; the [status table](../coverage/kubeflux/STATUS.md) owns recorded verification results
 and links every case. A PASS can mean safe preservation; TODOs retain desired
-behavior that currently fails. U1, U4, and U15 are now supported; the other U categories remain open.
+behavior that currently fails. U1, U4, U6, and U15 are now supported; the other U categories remain open.
 T1–T4 identify regression examples,
 not a claim of complete update support.
 
@@ -76,10 +76,11 @@ executable.
   loki/syslog-ng, tvproxy's tagless host:port, zfs_exporter, and webtop-privacy.
   Test visibility and preservation of each form. Future digest refresh/channel policies
   must retain pins, avoid invented tags, and coordinate repeated references.
-- [ ] <a id="u6"></a>**U6 — Stable release selection** ([#15](https://github.com/mathiasringhof/fluxrepo-update/issues/15)).
-  Three Jellyfin images can select unstable timestamp builds. Given current `10.11.8`
-  and candidates `10.11.8`, `12.1`, `2026092811`, prefer the stable semantic release;
-  retain valid calendar-to-calendar updates. Chart rules must also handle
+- [x] <a id="u6"></a>**U6 — Stable release selection** ([#15](https://github.com/mathiasringhof/fluxrepo-update/issues/15)).
+  Fixed in `1c87dac`: compact dates and timestamps stay in separate version families.
+  Given Jellyfin `10.11.8` and candidates `10.11.8`, `12.1`, `2026092811`, the
+  `stable-release-over-timestamp` case now applies `12.1` with its original expected bytes.
+  Valid calendar-to-calendar updates remain supported. Passing chart cases also cover
   cert-manager `v1.21.1`, rke2-multus `v4.3.017`, and unpoller `2.11.2-Chart6` (T3).
 - [ ] <a id="u7"></a>**U7 — Post-renderer patch strings.**
   `apps/apptesting/immich/release-patch.yaml` embeds `busybox:1.36` in
@@ -122,9 +123,11 @@ executable.
   Track bundle/bootstrap upgrades separately from image updates. Generated files must
   remain excluded from automatic edits and byte-identical even when another image updates.
 - [ ] <a id="u13"></a>**U13 — Completeness and failed resolution** ([#18](https://github.com/mathiasringhof/fluxrepo-update/issues/18)).
-  Recognized counts separate checked/unchecked declarations but omit silent misses.
-  Exercise current, all-failed, mixed, unsupported-only, and undiscovered dependencies.
-  Exit zero or zero planned updates must not imply repository-wide currency.
+  Check completeness now separates complete, incomplete, failed, and not-checked runs.
+  Total resolution failure returns exit `2` with the full report;
+  `report-all-requests-failed` now passes alongside current, mixed, and unsupported-only cases.
+  Silent misses remain: `report-invisible-dependency` still omits `RELEASE_IMAGE`.
+  Exit zero or zero planned updates does not imply repository-wide currency.
 - [ ] <a id="u14"></a>**U14 — Grafana dashboards.**
   `apps/{production,apptesting}/kube-prometheus-stack/kube-prometheus-stack-values.yaml`
   pins `spec.values.grafana.dashboards.default.smartctl_exporter` with `gnetId: 22604`
