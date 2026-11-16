@@ -37,6 +37,7 @@ yaml-edit = "0.2.1"
 yaml_serde = "0.10.4"
 
 [dev-dependencies]
+rustix = { version = "1.1.4", features = ["stdio"] }
 tempfile = "3.24.0"
 
 [lib]
