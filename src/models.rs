@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -58,6 +58,37 @@ pub struct HelmRepository {
     pub repo_type: RepoType,
     pub path: PathBuf,
     pub document_index: usize,
+}
+
+/// Namespace facts are separate from raw manifest identity and editable scalars.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceContext {
+    pub namespace: Option<String>,
+    pub effective_namespace: Option<String>,
+    pub namespace_kustomizations: BTreeSet<PathBuf>,
+    pub namespace_ambiguous: bool,
+    pub(crate) bindings: BTreeSet<PathBuf>,
+}
+
+impl NamespaceContext {
+    pub(crate) fn raw(namespace: Option<&str>) -> Self {
+        Self {
+            namespace: namespace.map(str::to_owned),
+            effective_namespace: namespace.map(str::to_owned),
+            namespace_kustomizations: BTreeSet::new(),
+            namespace_ambiguous: false,
+            bindings: BTreeSet::new(),
+        }
+    }
+
+    pub fn to_json_value(&self, repo_root: &Path) -> Value {
+        json!({
+            "namespace": self.namespace,
+            "effective_namespace": self.effective_namespace,
+            "namespace_kustomizations": self.namespace_kustomizations.iter().map(|path| path.strip_prefix(repo_root).unwrap_or(path)).collect::<Vec<_>>(),
+            "namespace_ambiguous": self.namespace_ambiguous,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +169,7 @@ pub struct Inventory {
     pub image_references: Vec<ImageReference>,
     pub unchecked_version_declarations: Vec<UncheckedVersionDeclaration>,
     pub skipped_paths: Vec<PathBuf>,
+    pub namespace_contexts: HashMap<(PathBuf, usize), NamespaceContext>,
 }
 
 impl Inventory {
@@ -156,6 +188,7 @@ impl Inventory {
             image_references: Vec::new(),
             unchecked_version_declarations: Vec::new(),
             skipped_paths: Vec::new(),
+            namespace_contexts: HashMap::new(),
         }
     }
 
@@ -197,9 +230,13 @@ impl Inventory {
         for (name, sources) in std::mem::take(&mut self.ambiguous_repositories) {
             let first = &sources[0];
             let specification = self.source_specification(first);
+            let first_namespace = self.repository_namespace(first);
             if specification.is_some()
+                && !first_namespace.namespace_ambiguous
                 && sources.iter().all(|source| {
-                    source.namespace == first.namespace
+                    let namespace = self.repository_namespace(source);
+                    !namespace.namespace_ambiguous
+                        && namespace.effective_namespace == first_namespace.effective_namespace
                         && self.source_specification(source) == specification
                 })
             {
@@ -221,6 +258,34 @@ impl Inventory {
         self.equivalent_repositories.get(name).map_or_else(
             || self.repositories.get(name).into_iter().collect(),
             |sources| sources.iter().collect(),
+        )
+    }
+
+    pub fn namespace_context(
+        &self,
+        path: &Path,
+        document_index: usize,
+        raw_namespace: Option<&str>,
+    ) -> NamespaceContext {
+        self.namespace_contexts
+            .get(&(path.to_path_buf(), document_index))
+            .cloned()
+            .unwrap_or_else(|| NamespaceContext::raw(raw_namespace))
+    }
+
+    pub(crate) fn repository_namespace(&self, source: &HelmRepository) -> NamespaceContext {
+        self.namespace_context(
+            &source.path,
+            source.document_index,
+            source.namespace.as_deref(),
+        )
+    }
+
+    pub(crate) fn chart_namespace(&self, target: &HelmReleaseTarget) -> NamespaceContext {
+        self.namespace_context(
+            &target.path,
+            target.document_index,
+            target.resource_id.namespace.as_deref(),
         )
     }
 
@@ -262,7 +327,7 @@ impl Inventory {
                 "name": name,
                 "sources": sources.iter().map(|source| self.repository_json(source)).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
-            "chart_targets": self.chart_targets.iter().map(|target| json!({
+            "chart_targets": self.chart_targets.iter().map(|target| self.with_chart_namespace(target, json!({
                 "path": self.relative(&target.path),
                 "document_index": target.document_index,
                 "name": target.resource_id.name,
@@ -272,7 +337,7 @@ impl Inventory {
                 "current_version": target.current_version,
                 "source_path": target.source_path.as_ref().map(|path| self.relative(path)),
                 "source_is_inherited": target.source_is_inherited,
-            })).collect::<Vec<_>>(),
+            }))).collect::<Vec<_>>(),
             "image_bindings": self.image_bindings.iter().map(|target| json!({
                 "path": self.relative(&target.path),
                 "document_index": target.document_index,
@@ -291,19 +356,19 @@ impl Inventory {
                 "current_version": target.reference.current_version,
                 "required_asset": target.reference.required_asset,
             })).collect::<Vec<_>>(),
-            "helmreleases_without_chart_version": self.helmreleases_without_chart_version.iter().map(|target| json!({
+            "helmreleases_without_chart_version": self.helmreleases_without_chart_version.iter().map(|target| self.with_chart_namespace(target, json!({
                 "path": self.relative(&target.path),
                 "document_index": target.document_index,
                 "name": target.resource_id.name,
                 "namespace": target.resource_id.namespace,
-            })).collect::<Vec<_>>(),
-            "unresolved_chart_targets": self.unresolved_chart_targets.iter().map(|target| json!({
+            }))).collect::<Vec<_>>(),
+            "unresolved_chart_targets": self.unresolved_chart_targets.iter().map(|target| self.with_chart_namespace(target, json!({
                 "path": self.relative(&target.path),
                 "document_index": target.document_index,
                 "name": target.resource_id.name,
                 "namespace": target.resource_id.namespace,
                 "current_version": target.current_version,
-            })).collect::<Vec<_>>(),
+            }))).collect::<Vec<_>>(),
             "image_references": self.image_references.iter().map(|image| json!({
                 "path": self.relative(&image.path),
                 "document_index": image.document_index,
@@ -316,14 +381,34 @@ impl Inventory {
     }
 
     fn repository_json(&self, repository: &HelmRepository) -> Value {
-        json!({
-            "path": self.relative(&repository.path),
-            "document_index": repository.document_index,
-            "name": repository.name,
-            "namespace": repository.namespace,
-            "url": repository.url,
-            "repo_type": repo_type_json_value(&repository.repo_type),
-        })
+        let mut value = self
+            .repository_namespace(repository)
+            .to_json_value(&self.repo_root);
+        value.as_object_mut().expect("namespace object").extend(
+            json!({
+                "path": self.relative(&repository.path),
+                "document_index": repository.document_index,
+                "name": repository.name,
+                "namespace": repository.namespace,
+                "url": repository.url,
+                "repo_type": repo_type_json_value(&repository.repo_type),
+            })
+            .as_object()
+            .expect("source object")
+            .clone(),
+        );
+        value
+    }
+
+    fn with_chart_namespace(&self, target: &HelmReleaseTarget, mut value: Value) -> Value {
+        value.as_object_mut().expect("chart object").extend(
+            self.chart_namespace(target)
+                .to_json_value(&self.repo_root)
+                .as_object()
+                .expect("namespace object")
+                .clone(),
+        );
+        value
     }
 
     pub fn relative(&self, path: &Path) -> String {

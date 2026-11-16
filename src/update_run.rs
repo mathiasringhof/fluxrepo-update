@@ -233,6 +233,16 @@ impl UpdateReview<'_> {
         }
     }
 
+    pub fn chart_context_json(&self, repo_root: &Path) -> Option<serde_json::Value> {
+        match self.update {
+            PlannedUpdate::Chart(update) => update
+                .manifest_identity
+                .as_ref()?
+                .chart_context_json(repo_root),
+            PlannedUpdate::Image(_) | PlannedUpdate::RemoteResource(_) => None,
+        }
+    }
+
     pub fn current_image(&self) -> Option<&str> {
         match self.update {
             PlannedUpdate::Image(update) => Some(&update.current_image),

@@ -24,6 +24,129 @@ fn chart_copies() -> tempfile::TempDir {
     temp
 }
 
+fn namespace_chart_copies() -> tempfile::TempDir {
+    let temp = chart_copies();
+    for environment in ["production", "testing"] {
+        fs::write(
+            temp.path().join(environment).join("kustomization.yaml"),
+            "kind: Kustomization\nnamespace: apps\nresources: [source.yaml, release.yaml]\n",
+        )
+        .unwrap();
+    }
+    temp
+}
+
+#[test]
+fn changing_kustomize_namespace_invalidates_previously_selected_ids() {
+    let temp = namespace_chart_copies();
+    let charts = StaticVersionResolver::new(HashMap::from([(
+        ("shared".into(), "demo".into()),
+        "2.0.0".into(),
+    )]));
+    let images = StaticImageVersionResolver::new(HashMap::new());
+    let run = UpdateRun::new(&charts, &images);
+    let inventory = scan_repo(temp.path()).unwrap();
+    let before = run
+        .execute(
+            &inventory,
+            UpdateRunMode::PlanOnly,
+            &mut |_| unreachable!(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(before.plan().review().len(), 2);
+    let selected = before
+        .plan()
+        .review()
+        .iter()
+        .map(|item| item.identity().clone())
+        .collect();
+    for environment in ["production", "testing"] {
+        let path = temp.path().join(environment).join("kustomization.yaml");
+        fs::write(
+            &path,
+            fs::read_to_string(&path)
+                .unwrap()
+                .replace("namespace: apps", "namespace: changed"),
+        )
+        .unwrap();
+    }
+    let refreshed = scan_repo(temp.path()).unwrap();
+    let after = run
+        .execute(
+            &refreshed,
+            UpdateRunMode::ApplySelected(selected),
+            &mut |_| unreachable!(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        after.plan().review().len(),
+        2,
+        "both sources still agree after the transform changes"
+    );
+    assert_eq!(after.status(), UpdateRunStatus::RunRejected);
+    assert!(after.applied().is_empty());
+    for environment in ["production", "testing"] {
+        assert!(
+            fs::read_to_string(temp.path().join(environment).join("release.yaml"))
+                .unwrap()
+                .contains("version: 1.0.0")
+        );
+    }
+}
+
+#[test]
+fn changing_any_namespace_inclusion_file_during_review_prevents_all_writes() {
+    for changed_file in [
+        "production/kustomization.yaml",
+        "testing/kustomization.yaml",
+        "kustomization.yaml",
+    ] {
+        for replacement in ["namespace: changed", "resources: []"] {
+            let temp = namespace_chart_copies();
+            fs::write(
+                temp.path().join("kustomization.yaml"),
+                "kind: Kustomization\nresources: [production, testing]\n",
+            )
+            .unwrap();
+            let inventory = scan_repo(temp.path()).unwrap();
+            let charts = StaticVersionResolver::new(HashMap::from([(
+                ("shared".into(), "demo".into()),
+                "2.0.0".into(),
+            )]));
+            let images = StaticImageVersionResolver::new(HashMap::new());
+            let result = UpdateRun::new(&charts, &images).execute(
+                &inventory,
+                UpdateRunMode::ReviewAndApply,
+                &mut |items| {
+                    assert_eq!(items.len(), 2);
+                    fs::write(
+                        temp.path().join(changed_file),
+                        format!("kind: Kustomization\n{replacement}\n"),
+                    )
+                    .unwrap();
+                    Ok(items.iter().map(|item| item.identity().clone()).collect())
+                },
+                None,
+            );
+            assert!(
+                result
+                    .expect_err("namespace context must be rechecked before writes")
+                    .to_string()
+                    .contains("changed after planning")
+            );
+            for environment in ["production", "testing"] {
+                assert!(
+                    fs::read_to_string(temp.path().join(environment).join("release.yaml"))
+                        .unwrap()
+                        .contains("version: 1.0.0")
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn equivalent_source_copies_allow_each_manifest_to_update() {
     let temp = chart_copies();

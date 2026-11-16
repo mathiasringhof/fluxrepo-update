@@ -22,7 +22,10 @@ changing files.
 Planning requires access to public Helm indexes, OCI/container registries, and GitHub
 release metadata.
 
-Each manifest is interpreted independently. A base version can be updated even when
+Versions remain manifest-local. Chart sources use effective namespaces from local
+Kustomize `resources` inclusion chains; JSON shows raw/effective namespaces and the
+governing Kustomization files. Conflicting namespace chains remain unresolved.
+A base version can be updated even when
 an overlay overrides it. Latest stable selection can cross major versions, so review
 chart values, application migrations, and cluster compatibility before applying.
 
@@ -59,7 +62,8 @@ fluxrepo-update update-helm /path/to/flux-repo --json --non-interactive
 fluxrepo-update update-helm /path/to/flux-repo --write --non-interactive --apply-id '<id-from-plan>'
 ```
 
-IDs are opaque and bind the reviewed resource, source, image identity, and versions.
+IDs are opaque and bind the reviewed resource, source, image identity, and versions,
+including local Kustomization files contributing to chart namespace matching.
 Application plans again; unknown or stale IDs reject the entire selection without
 writing. Generate and review a fresh plan when the target or available version changes.
 See [selection IDs](output.md#planned) for the current format and migration rules.

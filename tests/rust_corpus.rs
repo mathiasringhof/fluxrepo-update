@@ -56,6 +56,7 @@ cases! {
     schemeless_kustomize_resource,
     scope_exclusions,
     secret_valuesfrom_opaque,
+    transformed_source_namespace,
     version_date,
     version_linuxserver_numeric,
     version_linuxserver_openssh,

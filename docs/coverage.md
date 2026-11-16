@@ -4,7 +4,7 @@ The [kubeflux audit](kubeflux-coverage.md) maps this scope to real declarations 
 executable examples of remaining gaps.
 
 `fluxrepo-update` scans user-authored `.yaml` and `.yml` manifests. Each manifest
-is interpreted independently; the tool does not render Kustomize graphs or inherit chart
+retains its own explicit versions; the tool does not render Kustomize graphs or inherit chart
 identity and values from another file. An explicit base version can therefore be updated
 even when an overlay overrides it or no environment includes it. The scope is all eligible
 repository manifests, including untracked files, not effective deployed versions.
@@ -48,16 +48,20 @@ including variant version numbers. Unfamiliar suffixes on numeric versions are t
 conservatively as variants; explicit prerelease markers remain excluded. Chart versions
 use chart SemVer rules, including OCI registry `_` encoding for `+` build metadata.
 
-Repeated `HelmRepository` definitions resolve together only when their name, raw namespace,
+Repeated `HelmRepository` definitions resolve together only when their name, effective namespace,
 and complete `spec` match. Paths and descriptive metadata do not affect equivalence;
 even harmless spec differences such as polling intervals remain conflicts. Different
 definitions with the same name remain ambiguous, including across namespaces. Known
-namespace mismatches are also skipped: `sourceRef.namespace`, or the release namespace
-when omitted, must match the source namespace when both are explicit. Missing namespaces
-are not inferred from Kustomize configuration.
+namespace mismatches are also skipped: explicit `sourceRef.namespace`, or the release's
+effective namespace when omitted, must match the source's effective namespace when both are known.
 
-All equivalent source copies participate in selection identity and are rechecked before
-applying updates. Kustomize namespace transformations remain unsupported.
+Effective namespaces follow local `resources` file/directory inclusions in
+`kustomization.yaml`/`kustomization.yml`; the outermost namespace transformer wins.
+Absent transforms retain raw namespaces. Disagreeing inclusion chains and cycles are
+unresolved. Remote resources, `bases`, components, patches, generators, and Flux
+Kustomization `targetNamespace` do not contribute namespace transforms.
+All equivalent source copies and contributing inclusion-chain files bind selection
+identity and are rechecked before applying chart updates; namespace discovery writes no files.
 
 Within a run, targets share fetched metadata. Registry tag lists follow `Link` headers
 with a `next` relation. Pagination cycles or more than 1,000 pages are reported as

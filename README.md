@@ -55,6 +55,8 @@ empty runs report `not_checked` and exit `0`; partial results retain useful upda
 The tool reads individual repository manifests, including inactive bases and untracked
 YAML; it does not render Kustomize overlays or inspect deployed resources. Latest stable
 selection can cross major versions and does not check upgrade compatibility.
+Chart source matching follows namespace transforms through local Kustomize `resources`
+inclusions; conflicting namespace chains stay unresolved.
 Compact calendar tags stay within matching precision, preventing timestamp builds from
 replacing dotted or ordinary numeric releases.
 

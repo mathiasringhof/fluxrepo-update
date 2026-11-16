@@ -39,8 +39,13 @@ document snapshots, and exclusions from one repository scan. Eligible manifests 
 regardless of whether an environment deploys them; inclusion does not imply deployment.
 
 **Equivalent Helm Sources**:
-HelmRepository declarations with matching names, raw namespaces, and source specifications,
+HelmRepository declarations with matching names, unambiguous effective namespaces, and source specifications,
 regardless of file location or descriptive metadata such as labels.
+
+**Effective Namespace**:
+The namespace imposed by the outermost local Kustomize namespace transformer in each
+`resources` inclusion chain, falling back to the raw manifest namespace. Disagreeing
+chains are ambiguous; this does not imply general Kustomize rendering or deployment coverage.
 
 **Planned Update**:
 One resolved version change whose target, source identity, current value, and proposed

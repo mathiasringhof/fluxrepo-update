@@ -55,6 +55,9 @@ Each item describes a unique `HelmRepository` or one representative of equivalen
 - `document_index`: document position inside a multi-document YAML file
 - `name`: `metadata.name`
 - `namespace`: `metadata.namespace`, or `null` when omitted
+- `effective_namespace`: the namespace used for source matching, or `null` when absent or ambiguous
+- `namespace_kustomizations`: sorted relative paths of outermost namespace setters across inclusion chains; empty without transforms
+- `namespace_ambiguous`: whether inclusion chains disagree or contain a cycle
 - `url`: `spec.url`
 - `repo_type`: `spec.type`, or `default` when omitted
 
@@ -66,7 +69,7 @@ namespaces; none is chosen. Affected charts produce `ambiguous_helm_repository` 
 
 ### `equivalent_repositories`
 
-Groups with `name` and all `sources` whose name, raw namespace, and complete `spec` match.
+Groups with `name` and all `sources` whose name, unambiguous effective namespace, and complete `spec` match.
 Paths and descriptive metadata can differ. The representative also appears in `repositories`;
 `repository_count` counts each physical source once, not every occurrence in these arrays.
 
@@ -91,6 +94,11 @@ Each item describes a `HelmRelease` with enough manifest-local identity to attem
 - `current_version`: current `spec.chart.spec.version`
 - `source_path`: the same manifest containing the explicit chart identity
 - `source_is_inherited`: always `false`; cross-manifest inference is not performed
+
+Chart targets, unresolved chart targets, and releases without chart versions also include
+`effective_namespace`, `namespace_kustomizations`, and `namespace_ambiguous` as above.
+`namespace` keeps its raw meaning. Effective namespaces fall back to raw namespaces when
+no local transformer applies; ambiguous namespaces are never used to choose a source.
 
 ### `image_bindings`
 
@@ -197,8 +205,10 @@ Each item includes:
 - `latest_version`
 - `inherited_source`
 
-`HelmRelease` items also include `chart_name`, `repo_name`, and `sources` (the `path` and
-zero-based `document_index` of every source copy used). Inventory provides their URLs and namespaces.
+`HelmRelease` items also include `chart_name`, `repo_name`, raw `namespace`,
+`effective_namespace`, `namespace_kustomizations`, and `namespace_ambiguous`.
+Each `sources` entry includes `path`, zero-based `document_index`, and the same four
+namespace fields for every source copy used. Inventory provides source URLs.
 
 `ImageBinding` items also include `current_image` and `latest_image`.
 
@@ -216,7 +226,7 @@ relevant chart source, image mapping, or workload container identity. Older `v1:
 IDs must be replaced by rerunning the preview. IDs for `skipped` targets are separate.
 
 Apply rechecks the targeted scalar and reviewed identity, including every equivalent
-chart source copy. It validates all selected files before writing and rejects
+chart source copy and contributing Kustomization inclusion-chain file. It validates all selected files before writing and rejects
 prepared YAML whose meaning differs beyond the approved values.
 
 ### `skipped`
@@ -238,10 +248,14 @@ Each item includes:
 `reason_code` and `retryable` are intended for agents and scripts; use `reason` for
 human-facing logs.
 
+Chart skips include the same namespace fields and `sources` context as chart plans;
+conflicts list every candidate source. `ambiguous_kustomize_namespace` is non-retryable.
+
 Current reason codes include:
 
 - `missing_helm_repository`
 - `ambiguous_helm_repository`
+- `ambiguous_kustomize_namespace`
 - `missing_chart_identity`
 - `unsupported_repository_type`
 - `chart_not_found`

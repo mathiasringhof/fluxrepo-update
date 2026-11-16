@@ -13,8 +13,7 @@
     "apps/testing/jellyfin/repository.yaml",
     "apps/testing/jellyfin/kustomization.yaml"
   ],
-  "expectation": "todo",
-  "todo": "Namespace transformations are not applied to source identity; equivalent and genuinely conflicting transformed sources must retain separate outcomes.",
+  "expectation": "pass",
   "command": "apply",
   "responses": {
     "/charts/index.yaml": {
