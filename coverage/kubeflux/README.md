@@ -2,15 +2,17 @@
 
 This corpus supplies both normal library tests and an opt-in CLI audit. The
 [audit](../../docs/kubeflux-coverage.md) records real source shapes;
-[STATUS.md](STATUS.md) records CLI results. No kubeflux checkout, credentials, or public
-registry access is needed.
+[STATUS.md](STATUS.md) records verification results. No kubeflux checkout, credentials,
+or public registry access is needed.
 
 All cases marked `pass` run in `cargo test` and CI without launching the CLI. They call
 `scan_repo` and `UpdateRun::execute` with real resolvers against local HTTP fixtures,
 check the domain values specified by the case assertions, and compare every file
-byte-for-byte. Exit expectations map to `UpdateRunStatus`; CLI serialization and actual
-exit codes remain covered by CLI tests and the Python audit. The fixture client routes
-all HTTP(S) through a local proxy that rejects external destinations and unexpected
+byte-for-byte. Exit expectations map to `UpdateRunStatus` and `CheckCompleteness`:
+`exit_code_not: 0` accepts failed checks, planned/applied updates, or a rejected run;
+`0`/`10`/`20` require non-failed checks. CLI serialization and actual exit codes remain
+covered by CLI tests and the Python audit. The fixture client routes all HTTP(S)
+through a local proxy that rejects external destinations and unexpected
 requests. No global proxy environment variables are changed by the Rust tests.
 The GitHub resolver uses the local fixture API base URL, while resource URLs in the
 manifests retain their original spelling.

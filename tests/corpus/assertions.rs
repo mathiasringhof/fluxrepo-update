@@ -1,7 +1,8 @@
 use anyhow::{Context, Result, bail, ensure};
 use fluxrepo_update::models::Inventory;
 use fluxrepo_update::update_run::{
-    RemoteResourceChange, SkippedUpdate, UpdateReview, UpdateRunOutcome, UpdateRunStatus,
+    CheckCompleteness, RemoteResourceChange, SkippedUpdate, UpdateReview, UpdateRunOutcome,
+    UpdateRunStatus,
 };
 use serde_json::{Map, Value, json};
 
@@ -21,17 +22,39 @@ pub fn check_outcome(
         "outcome assertions require command plan or apply"
     );
     let checks = checks(spec)?;
-    let expected_status = match exit_code(checks)? {
-        0 => UpdateRunStatus::NoUpdates,
-        10 => UpdateRunStatus::UpdatesPlanned,
-        20 => UpdateRunStatus::UpdatesApplied,
-        code => bail!("unsupported exit_code {code}; use 0, 10, or 20 for application status"),
-    };
-    ensure!(
-        outcome.status() == expected_status,
-        "application status: expected {expected_status:?}, got {:?}",
-        outcome.status()
-    );
+    let completeness = outcome.plan().check_summary().completeness();
+    match exit_expectation(checks)? {
+        ExitExpectation::Code(code) => {
+            let expected_status = match code {
+                0 => UpdateRunStatus::NoUpdates,
+                10 => UpdateRunStatus::UpdatesPlanned,
+                20 => UpdateRunStatus::UpdatesApplied,
+                _ => bail!("unsupported exit_code {code}; use 0, 10, or 20 for application status"),
+            };
+            ensure!(
+                completeness != CheckCompleteness::Failed,
+                "application check completeness: expected non-failed, got {completeness:?}"
+            );
+            ensure!(
+                outcome.status() == expected_status,
+                "application status: expected {expected_status:?}, got {:?}",
+                outcome.status()
+            );
+        }
+        ExitExpectation::Nonzero => {
+            ensure!(
+                completeness == CheckCompleteness::Failed
+                    || matches!(
+                        outcome.status(),
+                        UpdateRunStatus::UpdatesPlanned
+                            | UpdateRunStatus::UpdatesApplied
+                            | UpdateRunStatus::RunRejected
+                    ),
+                "expected a nonzero outcome, got status {:?} and check completeness {completeness:?}",
+                outcome.status()
+            );
+        }
+    }
     let planned = outcome.plan().review();
     let skipped = outcome.plan().skipped();
     ensure!(
@@ -123,7 +146,7 @@ pub fn check_inventory(spec: &Value, inventory: &Inventory) -> Result<()> {
     );
     let checks = checks(spec)?;
     ensure!(
-        exit_code(checks)? == 0,
+        matches!(exit_expectation(checks)?, ExitExpectation::Code(0)),
         "unsupported inventory exit_code; successful inventory requires 0"
     );
     let inventory = inventory.to_json_value();
@@ -174,11 +197,14 @@ fn checks(spec: &Value) -> Result<&Map<String, Value>> {
         .context("checks must be an object")?;
     for field in checks.keys() {
         ensure!(
-            matches!(field.as_str(), "exit_code" | "json" | "invariants"),
+            matches!(
+                field.as_str(),
+                "exit_code" | "exit_code_not" | "json" | "invariants"
+            ),
             "unsupported checks field {field:?}"
         );
     }
-    exit_code(checks)?;
+    exit_expectation(checks)?;
     let json = checks
         .get("json")
         .and_then(Value::as_array)
@@ -198,11 +224,26 @@ fn checks(spec: &Value) -> Result<&Map<String, Value>> {
     Ok(checks)
 }
 
-fn exit_code(checks: &Map<String, Value>) -> Result<u64> {
-    checks
-        .get("exit_code")
-        .and_then(Value::as_u64)
-        .context("checks.exit_code must be a nonnegative integer")
+enum ExitExpectation {
+    Code(u64),
+    Nonzero,
+}
+
+fn exit_expectation(checks: &Map<String, Value>) -> Result<ExitExpectation> {
+    match (checks.get("exit_code"), checks.get("exit_code_not")) {
+        (Some(code), None) => Ok(ExitExpectation::Code(
+            code.as_u64()
+                .context("checks.exit_code must be a nonnegative integer")?,
+        )),
+        (None, Some(code)) => {
+            ensure!(
+                code.as_u64() == Some(0),
+                "unsupported exit_code_not; only 0 is supported"
+            );
+            Ok(ExitExpectation::Nonzero)
+        }
+        _ => bail!("choose exactly one exit_code or exit_code_not check"),
+    }
 }
 
 enum Assertion<'a> {
@@ -642,6 +683,51 @@ mod tests {
     }
 
     #[test]
+    fn nonzero_exit_distinguishes_failed_checks_from_current_and_unsupported_only() {
+        let (_temp, _spec, inventory, current) =
+            case_run("report-fully-current", UpdateRunMode::PlanOnly, "1.0.0");
+        let failed = UpdateRun::new(
+            &StaticVersionResolver::new(HashMap::new()),
+            &StaticImageVersionResolver::new(HashMap::new()),
+        )
+        .execute(
+            &inventory,
+            UpdateRunMode::PlanOnly,
+            &mut |_| unreachable!(),
+            None,
+        )
+        .unwrap();
+        let spec = json!({"command": "plan", "checks": {
+            "exit_code_not": 0,
+            "json": [{"at": "/summary/planned_count", "equals": 0}],
+        }});
+        check_outcome(&spec, &inventory, &failed).unwrap();
+        rejects(&spec, &inventory, &current, "nonzero");
+        let (_temp, _spec, unsupported_inventory, unsupported) =
+            case_run("report-unsupported-only", UpdateRunMode::PlanOnly, "2.0.0");
+        rejects(&spec, &unsupported_inventory, &unsupported, "nonzero");
+
+        let zero = assertion(0, json!({"at": "/summary/planned_count", "equals": 0}));
+        rejects(&zero, &inventory, &failed, "completeness");
+    }
+
+    #[test]
+    fn nonzero_exit_accepts_updates_and_still_checks_invariants() {
+        for mode in [UpdateRunMode::PlanOnly, UpdateRunMode::ApplyAll] {
+            let (_temp, _spec, inventory, outcome) =
+                case_run("chart-source-equivalence", mode, "2.0.0");
+            let mut spec = json!({"command": "apply", "checks": {
+                "exit_code_not": 0,
+                "json": [],
+                "invariants": [{"at": "/summary/planned_count", "equals": 2}],
+            }});
+            check_outcome(&spec, &inventory, &outcome).unwrap();
+            spec["checks"]["invariants"][0]["equals"] = json!(0);
+            rejects(&spec, &inventory, &outcome, "invariants[0]");
+        }
+    }
+
+    #[test]
     fn discovery_is_cross_checked_against_inventory_even_without_a_count_assertion() {
         let (_temp, _spec, mut inventory, outcome) = case_run(
             "version-variant",
@@ -816,6 +902,11 @@ mod tests {
             json!({"exit_code": 20, "json": [{"at": "/skipped", "equals": []}], "invariants": {}}),
             json!({"exit_code": "20", "json": [{"at": "/skipped", "equals": []}]}),
             json!({"exit_code": 20, "exit_code_not": 0, "json": [{"at": "/skipped", "equals": []}]}),
+            json!({"json": [{"at": "/skipped", "equals": []}]}),
+            json!({"exit_code_not": 10, "json": [{"at": "/skipped", "equals": []}]}),
+            json!({"exit_code_not": -1, "json": [{"at": "/skipped", "equals": []}]}),
+            json!({"exit_code_not": "0", "json": [{"at": "/skipped", "equals": []}]}),
+            json!({"exit_code_not": null, "json": [{"at": "/skipped", "equals": []}]}),
         ] {
             let spec = json!({"command": "apply", "checks": checks});
             assert!(check_outcome(&spec, &inventory, &outcome).is_err());

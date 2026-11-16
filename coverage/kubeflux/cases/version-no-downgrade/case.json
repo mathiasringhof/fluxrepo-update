@@ -26,7 +26,7 @@
     }
   },
   "checks": {
-    "exit_code": 0,
+    "exit_code_not": 0,
     "json": [
       {
         "at": "/summary/discovered_count",

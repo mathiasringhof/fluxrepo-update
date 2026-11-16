@@ -8,8 +8,8 @@
   "source": [
     "apps/production/jellyfin/release.yaml"
   ],
-  "expectation": "todo",
-  "todo": "U13 / #18: total resolution failure exits zero; this case requires a nonzero outcome without choosing a future code.",
+  "expectation": "pass",
+  "todo": "",
   "command": "plan",
   "responses": {
     "/charts/index.yaml": {
