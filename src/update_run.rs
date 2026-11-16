@@ -51,6 +51,50 @@ pub enum UpdateRunStatus {
     RunRejected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckCompleteness {
+    Complete,
+    Incomplete,
+    Failed,
+    NotChecked,
+}
+
+impl CheckCompleteness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Incomplete => "incomplete",
+            Self::Failed => "failed",
+            Self::NotChecked => "not_checked",
+        }
+    }
+}
+
+/// Version Declaration counts for the full check, independent of approval and application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckSummary {
+    pub checked_unchanged_count: usize,
+    pub update_available_count: usize,
+    pub unsupported_count: usize,
+    pub failed_count: usize,
+}
+
+impl CheckSummary {
+    pub fn completeness(self) -> CheckCompleteness {
+        if self.checked_unchanged_count + self.update_available_count == 0 {
+            if self.failed_count > 0 {
+                CheckCompleteness::Failed
+            } else {
+                CheckCompleteness::NotChecked
+            }
+        } else if self.unsupported_count > 0 || self.failed_count > 0 {
+            CheckCompleteness::Incomplete
+        } else {
+            CheckCompleteness::Complete
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct UpdatePlan {
     report: UpdateReport,
@@ -82,6 +126,30 @@ impl UpdatePlan {
 
     pub fn checked_count(&self) -> usize {
         self.report.checked_count
+    }
+
+    pub fn check_summary(&self) -> CheckSummary {
+        let failed_count = self
+            .report
+            .skipped
+            .iter()
+            .filter(|item| item.reason_code.is_failed_check())
+            .count();
+        let update_available_count = self
+            .report
+            .planned
+            .iter()
+            .map(|update| match update {
+                PlannedUpdate::RemoteResource(update) => update.changes.len(),
+                PlannedUpdate::Chart(_) | PlannedUpdate::Image(_) => 1,
+            })
+            .sum::<usize>();
+        CheckSummary {
+            checked_unchanged_count: self.report.checked_count - update_available_count,
+            update_available_count,
+            unsupported_count: self.report.skipped.len() - failed_count,
+            failed_count,
+        }
     }
 }
 

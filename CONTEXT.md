@@ -16,6 +16,23 @@ repository manifest, whether or not it can currently be checked for available up
 A discovered Version Declaration whose update availability is unknown, with its location,
 current value, and reason it could not be checked. It does not imply that the version is current.
 
+**Version Check**:
+An attempt to determine whether a discovered Version Declaration has an available update.
+A successful check finds either no update or a Planned Update.
+
+**Unsupported Version Declaration**:
+An Unchecked Version Declaration with an unsupported form/version scheme or missing or
+ambiguous manifest-local source identity.
+
+**Failed Version Check**:
+A Version Check that cannot establish a result because a source request fails, a chart or
+version is missing, or source metadata is malformed or inconsistent. Unclassified resolution
+failures also belong here; retryability does not change the classification.
+
+**Check Completeness**:
+The full check's result: Complete, Incomplete, Failed, or Not Checked, independent of
+Update Run Status, approval, and application.
+
 **Flux Repository Inventory**:
 The discovered Version Declarations, manifest-local targets, source identities, original
 document snapshots, and exclusions from one repository scan. Eligible manifests are included

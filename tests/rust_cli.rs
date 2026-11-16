@@ -439,7 +439,8 @@ fn update_helm_json_plan_reports_incompatible_image_schemes_as_unresolved() {
 fn update_helm_json_plan_reports_missing_stable_tags_as_unresolved() {
     let (code, payload) = registry_image_plan("10.11.8", &["2026092811"]);
 
-    assert_eq!(code, 0);
+    assert_eq!(code, 2);
+    assert_eq!(payload["check_completeness"], "failed");
     assert_eq!(payload["summary"]["planned_count"], 0);
     assert_eq!(payload["summary"]["skipped_count"], 1);
     assert_eq!(
@@ -894,21 +895,21 @@ fn update_helm_does_not_claim_skipped_targets_are_current() {
         "kind: Pod\nmetadata: {name: demo}\nspec: {containers: [{image: example/app:latest}]}\n",
     );
 
-    let (code, stdout, stderr) = run_cli(
-        &[
+    let (code, stdout, stderr) = run_cli_with_any_factory(
+        [
             "fluxrepo-update",
             "update-helm",
             temp.path().to_str().expect("repo path"),
             "--non-interactive",
         ],
         "",
-        &StaticResolverFactory::default(),
+        &DefaultResolverFactory,
     );
 
     assert_eq!(code, 0);
     assert!(stdout.is_empty());
     assert!(!stderr.contains("No updates required"));
-    for detail in ["No updates planned", "1 target", "skipped"] {
+    for detail in ["Nothing checked", "not_checked", "1 unsupported"] {
         assert!(stderr.contains(detail), "missing summary detail: {detail}");
     }
 }

@@ -1,6 +1,10 @@
 #[cfg(test)]
 extern crate self as fluxrepo_update;
 
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod test_support;
+
 pub mod cli;
 pub mod github;
 pub mod models;

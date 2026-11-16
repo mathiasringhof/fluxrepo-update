@@ -558,6 +558,33 @@ pub enum SkipReasonCode {
 }
 
 impl SkipReasonCode {
+    pub(crate) fn is_failed_check(self) -> bool {
+        match self {
+            Self::ChartNotFound
+            | Self::CurrentVersionNotFound
+            | Self::CurrentVersionNewerThanSource
+            | Self::ChartRequestFailed
+            | Self::RegistryRequestFailed
+            | Self::GitHubRequestFailed
+            | Self::GitHubReleaseAssetsMissing
+            | Self::GitHubReleaseMetadataInvalid
+            | Self::GitHubReleaseVersionUnavailable
+            | Self::Unclassified => true,
+            Self::MissingHelmRepository
+            | Self::AmbiguousHelmRepository
+            | Self::MissingChartIdentity
+            | Self::UnsupportedRepositoryType
+            | Self::IncompatibleVersionScheme
+            | Self::MutableImageTag
+            | Self::ImageReferenceMissingTag
+            | Self::ImageReferencePinnedByDigest
+            | Self::TemplatedImageReference
+            | Self::UnparseableImageReference
+            | Self::UnsupportedImageSchema
+            | Self::UnsupportedVersionDeclaration => false,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MissingHelmRepository => "missing_helm_repository",

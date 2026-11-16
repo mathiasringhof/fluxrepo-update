@@ -17,7 +17,8 @@ fluxrepo-update update-helm /path/to/flux-repo --json --non-interactive
 ```
 
 Inventory text summarizes counts; JSON includes sources, targets, and unchecked
-declarations. A preview returns the available updates and skips without changing files.
+declarations. A preview returns available updates, skips, and check completeness without
+changing files.
 Planning requires access to public Helm indexes, OCI/container registries, and GitHub
 release metadata.
 
@@ -71,6 +72,12 @@ sources, failed requests, unsupported version schemes, and declarations that can
 checked all leave update availability unknown. See [coverage](coverage.md) for supported
 forms and [output](output.md#skipped) for stable reason codes.
 
+A run with zero successful checks and at least one failed request or unusable source
+result exits `2` with `check_completeness: "failed"`. Mixed runs report `incomplete`, retain partial
+plans, and keep their usual exits. Unsupported-only or empty runs report `not_checked`
+and exit `0`. Inspect [completeness](output.md#check_completeness) and the full-check
+counts in `summary`; approval and application do not change those counts.
+
 Apply prepares and validates all selected edits before writing. It rechecks target
 and source identities and rejects unintended YAML changes. Approved scalars are edited
 in place, preserving surrounding formatting and comments. An operating-system write
@@ -78,6 +85,7 @@ failure can still leave earlier files changed; inspect the working tree and use 
 for recovery. There is no automatic rollback, deployment, or reconciliation.
 
 With `--json`, runtime and mode-validation failures produce a structured error on
-stderr. Argument parsing keeps its normal text errors. Scripts must handle the
-[exit codes](output.md#exit-codes): `10` is a successful preview with updates and `20`
-is a successful apply, rather than a failure.
+stderr. Total version-check failure keeps the normal report on stdout, including all
+failure skips, with no separate stderr JSON error. Argument parsing keeps its normal
+text errors. Scripts must handle the [exit codes](output.md#exit-codes): `10` is a successful
+preview with updates and `20` is a successful apply, rather than a failure.

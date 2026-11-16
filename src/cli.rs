@@ -23,7 +23,7 @@ use crate::resolvers::{
 };
 use crate::scanner::scan_repo;
 use crate::update_run::{
-    ResolutionProgress, UpdateReview, UpdateRun, UpdateRunMode, UpdateRunStatus,
+    CheckCompleteness, ResolutionProgress, UpdateReview, UpdateRun, UpdateRunMode, UpdateRunStatus,
 };
 
 pub const EXIT_OK: u8 = 0;
@@ -368,6 +368,9 @@ fn update_helm_command<W: Write, E: Write + Send>(
         stdout,
         stderr,
     )?;
+    if outcome.plan().check_summary().completeness() == CheckCompleteness::Failed {
+        return Ok(EXIT_STRICT_FAILURE);
+    }
     Ok(match outcome.status() {
         UpdateRunStatus::UpdatesApplied => EXIT_UPDATES_APPLIED,
         UpdateRunStatus::UpdatesPlanned => EXIT_UPDATES_AVAILABLE,
