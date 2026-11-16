@@ -24,10 +24,10 @@ human status, color, and progress output. Interactive approval still prompts unl
 
 Interactive approval includes the relative file, document number, resource, exact field,
 and chart/source or full image change. GitHub groups show every member URL, document,
-and field. A plan containing only skipped targets reports
-that incomplete result instead of saying that no updates are required.
-Update output includes discovered, checked, and unchecked counts. Skips include the field
-and current value when available.
+and field. Summaries state check completeness, discovered/checked/unchecked counts,
+and counts for unchanged, update-available, unsupported, and failed declarations.
+Total failure explicitly reports failed checks; unsupported-only and empty runs say
+that nothing was checked. Skips include the field and current value when available.
 
 ## `inventory --json`
 
@@ -132,7 +132,8 @@ Top-level fields:
 - `mode`: `plan` or `apply`
 - `non_interactive`: whether prompts were disabled
 - `scope`: `repository_manifests`
-- `summary`: counts for planned, applied, skipped, and changed files
+- `check_completeness`: `complete`, `incomplete`, `failed`, or `not_checked` (defined below)
+- `summary`: full-check counts plus planned, applied, skipped, and changed-file counts
 - `planned`: planned or applied chart, image, and remote resource updates
 - `skipped`: targets that could not be resolved
 
@@ -145,17 +146,42 @@ Top-level fields:
 - `discovered_count`: number of recognized declarations in the full run
 - `checked_count`: successfully resolved declarations, including those with no update
 - `unchecked_count`: unsupported declarations and failed checks; equals `skipped_count`
+- `checked_unchanged_count`: successfully checked declarations with no update available
+- `update_available_count`: successfully checked declarations with an update available
+- `unsupported_count`: unsupported forms/version schemes or missing/ambiguous manifest-local source identity
+- `failed_count`: failed requests, missing charts/versions, malformed or inconsistent source
+  metadata, and unclassified resolution failures; includes non-retryable failures
 
-`discovered_count = checked_count + unchecked_count`. These coverage counts describe the
-whole run even when only some updates are applied. They do not measure deployment coverage
-or include declarations outside the scanner's supported shapes.
+`discovered_count = checked_count + unchecked_count`,
+`checked_count = checked_unchanged_count + update_available_count`, and
+`unchecked_count = unsupported_count + failed_count = skipped_count`.
+These counts describe the full check even when updates are declined or only some are
+applied. They do not measure deployment coverage or include declarations outside the
+scanner's recognized shapes. Inventory `unchecked_version_declarations` contribute to
+`unsupported_count`.
 
 GitHub resources grouped by file, project, and current pin count as one planned/applied
-update. Discovered, checked, and unchecked counts still count each resource declaration.
+update. All full-check counts still count each resource declaration, including every
+member of a successful or failed group.
 
 Plan mode includes all proposed updates. Apply mode retains the existing output
 contract: `planned` and `planned_count` describe the applied subset, so unapproved
 updates are omitted. Skipped resolution targets are reported in both modes.
+
+### `check_completeness`
+
+| Value | Meaning | Exit behavior |
+| --- | --- | --- |
+| `complete` | At least one successful check; none unchecked | Existing `0`/`10`/`20` behavior |
+| `incomplete` | At least one successful check; some unsupported or failed | Existing `0`/`10`/`20` behavior; partial plans retained |
+| `failed` | Zero successful checks; at least one failed check | `2`, with the full report on stdout |
+| `not_checked` | Zero successful and zero failed checks; unsupported-only or empty inventory | `0` |
+
+Completeness is independent of approval and application. `complete` with zero
+`update_available_count` means all discovered declarations were checked and need no
+update. Exit `0` alone does not establish that. Classification uses the existing skip
+reasons without changing resolution behavior; request retryability does not determine
+completeness. Invalid arguments and runtime/write failures retain the error contract below.
 
 ### `planned`
 
@@ -237,13 +263,14 @@ Current reason codes include:
 - `unsupported_version_declaration`
 - `unclassified`
 
-An empty `planned` array with nonempty `skipped` means resolution was incomplete.
-Inspect skips even when the exit code is `0`.
+An empty `planned` array does not establish that declarations are current. Inspect
+`check_completeness`, full-check counts, and skips even when the exit code is `0`.
 
 ## JSON Errors
 
-If a command includes `--json` and fails after argument parsing, the CLI writes a JSON
-error object to stderr and exits with the same code the text error would use:
+If a command includes `--json` and encounters a mode-validation or runtime/write failure
+after argument parsing, the CLI writes a JSON error object to stderr and exits with the
+same code the text error would use:
 
 ```json
 {
@@ -255,10 +282,12 @@ error object to stderr and exits with the same code the text error would use:
 
 Clap parse and help errors keep their normal text output.
 `error` is a stable machine label such as `runtime_error` or `invalid_arguments`.
+Total version-check failure instead preserves the normal report on stdout with
+`check_completeness: "failed"` and exit `2`; it emits no separate stderr JSON error.
 
 ## Exit Codes
 
-- `0`: successful inventory, or no updates applied, found, or approved
-- `2`: invalid arguments or a runtime/write failure
+- `0`: successful inventory, or no updates applied, found, or approved (including `not_checked`)
+- `2`: invalid arguments, a runtime/write failure, or zero successful checks with at least one failed check
 - `10`: planning mode found updates
 - `20`: updates were applied

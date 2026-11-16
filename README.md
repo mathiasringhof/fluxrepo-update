@@ -46,6 +46,10 @@ use `--apply-id` to select reviewed items. See [usage](docs/usage.md) for these 
 and [output](docs/output.md#exit-codes) for exit codes (`10` means updates are available;
 `20` means updates were applied).
 
+A run with zero successful version checks and at least one failed check exits `2`, keeping
+the full report on stdout with `--json`. Inspect `check_completeness`: unsupported-only or
+empty runs report `not_checked` and exit `0`; partial results retain useful updates.
+
 ## Scope
 
 The tool reads individual repository manifests, including inactive bases and untracked

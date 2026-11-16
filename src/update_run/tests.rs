@@ -1,8 +1,5 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
-#[path = "../../tests/common/mod.rs"]
-mod common;
-
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,11 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use crate::test_support::{ResponseSpec, TestHttpServer, copy_fixture, write_file};
 use crate::update_run::implementation::{
     PlanOptions, PlannedChartUpdate, PlannedImageUpdate, PlannedUpdate, SkippedUpdate,
     UpdateReport, apply_updates, plan_updates,
 };
-use common::{ResponseSpec, TestHttpServer, copy_fixture, write_file};
 use fluxrepo_update::models::{
     HelmRepository, ImageBinding, ImageBindingValueKind, Inventory, RepoType, ResourceId,
 };
@@ -23,6 +20,99 @@ use fluxrepo_update::resolvers::{
     StaticVersionResolver,
 };
 use fluxrepo_update::scanner::scan_repo;
+
+#[test]
+fn check_completeness_distinguishes_success_failure_and_unsupported_declarations() {
+    use super::{CheckCompleteness, CheckSummary};
+
+    for (unchanged, available, unsupported, failed, expected) in [
+        (0, 0, 0, 0, CheckCompleteness::NotChecked),
+        (0, 0, 3, 0, CheckCompleteness::NotChecked),
+        (0, 0, 0, 2, CheckCompleteness::Failed),
+        (0, 0, 3, 2, CheckCompleteness::Failed),
+        (1, 0, 0, 0, CheckCompleteness::Complete),
+        (0, 1, 0, 0, CheckCompleteness::Complete),
+        (1, 2, 0, 0, CheckCompleteness::Complete),
+        (1, 0, 3, 0, CheckCompleteness::Incomplete),
+        (0, 1, 0, 2, CheckCompleteness::Incomplete),
+        (1, 2, 3, 2, CheckCompleteness::Incomplete),
+    ] {
+        let summary = CheckSummary {
+            checked_unchanged_count: unchanged,
+            update_available_count: available,
+            unsupported_count: unsupported,
+            failed_count: failed,
+        };
+        assert_eq!(summary.completeness(), expected, "{summary:?}");
+    }
+}
+
+#[test]
+fn check_summary_classifies_existing_skip_reasons_independently_of_retryability() {
+    use super::{CheckCompleteness, SkipReasonCode, UpdatePlan};
+
+    let unsupported = [
+        SkipReasonCode::MissingHelmRepository,
+        SkipReasonCode::AmbiguousHelmRepository,
+        SkipReasonCode::MissingChartIdentity,
+        SkipReasonCode::UnsupportedRepositoryType,
+        SkipReasonCode::IncompatibleVersionScheme,
+        SkipReasonCode::MutableImageTag,
+        SkipReasonCode::ImageReferenceMissingTag,
+        SkipReasonCode::ImageReferencePinnedByDigest,
+        SkipReasonCode::TemplatedImageReference,
+        SkipReasonCode::UnparseableImageReference,
+        SkipReasonCode::UnsupportedImageSchema,
+        SkipReasonCode::UnsupportedVersionDeclaration,
+    ];
+    let failures = [
+        SkipReasonCode::ChartNotFound,
+        SkipReasonCode::CurrentVersionNotFound,
+        SkipReasonCode::CurrentVersionNewerThanSource,
+        SkipReasonCode::ChartRequestFailed,
+        SkipReasonCode::RegistryRequestFailed,
+        SkipReasonCode::GitHubRequestFailed,
+        SkipReasonCode::GitHubReleaseAssetsMissing,
+        SkipReasonCode::GitHubReleaseMetadataInvalid,
+        SkipReasonCode::GitHubReleaseVersionUnavailable,
+        SkipReasonCode::Unclassified,
+    ];
+    for (codes, failed) in [(&unsupported[..], false), (&failures[..], true)] {
+        for &reason_code in codes {
+            for retryable in [false, true] {
+                let mut skip = SkippedUpdate::new(None, "unresolved");
+                skip.reason_code = reason_code;
+                skip.retryable = retryable;
+                let plan = UpdatePlan::from_report(
+                    UpdateReport {
+                        planned: Vec::new(),
+                        skipped: vec![skip],
+                        checked_count: 0,
+                    },
+                    Path::new("/repo"),
+                );
+                let summary = plan.check_summary();
+                assert_eq!(summary.failed_count, usize::from(failed), "{reason_code:?}");
+                assert_eq!(
+                    summary.unsupported_count,
+                    usize::from(!failed),
+                    "{reason_code:?}"
+                );
+                assert_eq!(summary.checked_unchanged_count, 0);
+                assert_eq!(summary.update_available_count, 0);
+                assert_eq!(
+                    summary.completeness(),
+                    if failed {
+                        CheckCompleteness::Failed
+                    } else {
+                        CheckCompleteness::NotChecked
+                    },
+                    "{reason_code:?}, retryable={retryable}"
+                );
+            }
+        }
+    }
+}
 
 #[test]
 fn plans_and_applies_chart_and_deployment_updates() {

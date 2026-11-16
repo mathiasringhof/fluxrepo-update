@@ -8,7 +8,9 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::models::TargetKind;
-use crate::update_run::{SkippedUpdate, UpdateReview, UpdateRunOutcome};
+use crate::update_run::{
+    CheckCompleteness, SkippedUpdate, UpdatePlan, UpdateReview, UpdateRunOutcome,
+};
 
 impl std::fmt::Display for SkippedUpdate {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -63,11 +65,10 @@ pub(super) fn emit_update_output<W: Write, E: Write>(
     if context.json_output {
         let report = update_output_json(
             &planned,
-            skipped,
+            outcome.plan(),
             &context,
             applied_count,
             changed_file_count,
-            outcome.plan().checked_count(),
         );
         writeln!(stdout, "{}", serde_json::to_string_pretty(&report)?)?;
         return Ok(());
@@ -78,6 +79,16 @@ pub(super) fn emit_update_output<W: Write, E: Write>(
         outcome.plan().checked_count() + skipped.len(),
         outcome.plan().checked_count(),
         skipped.len()
+    )?;
+    let checks = outcome.plan().check_summary();
+    writeln!(
+        stderr,
+        "Version checks: {} ({} unchanged, {} updates available, {} unsupported, {} failed).",
+        checks.completeness().as_str(),
+        checks.checked_unchanged_count,
+        checks.update_available_count,
+        checks.unsupported_count,
+        checks.failed_count,
     )?;
     for item in skipped {
         write!(
@@ -98,6 +109,14 @@ pub(super) fn emit_update_output<W: Write, E: Write>(
             write!(stderr, " = {value}")?;
         }
         writeln!(stderr, ": {}", item.reason)?;
+    }
+    match checks.completeness() {
+        CheckCompleteness::NotChecked => {
+            writeln!(stderr, "Nothing checked.")?;
+            return Ok(());
+        }
+        CheckCompleteness::Failed => return Ok(()),
+        CheckCompleteness::Complete | CheckCompleteness::Incomplete => {}
     }
     if planned.is_empty() {
         if context.mode == "apply" {
@@ -134,19 +153,25 @@ pub(super) fn emit_update_output<W: Write, E: Write>(
 
 fn update_output_json(
     planned: &[UpdateReview<'_>],
-    skipped: &[SkippedUpdate],
+    plan: &UpdatePlan,
     context: &OutputContext<'_>,
     applied_count: usize,
     changed_file_count: usize,
-    checked_count: usize,
 ) -> serde_json::Value {
+    let skipped = plan.skipped();
+    let checked_count = plan.checked_count();
+    let checks = plan.check_summary();
     json!({
         "mode": context.mode, "non_interactive": context.non_interactive,
         "scope": "repository_manifests",
+        "check_completeness": checks.completeness().as_str(),
         "summary": { "planned_count": planned.len(), "applied_count": applied_count,
             "skipped_count": skipped.len(), "changed_file_count": changed_file_count,
             "discovered_count": checked_count + skipped.len(),
-            "checked_count": checked_count, "unchecked_count": skipped.len() },
+            "checked_count": checked_count, "unchecked_count": skipped.len(),
+            "checked_unchanged_count": checks.checked_unchanged_count,
+            "update_available_count": checks.update_available_count,
+            "unsupported_count": checks.unsupported_count, "failed_count": checks.failed_count },
         "planned": planned.iter().map(|item| update_json(item, context.repo_root)).collect::<Vec<_>>(),
         "skipped": skipped.iter().map(|item| skip_json(item, context.repo_root)).collect::<Vec<_>>(),
     })
@@ -177,11 +202,10 @@ pub(crate) fn plan_payload(
     let plan = crate::update_run::UpdatePlan::from_report(report.clone(), root);
     update_output_json(
         &plan.review(),
-        plan.skipped(),
+        &plan,
         &OutputContext::new(root, true, "plan", true, HumanOutput::plain()),
         0,
         0,
-        plan.checked_count(),
     )
 }
 

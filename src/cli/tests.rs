@@ -10,6 +10,127 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 #[test]
+fn github_check_counts_count_declarations_instead_of_approval_groups() {
+    use crate::github::GitHubReleaseResolver;
+    use crate::resolvers::{RegistryImageResolver, RepositoryChartResolver};
+    use crate::test_support::{ResponseSpec, TestHttpServer, write_file};
+    use crate::update_run::UpdateRun;
+    use serde_json::{Value, json};
+
+    for (status, body, completeness, code, unchanged, available, failed, reason) in [
+        (
+            200,
+            json!([{"tag_name":"v1.0.0", "draft":false, "prerelease":false, "assets":[]}])
+                .to_string(),
+            "complete",
+            0,
+            2,
+            0,
+            0,
+            "",
+        ),
+        (
+            200,
+            json!([{"tag_name":"v2.0.0", "draft":false, "prerelease":false, "assets":[]}])
+                .to_string(),
+            "complete",
+            10,
+            0,
+            2,
+            0,
+            "",
+        ),
+        (
+            503,
+            "unavailable".into(),
+            "failed",
+            2,
+            0,
+            0,
+            2,
+            "github_request_failed",
+        ),
+        (
+            200,
+            "{}".into(),
+            "failed",
+            2,
+            0,
+            0,
+            2,
+            "github_release_metadata_invalid",
+        ),
+        (
+            200,
+            "[]".into(),
+            "failed",
+            2,
+            0,
+            0,
+            2,
+            "github_release_version_unavailable",
+        ),
+    ] {
+        let repo = tempfile::tempdir().expect("repo");
+        let original = "resources:\n- github.com/example/operator/one?ref=v1.0.0\n---\nresources:\n- https://github.com/example/operator/two?ref=v1.0.0\n";
+        let path = repo.path().join("kustomization.yaml");
+        write_file(&path, original);
+        let server = TestHttpServer::new(vec![ResponseSpec::new(status, body)]);
+        let remote = GitHubReleaseResolver::builder()
+            .api_base_url(server.base_url.clone())
+            .build();
+        let charts = RepositoryChartResolver::default();
+        let images = RegistryImageResolver::default();
+        let run = UpdateRun::new(&charts, &images).with_remote_resource_resolver(&remote);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let actual_code = super::update_helm_command(
+            super::UpdateHelmArgs {
+                repo_root: repo.path().to_path_buf(),
+                json_output: true,
+                write: false,
+                non_interactive: true,
+                apply_ids: Vec::new(),
+            },
+            InteractiveApproval::plain(Cursor::new(b"")),
+            &mut stdout,
+            &mut stderr,
+            &run,
+            HumanOutput::plain(),
+        )
+        .expect("run CLI command");
+
+        assert_eq!(actual_code, code);
+        assert!(stderr.is_empty());
+        let report: Value = serde_json::from_slice(&stdout).expect("report");
+        assert_eq!(report["check_completeness"], completeness);
+        assert_eq!(report["summary"]["discovered_count"], 2);
+        assert_eq!(report["summary"]["checked_count"], unchanged + available);
+        assert_eq!(report["summary"]["checked_unchanged_count"], unchanged);
+        assert_eq!(report["summary"]["update_available_count"], available);
+        assert_eq!(report["summary"]["unsupported_count"], 0);
+        assert_eq!(report["summary"]["failed_count"], failed);
+        assert_eq!(report["summary"]["unchecked_count"], failed);
+        assert_eq!(report["summary"]["skipped_count"], failed);
+        assert_eq!(
+            report["summary"]["planned_count"],
+            usize::from(available > 0)
+        );
+        if failed > 0 {
+            let skipped = report["skipped"].as_array().expect("skips");
+            assert_eq!(skipped.len(), 2);
+            assert!(skipped.iter().all(|skip| skip["reason_code"] == reason));
+        }
+        assert_eq!(
+            std::fs::read_to_string(path).expect("unmodified resources"),
+            original
+        );
+        assert_eq!(server.finish().len(), 1);
+    }
+}
+
+#[test]
 fn remote_resource_approval_shows_every_member_and_approves_one_group() {
     struct Remote;
     impl crate::github::RemoteResourceVersionResolver for Remote {
